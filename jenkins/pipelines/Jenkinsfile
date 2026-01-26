@@ -422,33 +422,46 @@ pipeline {
 
     post {
         success {
-            echo """
-            ✅ ========================================
-            ✅ Pipeline completed successfully!
-            ✅ Environment: ${params.ENVIRONMENT}
-            ✅ Namespace: ${env.NAMESPACE}
-            ✅ Image Tag: ${IMAGE_TAG}
-            ✅ ========================================
-            ✅ Frontend:    https://www.lancieretech.com
-            ✅ Backend API: https://api.lancieretech.com
-            ✅ ========================================
-            """
+            echo "✅ Pipeline completed successfully!"
+            emailext(
+                subject: "✅ SUCCESS: iMeetPro Pipeline #${BUILD_NUMBER}",
+                body: """
+                    <h2>✅ iMeetPro CI/CD Pipeline - SUCCESS</h2>
+                    <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
+                    <p><b>Namespace:</b> ${env.NAMESPACE}</p>
+                    <p><b>Build Tag:</b> ${IMAGE_TAG}</p>
+                    <hr>
+                    <p>🎯 Deployment completed successfully.</p>
+                    <p><b>Frontend:</b> <a href="https://www.lancieretech.com">https://www.lancieretech.com</a></p>
+                    <p><b>Backend API:</b> <a href="https://api.lancieretech.com">https://api.lancieretech.com</a></p>
+                    <p>Triggered by: ${env.BUILD_USER}</p>
+                """,
+                mimeType: 'text/html',
+                to: 'lancieretech@googlegroups.com'
+            )
         }
         
         failure {
-            echo """
-            ❌ ========================================
-            ❌ Pipeline failed!
-            ❌ Check console output for details
-            ❌ ========================================
-            """
+            echo "❌ Pipeline failed!"
+            emailext(
+                subject: "❌ FAILURE: iMeetPro Pipeline #${BUILD_NUMBER}",
+                body: """
+                    <h2>❌ iMeetPro CI/CD Pipeline - FAILURE</h2>
+                    <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
+                    <p><b>Namespace:</b> ${env.NAMESPACE}</p>
+                    <p><b>Build Tag:</b> ${IMAGE_TAG}</p>
+                    <hr>
+                    <p>⚠️ The pipeline failed. Please check Jenkins logs for details.</p>
+                    <p>🔗 Jenkins Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                """,
+                mimeType: 'text/html',
+                to: 'lancieretech@googlegroups.com'
+            )
         }
         
         always {
             // Clean up Docker images to save space
-            sh '''
-                docker system prune -f || true
-            '''
+            sh 'docker system prune -f || true'
             cleanWs()
         }
     }
