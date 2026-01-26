@@ -1,0 +1,98 @@
+# =============================================================================
+# iMeetPro GPU Worker - Dockerfile
+# For video recording, face authentication, AI processing
+# =============================================================================
+FROM nvidia/cuda:11.8.0-devel-ubuntu22.04
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    APP_HOME=/app \
+    CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:$PATH \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+WORKDIR $APP_HOME
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    build-essential \
+    libpq-dev \
+    default-libmysqlclient-dev \
+    pkg-config \
+    curl \
+    wget \
+    git \
+    # FFmpeg for video processing
+    ffmpeg \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    # OpenCV dependencies
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libglib2.0-0 \
+    libgl1-mesa-glx \
+    # Face recognition dependencies
+    cmake \
+    libboost-all-dev \
+    libopenblas-dev \
+    liblapack-dev \
+    # Additional dependencies
+    libffi-dev \
+    libssl-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create symlink for python
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python && \
+    ln -sf /usr/bin/python3.11 /usr/bin/python3
+
+# Upgrade pip
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# Create non-root user
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+
+# Copy requirements files
+COPY requirements.txt .
+COPY requirements-gpu.txt .
+
+# Install base Python dependencies first
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install GPU-specific packages from requirements-gpu.txt
+RUN pip install --no-cache-dir -r requirements-gpu.txt
+
+# Copy application code
+COPY --chown=appuser:appgroup . .
+
+# Create necessary directories
+RUN mkdir -p /app/logs /app/models /app/temp /app/mediafiles /app/staticfiles && \
+    chown -R appuser:appgroup /app
+
+# Collect static files
+RUN python manage.py collectstatic --noinput || true
+
+# Add build info
+ARG BUILD_DATE
+ARG VERSION
+LABEL org.opencontainers.image.created=$BUILD_DATE
+LABEL org.opencontainers.image.version=$VERSION
+LABEL org.opencontainers.image.title="iMeetPro GPU Worker"
+LABEL org.opencontainers.image.description="GPU Worker for video processing, face recognition, and AI"
+
+# Note: GPU workers run as root for NVIDIA driver access
+# USER appuser
+
+# Expose port (Django default)
+EXPOSE 8000
+
+# Default command - Celery GPU worker
+# Uses SampleDB as the Django project module
+CMD ["celery", "-A", "SampleDB", "worker", "-l", "INFO", "-Q", "gpu_tasks,default", "--concurrency=2"]

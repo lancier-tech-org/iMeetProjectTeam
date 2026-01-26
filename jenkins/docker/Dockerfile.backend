@@ -1,0 +1,79 @@
+# =============================================================================
+# iMeetPro Backend - Multi-stage Dockerfile (Fixed)
+# =============================================================================
+FROM python:3.11-slim AS deps
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# Install build dependencies INCLUDING MySQL client
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    libffi-dev \
+    libssl-dev \
+    default-libmysqlclient-dev \
+    pkg-config \
+    curl \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# -----------------------------------------------------------------------------
+FROM python:3.11-slim AS production
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    APP_HOME=/app
+
+WORKDIR $APP_HOME
+
+# Install runtime dependencies (including OpenCV requirements)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    default-mysql-client \
+    libmariadb3 \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libgomp1 \
+    curl \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+
+COPY --from=deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=deps /usr/local/bin /usr/local/bin
+
+COPY --chown=appuser:appgroup . .
+
+# Create directories and log files
+RUN mkdir -p /app/staticfiles /app/mediafiles /app/logs && \
+    touch /app/attendance_verification.log \
+          /app/django.log \
+          /app/celery.log \
+          /app/meetings_debug.log \
+          /app/recurring_meetings.log \
+          /app/notifications_debug.log \
+          /app/participants_debug.log \
+          /app/recording_service_debug.log && \
+    chown -R appuser:appgroup /app
+   
+# Clean unnecessary files
+RUN rm -rf *.sql *.pem *.key *.crt .env .vscode chromedriver* || true
+
+USER appuser
+
+RUN python manage.py collectstatic --noinput 2>/dev/null || true
+
+EXPOSE 8000
+
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "--threads", "2", "SampleDB.wsgi:application"]

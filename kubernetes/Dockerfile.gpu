@@ -1,0 +1,88 @@
+# =============================================================================
+# iMeetPro Backend GPU Dockerfile
+# =============================================================================
+# Base image with CUDA support
+FROM nvidia/cuda:11.8-cudnn8-runtime-ubuntu22.04
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=$CUDA_HOME/bin:$PATH
+ENV LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-dev \
+    python3.11-venv \
+    python3-pip \
+    build-essential \
+    cmake \
+    git \
+    curl \
+    wget \
+    libpq-dev \
+    libssl-dev \
+    libffi-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    zlib1g-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    ffmpeg \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    libv4l-dev \
+    libatlas-base-dev \
+    gfortran \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create symbolic links for python
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python && \
+    ln -sf /usr/bin/python3.11 /usr/bin/python3
+
+# Upgrade pip
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# Copy requirements files
+COPY requirements.txt /app/
+COPY requirements-gpu.txt /app/
+
+# Install base requirements first
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install GPU requirements
+RUN pip install --no-cache-dir -r requirements-gpu.txt
+
+# Copy application code
+COPY . /app/
+
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Create necessary directories
+RUN mkdir -p /app/logs /app/mediafiles /app/staticfiles /tmp && \
+    chown -R appuser:appuser /app /tmp
+
+# Collect static files
+RUN python manage.py collectstatic --noinput || true
+
+# Switch to non-root user (commented for GPU access)
+# USER appuser
+
+# Expose port
+EXPOSE 8000
+
+# Default command (can be overridden for celery workers)
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "--threads", "2", "--timeout", "120", "SampleDB.wsgi:application"]

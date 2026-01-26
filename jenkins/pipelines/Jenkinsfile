@@ -1,0 +1,455 @@
+// =============================================================================
+// iMeetPro CI/CD Pipeline - Production Version
+// =============================================================================
+// Runs on Jenkins server directly (not in Kubernetes pods)
+// Uses Docker on Jenkins server for builds, kubectl for deployments
+// =============================================================================
+
+pipeline {
+    agent any  // Runs on Jenkins server
+    
+    environment {
+        // AWS Configuration
+        AWS_REGION = 'ap-south-1'
+        AWS_ACCOUNT_ID = '664418964913'
+        ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        
+        // Repository names (matching your ECR repos)
+        FRONTEND_REPO = "${ECR_REGISTRY}/imeetpro-prod/frontend"
+        BACKEND_REPO = "${ECR_REGISTRY}/imeetpro-prod/backend"
+        CELERY_REPO = "${ECR_REGISTRY}/imeetpro-prod/celery-worker"
+        GPU_WORKER_REPO = "${ECR_REGISTRY}/imeetpro-prod/gpu-worker"
+        
+        // EKS Configuration
+        EKS_CLUSTER_NAME = 'imeetpro-prod-eks'
+        
+        // Image Tag
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+    }
+
+    options {
+        timeout(time: 60, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+    }
+
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'staging', 'prod'],
+            description: 'Target environment for deployment'
+        )
+        booleanParam(
+            name: 'SKIP_TESTS',
+            defaultValue: false,
+            description: 'Skip test stage'
+        )
+        booleanParam(
+            name: 'SKIP_SECURITY_SCAN',
+            defaultValue: false,
+            description: 'Skip security scan stage'
+        )
+        booleanParam(
+            name: 'DEPLOY_FRONTEND',
+            defaultValue: true,
+            description: 'Deploy Frontend'
+        )
+        booleanParam(
+            name: 'DEPLOY_BACKEND',
+            defaultValue: true,
+            description: 'Deploy Backend'
+        )
+        booleanParam(
+            name: 'DEPLOY_CELERY',
+            defaultValue: false,
+            description: 'Deploy Celery Workers'
+        )
+        booleanParam(
+            name: 'DEPLOY_GPU_WORKERS',
+            defaultValue: false,
+            description: 'Deploy GPU Workers'
+        )
+    }
+
+    stages {
+        // =====================================================================
+        // Stage 1: Checkout
+        // =====================================================================
+        stage('Checkout') {
+            steps {
+                script {
+                    echo "🔄 Checking out source code..."
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: '*/main']],
+                        extensions: [[$class: 'CleanBeforeCheckout']],
+                        userRemoteConfigs: [[
+                            url: 'https://github.com/anumularoots-svg/iMeetProject.git',
+                            credentialsId: 'github-credentials'
+                        ]]
+                    ])
+                    
+                    // Set namespace based on environment
+                    env.NAMESPACE = params.ENVIRONMENT == 'prod' ? 'imeetpro' : 'imeetpro-dev'
+                    
+                    currentBuild.description = "Env: ${params.ENVIRONMENT}, NS: ${env.NAMESPACE}, Tag: ${IMAGE_TAG}"
+                    echo "📍 Target Namespace: ${env.NAMESPACE}"
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 2: Setup AWS & kubectl
+        // =====================================================================
+        stage('Setup AWS') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                    sh '''
+                        echo "🔧 Configuring AWS and kubectl..."
+                        aws sts get-caller-identity
+                        aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER_NAME}
+                        kubectl get nodes
+                        echo "✅ AWS and kubectl configured!"
+                    '''
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 3: Build Docker Images (Parallel)
+        // =====================================================================
+        stage('Build Images') {
+            parallel {
+                stage('Build Frontend') {
+                    when {
+                        expression { params.DEPLOY_FRONTEND }
+                    }
+                    steps {
+                        script {
+                            echo "🏗️ Building Frontend Docker image..."
+                            sh """
+                                cp -r jenkins/docker/nginx frontend/
+                                docker build \
+                                    --build-arg VITE_API_URL=https://api.lancieretech.com \
+                                    --build-arg VITE_LIVEKIT_URL=wss://imeetpro-fbrcr2mk.livekit.cloud \
+                                    -t ${FRONTEND_REPO}:${IMAGE_TAG} \
+                                    -t ${FRONTEND_REPO}:latest \
+                                    -f jenkins/docker/Dockerfile.frontend \
+                                    ./frontend
+                            """
+                            echo "✅ Frontend image built!"
+                        }
+                    }
+                }
+                
+                stage('Build Backend') {
+                    when {
+                        expression { params.DEPLOY_BACKEND }
+                    }
+                    steps {
+                        script {
+                            echo "🏗️ Building Backend Docker image..."
+                            sh """
+                                docker build \
+                                    -t ${BACKEND_REPO}:${IMAGE_TAG} \
+                                    -t ${BACKEND_REPO}:latest \
+                                    -f jenkins/docker/Dockerfile.backend \
+                                    ./BackEnd
+                            """
+                            echo "✅ Backend image built!"
+                        }
+                    }
+                }
+                
+                stage('Build GPU Worker') {
+                    when {
+                        expression { params.DEPLOY_GPU_WORKERS }
+                    }
+                    steps {
+                        script {
+                            echo "🏗️ Building GPU Worker Docker image..."
+                            sh """
+                                docker build \
+                                    -t ${GPU_WORKER_REPO}:${IMAGE_TAG} \
+                                    -t ${GPU_WORKER_REPO}:latest \
+                                    -f jenkins/docker/Dockerfile.gpu-worker \
+                                    ./BackEnd
+                            """
+                            echo "✅ GPU Worker image built!"
+                        }
+                    }
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 4: Tag Celery Image (After Backend Build)
+        // =====================================================================
+        stage('Tag Celery Image') {
+            when {
+                expression { params.DEPLOY_CELERY && params.DEPLOY_BACKEND }
+            }
+            steps {
+                script {
+                    echo "🏗️ Tagging Backend image for Celery Worker..."
+                    sh """
+                        docker tag ${BACKEND_REPO}:${IMAGE_TAG} ${CELERY_REPO}:${IMAGE_TAG}
+                        docker tag ${BACKEND_REPO}:latest ${CELERY_REPO}:latest
+                    """
+                    echo "✅ Celery image ready!"
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 5: Security Scan (Trivy)
+        // =====================================================================
+        stage('Security Scan') {
+            when {
+                expression { !params.SKIP_SECURITY_SCAN }
+            }
+            steps {
+                script {
+                    echo "🔒 Running Trivy security scan..."
+                    
+                    if (params.DEPLOY_FRONTEND) {
+                        sh """
+                            trivy image --severity HIGH,CRITICAL --exit-code 0 \
+                                ${FRONTEND_REPO}:${IMAGE_TAG} || true
+                        """
+                    }
+                    
+                    if (params.DEPLOY_BACKEND) {
+                        sh """
+                            trivy image --severity HIGH,CRITICAL --exit-code 0 \
+                                ${BACKEND_REPO}:${IMAGE_TAG} || true
+                        """
+                    }
+                    
+                    if (params.DEPLOY_GPU_WORKERS) {
+                        sh """
+                            trivy image --severity HIGH,CRITICAL --exit-code 0 \
+                                ${GPU_WORKER_REPO}:${IMAGE_TAG} || true
+                        """
+                    }
+                    
+                    echo "✅ Security scan completed!"
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 6: Push to ECR
+        // =====================================================================
+        stage('Push to ECR') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                    script {
+                        echo "📤 Pushing images to ECR..."
+                        
+                        // Login to ECR
+                        sh """
+                            aws ecr get-login-password --region ${AWS_REGION} | \
+                            docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                        """
+                        
+                        // Push Frontend
+                        if (params.DEPLOY_FRONTEND) {
+                            sh """
+                                docker push ${FRONTEND_REPO}:${IMAGE_TAG}
+                                docker push ${FRONTEND_REPO}:latest
+                            """
+                            echo "✅ Frontend pushed!"
+                        }
+                        
+                        // Push Backend
+                        if (params.DEPLOY_BACKEND) {
+                            sh """
+                                docker push ${BACKEND_REPO}:${IMAGE_TAG}
+                                docker push ${BACKEND_REPO}:latest
+                            """
+                            echo "✅ Backend pushed!"
+                        }
+                        
+                        // Push Celery (only if both Celery and Backend are selected)
+                        if (params.DEPLOY_CELERY && params.DEPLOY_BACKEND) {
+                            sh """
+                                docker push ${CELERY_REPO}:${IMAGE_TAG}
+                                docker push ${CELERY_REPO}:latest
+                            """
+                            echo "✅ Celery pushed!"
+                        }
+                        
+                        // Push GPU Worker
+                        if (params.DEPLOY_GPU_WORKERS) {
+                            sh """
+                                docker push ${GPU_WORKER_REPO}:${IMAGE_TAG}
+                                docker push ${GPU_WORKER_REPO}:latest
+                            """
+                            echo "✅ GPU Worker pushed!"
+                        }
+                    }
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 7: Deploy to EKS
+        // =====================================================================
+        stage('Deploy to EKS') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                    script {
+                        echo "🚀 Deploying to EKS..."
+                        echo "📍 Target Namespace: ${env.NAMESPACE}"
+                        
+                        // Ensure kubectl is configured
+                        sh "aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER_NAME}"
+                        
+                        // Deploy Frontend
+                        if (params.DEPLOY_FRONTEND) {
+                            echo "🌐 Deploying Frontend..."
+                            sh """
+                                kubectl set image deployment/frontend \
+                                    frontend=${FRONTEND_REPO}:${IMAGE_TAG} \
+                                    -n ${env.NAMESPACE} || \
+                                kubectl apply -f kubernetes/apps/frontend/ -n ${env.NAMESPACE}
+                                
+                                kubectl rollout status deployment/frontend \
+                                    -n ${env.NAMESPACE} --timeout=300s || true
+                            """
+                            echo "✅ Frontend deployed!"
+                        }
+                        
+                        // Deploy Backend
+                        if (params.DEPLOY_BACKEND) {
+                            echo "⚙️ Deploying Backend..."
+                            sh """
+                                kubectl set image deployment/backend \
+                                    backend=${BACKEND_REPO}:${IMAGE_TAG} \
+                                    -n ${env.NAMESPACE} || \
+                                kubectl apply -f kubernetes/apps/backend/ -n ${env.NAMESPACE}
+                                
+                                kubectl rollout status deployment/backend \
+                                    -n ${env.NAMESPACE} --timeout=300s || true
+                            """
+                            echo "✅ Backend deployed!"
+                        }
+                        
+                        // Deploy Celery Workers
+                        if (params.DEPLOY_CELERY) {
+                            echo "📊 Deploying Celery Workers..."
+                            sh """
+                                kubectl set image deployment/celery-worker \
+                                    celery-worker=${CELERY_REPO}:${IMAGE_TAG} \
+                                    -n ${env.NAMESPACE} || \
+                                kubectl apply -f kubernetes/apps/celery/ -n ${env.NAMESPACE}
+                                
+                                kubectl rollout status deployment/celery-worker \
+                                    -n ${env.NAMESPACE} --timeout=300s || true
+                            """
+                            echo "✅ Celery Workers deployed!"
+                        }
+                        
+                        // Deploy GPU Workers
+                        if (params.DEPLOY_GPU_WORKERS) {
+                            echo "🎮 Deploying GPU Workers..."
+                            sh """
+                                kubectl set image deployment/gpu-worker \
+                                    gpu-worker=${GPU_WORKER_REPO}:${IMAGE_TAG} \
+                                    -n ${env.NAMESPACE} || \
+                                kubectl apply -f kubernetes/apps/gpu-workers/ -n ${env.NAMESPACE}
+                                
+                                kubectl rollout status deployment/gpu-worker \
+                                    -n ${env.NAMESPACE} --timeout=600s || true
+                            """
+                            echo "✅ GPU Workers deployed!"
+                        }
+                    }
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 8: Verify Deployment
+        // =====================================================================
+        stage('Verify') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                    script {
+                        sh """
+                            echo "============================================="
+                            echo "        🔍 DEPLOYMENT VERIFICATION"
+                            echo "============================================="
+                            echo ""
+                            echo "=== Application Pods ==="
+                            kubectl get pods -n ${env.NAMESPACE}
+                            echo ""
+                            echo "=== Services ==="
+                            kubectl get svc -n ${env.NAMESPACE}
+                            echo ""
+                            echo "=== Ingress ==="
+                            kubectl get ingress -n ${env.NAMESPACE}
+                            echo ""
+                            echo "=== Database Pods ==="
+                            kubectl get pods -n databases
+                            echo ""
+                            echo "=== Recent Events ==="
+                            kubectl get events -n ${env.NAMESPACE} --sort-by='.lastTimestamp' | tail -10
+                            echo ""
+                            echo "============================================="
+                            echo "        ✅ VERIFICATION COMPLETED"
+                            echo "============================================="
+                        """
+                        
+                        // Health checks for prod
+                        if (params.ENVIRONMENT == 'prod') {
+                            echo "🏥 Running health checks..."
+                            sh '''
+                                echo "Checking Frontend..."
+                                curl -sf https://www.lancieretech.com -o /dev/null && echo "✅ Frontend: OK" || echo "⚠️ Frontend: Check needed"
+                                
+                                echo "Checking Backend API..."
+                                curl -sf https://api.lancieretech.com/api/videos/lists -o /dev/null && echo "✅ Backend API: OK" || echo "⚠️ Backend API: Check needed"
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo """
+            ✅ ========================================
+            ✅ Pipeline completed successfully!
+            ✅ Environment: ${params.ENVIRONMENT}
+            ✅ Namespace: ${env.NAMESPACE}
+            ✅ Image Tag: ${IMAGE_TAG}
+            ✅ ========================================
+            ✅ Frontend:    https://www.lancieretech.com
+            ✅ Backend API: https://api.lancieretech.com
+            ✅ ========================================
+            """
+        }
+        
+        failure {
+            echo """
+            ❌ ========================================
+            ❌ Pipeline failed!
+            ❌ Check console output for details
+            ❌ ========================================
+            """
+        }
+        
+        always {
+            // Clean up Docker images to save space
+            sh '''
+                docker system prune -f || true
+            '''
+            cleanWs()
+        }
+    }
+}

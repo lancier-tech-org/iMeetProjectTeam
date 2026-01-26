@@ -1,0 +1,41 @@
+# =============================================================================
+# iMeetPro Backend ConfigMap - Production
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: imeetpro
+data:
+  # Django Settings
+  DEBUG: "False"
+  DJANGO_SETTINGS_MODULE: "config.settings.production"
+  ALLOWED_HOSTS: "*"
+  CACHE_CHAT_HOST: "redis.databases.svc.cluster.local"
+  CACHE_HAND_RAISE_HOST: "redis.databases.svc.cluster.local"
+  DEFAULT_REDIS_HOST: "redis.databases.svc.cluster.local"
+  
+  # MySQL Database (AWS RDS)
+  DB_HOST: "imeetpro-prod-mysql.c7ae8ge8ixhl.ap-south-1.rds.amazonaws.com"
+  DB_NAME: "imeetpro"
+  DB_PORT: "3306"
+  
+  # MongoDB Configuration
+  MONGODB_HOST: "mongodb.databases.svc.cluster.local"
+  MONGODB_PORT: "27017"
+  MONGODB_DATABASE: "imeetpro"
+  MONGO_URI: "mongodb://mongodb.databases.svc.cluster.local:27017/imeetpro"
+  
+  # Redis Configuration
+  REDIS_HOST: "redis.databases.svc.cluster.local"
+  REDIS_PORT: "6379"
+  CELERY_BROKER_URL: "redis://redis.databases.svc.cluster.local:6379/0"
+  CELERY_RESULT_BACKEND: "redis://redis.databases.svc.cluster.local:6379/1"
+  
+  # AWS Configuration
+  AWS_S3_REGION_NAME: "ap-south-1"
+  AWS_STORAGE_BUCKET_NAME: "imeetpro-prod-recordings"
+  
+  # LiveKit Configuration
+  LIVEKIT_URL: "wss://imeetpro-fbrcr2mk.livekit.cloud"
+  LIVEKIT_WSS_URL: "wss://imeetpro-fbrcr2mk.livekit.cloud"

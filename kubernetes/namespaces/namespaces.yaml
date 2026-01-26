@@ -1,0 +1,26 @@
+# =============================================================================
+# iMeetPro Namespaces
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: imeetpro
+  labels:
+    app: imeetpro
+    environment: production
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: databases
+  labels:
+    app: imeetpro-databases
+    environment: production
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app: imeetpro-monitoring
+    environment: production

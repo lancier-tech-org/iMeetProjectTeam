@@ -1,0 +1,309 @@
+// =============================================================================
+// iMeetPro CI/CD Pipeline - Jenkins
+// =============================================================================
+
+pipeline {
+    agent any
+    
+    environment {
+        AWS_REGION = 'ap-south-1'
+        AWS_ACCOUNT_ID = '664418964913'
+        ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        
+        // Repository names (matching your ECR repos)
+        FRONTEND_REPO = 'imeetpro-prod/frontend'
+        BACKEND_REPO = 'imeetpro-prod/backend'
+        CELERY_REPO = 'imeetpro-prod/celery-worker'
+        GPU_REPO = 'imeetpro-prod/gpu-worker'
+        
+        // EKS Cluster
+        EKS_CLUSTER = 'imeetpro-prod-eks'
+        K8S_NAMESPACE = 'imeetpro'
+        
+        // Image tags
+        IMAGE_TAG = "${BUILD_NUMBER}"
+    }
+    
+    parameters {
+        booleanParam(name: 'BUILD_ALL', defaultValue: false, description: 'Build all components')
+        booleanParam(name: 'BUILD_FRONTEND', defaultValue: false, description: 'Build Frontend only')
+        booleanParam(name: 'BUILD_BACKEND', defaultValue: false, description: 'Build Backend only')
+        booleanParam(name: 'BUILD_GPU', defaultValue: false, description: 'Build GPU Worker only')
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'git log -1 --oneline'
+            }
+        }
+        
+        stage('ECR Login') {
+            steps {
+                sh '''
+                    aws ecr get-login-password --region ${AWS_REGION} | \
+                    docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                '''
+            }
+        }
+        
+        stage('Build Frontend') {
+            when {
+                anyOf {
+                    changeset "frontend/**"
+                    expression { params.BUILD_ALL == true }
+                    expression { params.BUILD_FRONTEND == true }
+                }
+            }
+            steps {
+                dir('frontend') {
+                    sh '''
+                        echo "Building Frontend..."
+                        docker build -t ${ECR_REGISTRY}/${FRONTEND_REPO}:${IMAGE_TAG} \
+                                     -t ${ECR_REGISTRY}/${FRONTEND_REPO}:latest \
+                                     -f Dockerfile .
+                    '''
+                }
+            }
+        }
+        
+        stage('Build Backend') {
+            when {
+                anyOf {
+                    changeset "BackEnd/**"
+                    expression { params.BUILD_ALL == true }
+                    expression { params.BUILD_BACKEND == true }
+                }
+            }
+            steps {
+                dir('BackEnd') {
+                    sh '''
+                        echo "Building Backend..."
+                        docker build -t ${ECR_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG} \
+                                     -t ${ECR_REGISTRY}/${BACKEND_REPO}:latest \
+                                     -f Dockerfile .
+                    '''
+                }
+            }
+        }
+        
+        stage('Build GPU Worker') {
+            when {
+                anyOf {
+                    changeset "BackEnd/requirements-gpu.txt"
+                    changeset "BackEnd/Dockerfile.gpu"
+                    expression { params.BUILD_ALL == true }
+                    expression { params.BUILD_GPU == true }
+                }
+            }
+            steps {
+                dir('BackEnd') {
+                    sh '''
+                        echo "Building GPU Worker..."
+                        docker build -t ${ECR_REGISTRY}/${GPU_REPO}:${IMAGE_TAG} \
+                                     -t ${ECR_REGISTRY}/${GPU_REPO}:latest \
+                                     -f Dockerfile.gpu .
+                    '''
+                }
+            }
+        }
+        
+        stage('Security Scan') {
+            parallel {
+                stage('Scan Frontend') {
+                    when {
+                        anyOf {
+                            changeset "frontend/**"
+                            expression { params.BUILD_ALL == true }
+                            expression { params.BUILD_FRONTEND == true }
+                        }
+                    }
+                    steps {
+                        sh '''
+                            trivy image --exit-code 0 --severity HIGH,CRITICAL \
+                                --no-progress ${ECR_REGISTRY}/${FRONTEND_REPO}:${IMAGE_TAG} || true
+                        '''
+                    }
+                }
+                stage('Scan Backend') {
+                    when {
+                        anyOf {
+                            changeset "BackEnd/**"
+                            expression { params.BUILD_ALL == true }
+                            expression { params.BUILD_BACKEND == true }
+                        }
+                    }
+                    steps {
+                        sh '''
+                            trivy image --exit-code 0 --severity HIGH,CRITICAL \
+                                --no-progress ${ECR_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG} || true
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Push to ECR') {
+            parallel {
+                stage('Push Frontend') {
+                    when {
+                        anyOf {
+                            changeset "frontend/**"
+                            expression { params.BUILD_ALL == true }
+                            expression { params.BUILD_FRONTEND == true }
+                        }
+                    }
+                    steps {
+                        sh '''
+                            docker push ${ECR_REGISTRY}/${FRONTEND_REPO}:${IMAGE_TAG}
+                            docker push ${ECR_REGISTRY}/${FRONTEND_REPO}:latest
+                        '''
+                    }
+                }
+                stage('Push Backend') {
+                    when {
+                        anyOf {
+                            changeset "BackEnd/**"
+                            expression { params.BUILD_ALL == true }
+                            expression { params.BUILD_BACKEND == true }
+                        }
+                    }
+                    steps {
+                        sh '''
+                            docker push ${ECR_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG}
+                            docker push ${ECR_REGISTRY}/${BACKEND_REPO}:latest
+                        '''
+                    }
+                }
+                stage('Push GPU Worker') {
+                    when {
+                        anyOf {
+                            changeset "BackEnd/requirements-gpu.txt"
+                            changeset "BackEnd/Dockerfile.gpu"
+                            expression { params.BUILD_ALL == true }
+                            expression { params.BUILD_GPU == true }
+                        }
+                    }
+                    steps {
+                        sh '''
+                            docker push ${ECR_REGISTRY}/${GPU_REPO}:${IMAGE_TAG}
+                            docker push ${ECR_REGISTRY}/${GPU_REPO}:latest
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Update Kubeconfig') {
+            steps {
+                sh '''
+                    aws eks update-kubeconfig --name ${EKS_CLUSTER} --region ${AWS_REGION}
+                '''
+            }
+        }
+        
+        stage('Deploy to EKS') {
+            parallel {
+                stage('Deploy Frontend') {
+                    when {
+                        anyOf {
+                            changeset "frontend/**"
+                            expression { params.BUILD_ALL == true }
+                            expression { params.BUILD_FRONTEND == true }
+                        }
+                    }
+                    steps {
+                        sh '''
+                            kubectl set image deployment/frontend \
+                                frontend=${ECR_REGISTRY}/${FRONTEND_REPO}:${IMAGE_TAG} \
+                                -n ${K8S_NAMESPACE}
+                            kubectl rollout status deployment/frontend -n ${K8S_NAMESPACE} --timeout=300s
+                        '''
+                    }
+                }
+                stage('Deploy Backend') {
+                    when {
+                        anyOf {
+                            changeset "BackEnd/**"
+                            expression { params.BUILD_ALL == true }
+                            expression { params.BUILD_BACKEND == true }
+                        }
+                    }
+                    steps {
+                        sh '''
+                            kubectl set image deployment/backend \
+                                backend=${ECR_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG} \
+                                -n ${K8S_NAMESPACE}
+                            kubectl rollout status deployment/backend -n ${K8S_NAMESPACE} --timeout=300s
+                            
+                            # Also update celery workers with same backend image
+                            kubectl set image deployment/celery-worker \
+                                celery-worker=${ECR_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG} \
+                                -n ${K8S_NAMESPACE} || true
+                            kubectl set image deployment/celery-beat \
+                                celery-beat=${ECR_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG} \
+                                -n ${K8S_NAMESPACE} || true
+                        '''
+                    }
+                }
+                stage('Deploy GPU Workers') {
+                    when {
+                        anyOf {
+                            changeset "BackEnd/requirements-gpu.txt"
+                            changeset "BackEnd/Dockerfile.gpu"
+                            expression { params.BUILD_ALL == true }
+                            expression { params.BUILD_GPU == true }
+                        }
+                    }
+                    steps {
+                        sh '''
+                            kubectl set image deployment/gpu-worker \
+                                gpu-worker=${ECR_REGISTRY}/${GPU_REPO}:${IMAGE_TAG} \
+                                -n ${K8S_NAMESPACE} || true
+                            kubectl rollout status deployment/gpu-worker -n ${K8S_NAMESPACE} --timeout=600s || true
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                sh '''
+                    echo "============================================="
+                    echo "           DEPLOYMENT STATUS"
+                    echo "============================================="
+                    echo ""
+                    echo "=== Pods ==="
+                    kubectl get pods -n ${K8S_NAMESPACE}
+                    echo ""
+                    echo "=== Services ==="
+                    kubectl get svc -n ${K8S_NAMESPACE}
+                    echo ""
+                    echo "=== Ingress ==="
+                    kubectl get ingress -n ${K8S_NAMESPACE}
+                    echo ""
+                    echo "=== Databases ==="
+                    kubectl get pods -n databases
+                    echo ""
+                    echo "============================================="
+                '''
+            }
+        }
+    }
+    
+    post {
+        always {
+            sh '''
+                docker system prune -f || true
+            '''
+        }
+        success {
+            echo '✅ Pipeline completed successfully!'
+        }
+        failure {
+            echo '❌ Pipeline failed!'
+        }
+    }
+}
