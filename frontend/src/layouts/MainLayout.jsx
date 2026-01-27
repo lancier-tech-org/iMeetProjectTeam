@@ -179,7 +179,7 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
                 {/* Logo Image */}
                 <Box
                   component="img"
-                  src='/public/assests/images/IMeetPro.png'
+                  src='/assests/images/IMeetPro.png'
                   alt="IMeetPro Logo"
                   sx={{
                     height: { xs: 180, sm: 200, md: 120 },
