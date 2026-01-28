@@ -85,7 +85,7 @@ pipeline {
                         branches: [[name: '*/main']],
                         extensions: [[$class: 'CleanBeforeCheckout']],
                         userRemoteConfigs: [[
-                            url: 'https://github.com/anumularoots-svg/iMeetProject.git',
+                            url: 'https://github.com/lancier-tech-org/iMeetProjectTeam.git',
                             credentialsId: 'github-credentials'
                         ]]
                     ])
