@@ -68,7 +68,6 @@ pyppeteer==2.0.0
 python-multipart==0.0.20
 pytools==2025.2.5
 razorpay==2.0.0
-redis==5.0.1
 referencing==0.37.0
 regex==2025.10.23
 rpds-py==0.30.0
