@@ -16,8 +16,17 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+
+@csrf_exempt
+def root_health_check(request):
+    """Root level health check - lightweight, no DB queries"""
+    return JsonResponse({"status": "healthy", "service": "imeetpro-backend"})
+
 
 urlpatterns = [
+    path('health', root_health_check, name='root_health'),
     path('admin/', admin.site.urls),
     path('', include('core.WebSocketConnection.meetings')),
     path('', include('core.UserDashBoard.users')),
