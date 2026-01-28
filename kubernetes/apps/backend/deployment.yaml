@@ -1,5 +1,13 @@
 # =============================================================================
-# iMeetPro Backend Deployment - Production
+# iMeetPro Backend Deployment - Production (FIXED)
+# =============================================================================
+# Changes Made:
+# 1. Added startupProbe for slow-starting containers (PyTorch, Transformers)
+# 2. Increased initialDelaySeconds for readiness and liveness probes
+# 3. Increased timeoutSeconds for liveness probe
+# 4. Increased failureThreshold for liveness probe
+# 5. Increased memory limits to handle heavy libraries
+# 6. Added topologySpreadConstraints for better availability
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -9,6 +17,7 @@ metadata:
   labels:
     app: backend
     version: v1
+    tier: backend
 spec:
   replicas: 3
   selector:
@@ -24,19 +33,39 @@ spec:
       labels:
         app: backend
         version: v1
+        tier: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
     spec:
+      serviceAccountName: imeetpro-sa
+      
+      # Topology spread for high availability
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: backend
+      
       containers:
         - name: backend
           image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/backend:latest
           imagePullPolicy: Always
+          
           ports:
-            - containerPort: 8000
+            - name: http
+              containerPort: 8000
               protocol: TCP
+          
           envFrom:
             - configMapRef:
                 name: backend-config
             - secretRef:
                 name: backend-secrets
+          
           env:
             - name: POD_NAME
               valueFrom:
@@ -46,46 +75,135 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # Environment variables from your describe output
+            - name: AWS_STORAGE_BUCKET_NAME
+              value: "imeetpro-prod-recordings"
+            - name: MONGO_URI
+              value: "mongodb://mongodb.databases.svc.cluster.local:27017/connectlydb"
+            - name: INSIGHTFACE_HOME
+              value: "/tmp/.insightface"
+            - name: HOME
+              value: "/tmp"
+            - name: MPLCONFIGDIR
+              value: "/tmp/.matplotlib"
+            - name: AWS_S3_BUCKET
+              value: "imeetpro-prod-recordings"
+            - name: MONGO_DB
+              value: "connectlydb"
+            - name: LIVEKIT_API_KEY
+              value: "APIJH3qNN5AQwME"
+            - name: LIVEKIT_API_SECRET
+              value: "S4kS46BldtdCTGy3900984KBSHMfvhKKRue6xXdwz5m"
+            - name: LIVEKIT_API_URL
+              value: "https://imeetpro-eqbe3stz.livekit.cloud"
+            - name: CACHE_HAND_RAISE_HOST
+              value: "redis.databases.svc.cluster.local"
+            - name: CACHE_CHAT_HOST
+              value: "redis.databases.svc.cluster.local"
+            - name: DEFAULT_REDIS_HOST
+              value: "redis.databases.svc.cluster.local"
+            - name: CACHE_REACTIONS_HOST
+              value: "redis.databases.svc.cluster.local"
+            - name: LIVEKIT_URL
+              value: "wss://imeetpro-eqbe3stz.livekit.cloud"
+            - name: LIVEKIT_WSS_URL
+              value: "wss://imeetpro-eqbe3stz.livekit.cloud"
+          
           resources:
             requests:
-              memory: "1.5Gi"
-              cpu: "250m"
-            limits:
               memory: "2Gi"
-              cpu: "1000m"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          
+          # =================================================================
+          # STARTUP PROBE - For slow-starting containers
+          # =================================================================
+          # This probe runs FIRST and gives the app up to 5 minutes to start
+          # (failureThreshold * periodSeconds = 30 * 10 = 300 seconds)
+          # Once startup probe succeeds, liveness and readiness probes take over
+          # =================================================================
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+            successThreshold: 1
+          
+          # =================================================================
+          # READINESS PROBE - Is the container ready to receive traffic?
+          # =================================================================
+          # Only runs after startupProbe succeeds
+          # Removes pod from service endpoints if it fails
+          # =================================================================
           readinessProbe:
             httpGet:
-              path: /health              
+              path: /health
               port: 8000
-            initialDelaySeconds: 60     
+            initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 5           
-            failureThreshold: 3          
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
           
+          # =================================================================
+          # LIVENESS PROBE - Is the container still alive?
+          # =================================================================
+          # Only runs after startupProbe succeeds
+          # Restarts container if it fails
+          # More lenient than readiness probe
+          # =================================================================
           livenessProbe:
             httpGet:
-              path: /health              
+              path: /health
               port: 8000
-            initialDelaySeconds: 90      
+            initialDelaySeconds: 10
             periodSeconds: 30
-            timeoutSeconds: 5            
-            failureThreshold: 3         
+            timeoutSeconds: 10
+            failureThreshold: 5
+            successThreshold: 1
+          
           volumeMounts:
             - name: logs
               mountPath: /app/logs
             - name: tmp
               mountPath: /tmp
+      
       volumes:
         - name: logs
           emptyDir: {}
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 2Gi
+      
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+      
+      # Graceful shutdown
+      terminationGracePeriodSeconds: 60
+      
+      # Tolerations for node issues
+      tolerations:
+        - key: "node.kubernetes.io/not-ready"
+          operator: "Exists"
+          effect: "NoExecute"
+          tolerationSeconds: 300
+        - key: "node.kubernetes.io/unreachable"
+          operator: "Exists"
+          effect: "NoExecute"
+          tolerationSeconds: 300
+
 ---
+# =============================================================================
+# Backend Service
+# =============================================================================
 apiVersion: v1
 kind: Service
 metadata:
@@ -102,3 +220,48 @@ spec:
       protocol: TCP
   selector:
     app: backend
+
+---
+# =============================================================================
+# Horizontal Pod Autoscaler (Optional but recommended)
+# =============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: imeetpro
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# =============================================================================
+# Pod Disruption Budget - Ensures minimum availability during updates
+# =============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend-pdb
+  namespace: imeetpro
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: backend
