@@ -4578,6 +4578,14 @@ def get_summary_content(request, id):
         logger.error(f"Traceback: {traceback.format_exc()}")
         return JsonResponse({"error": str(e)}, status=500)
 
+@require_http_methods(["GET"])
+def health_check(request):
+    """Lightweight health check endpoint - NO DATABASE QUERIES"""
+    return JsonResponse({
+        "status": "healthy",
+        "service": "imeetpro-backend"
+    })
+    
 # === URLS CONFIGURATION ===
 urlpatterns = [
     # Video CRUD operations (Original APIs converted to AWS)
@@ -4615,4 +4623,5 @@ urlpatterns = [
     path('api/recordings/store-custom-name', store_custom_recording_name, name='store_custom_recording_name'),
     path('api/videos/transcript-content/<str:id>', get_transcript_content, name='get_transcript_content'),
     path('api/videos/summary-content/<str:id>', get_summary_content, name='get_summary_content'),
+    path('health', health_check, name='health'),
 ]
