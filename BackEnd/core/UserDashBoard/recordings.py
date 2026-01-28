@@ -24,20 +24,40 @@ except ImportError:
     Source = None
     print("Warning: graphviz not available")
 
-# PyTorch - wrap in try/except (GPU features optional)
-try:
-    import torch
-except ImportError:
-    torch = None
-    print("Warning: torch not available - GPU features disabled")
+# =============================================================================
+# LAZY LOADING FOR HEAVY IMPORTS - FIX FOR SLOW STARTUP
+# =============================================================================
+_torch = None
+_MarianMTModel = None
+_MarianTokenizer = None
 
-# Transformers - wrap in try/except (GPU features optional)
-try:
-    from transformers import MarianMTModel, MarianTokenizer
-except ImportError:
-    MarianMTModel = None
-    MarianTokenizer = None
-    print("Warning: transformers not available")
+def get_torch():
+    """Lazy load PyTorch only when needed"""
+    global _torch
+    if _torch is None:
+        try:
+            import torch
+            _torch = torch
+            print(f"PyTorch loaded. GPU available: {torch.cuda.is_available()}")
+        except ImportError:
+            _torch = False
+            print("Warning: torch not available - GPU features disabled")
+    return _torch if _torch else None
+
+def get_transformers():
+    """Lazy load transformers only when needed"""
+    global _MarianMTModel, _MarianTokenizer
+    if _MarianMTModel is None:
+        try:
+            from transformers import MarianMTModel, MarianTokenizer
+            _MarianMTModel = MarianMTModel
+            _MarianTokenizer = MarianTokenizer
+            print("Transformers loaded successfully")
+        except ImportError:
+            _MarianMTModel = False
+            _MarianTokenizer = False
+            print("Warning: transformers not available")
+    return _MarianMTModel if _MarianMTModel else None, _MarianTokenizer if _MarianTokenizer else None
 
 import logging
 from urllib.parse import quote_plus
@@ -71,12 +91,7 @@ from core.WebSocketConnection.notifications import (
 )
 import pytz  # For timezone handling in notifications
 
-if torch:
-    # Check GPU availability safely
-    if torch is not None:
-        print("Using GPU:", torch.cuda.is_available())
-    else:
-        print("PyTorch not available - GPU features disabled")
+
 
 # === SSL CERTIFICATE FIX FOR HUGGINGFACE & GOOGLE TRANSLATE ===
 import ssl
@@ -1630,7 +1645,8 @@ class LocalIndianLanguageTranslator:
     def __init__(self):
         self.models = {}
         self.tokenizers = {}
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        torch = get_torch()
+        self.device = "cuda" if torch and torch.cuda.is_available() else "cpu"
         
         # Model names for Indian languages
         self.model_names = {
@@ -1651,6 +1667,10 @@ class LocalIndianLanguageTranslator:
                 raise Exception(f"No model available for {lang}")
             
             logging.info(f"📥 Loading {lang} translation model: {model_name}")
+            
+            MarianMTModel, MarianTokenizer = get_transformers()
+            if not MarianMTModel or not MarianTokenizer:
+                raise Exception("Transformers library not available")
             
             self.tokenizers[lang] = MarianTokenizer.from_pretrained(model_name)
             self.models[lang] = MarianMTModel.from_pretrained(model_name)
@@ -1689,6 +1709,8 @@ class LocalIndianLanguageTranslator:
                 inputs = {k: v.cuda() for k, v in inputs.items()}
             
             # Generate translations
+            # Generate translations
+            torch = get_torch()
             with torch.no_grad():  # Disable gradient calculation for inference
                 outputs = self.models[target_lang].generate(
                     **inputs,
@@ -1750,7 +1772,8 @@ class LocalIndianLanguageTranslator:
         self.models.clear()
         self.tokenizers.clear()
         
-        if torch.cuda.is_available():
+        torch = get_torch()
+        if torch and torch.cuda.is_available():
             torch.cuda.empty_cache()
 
 def process_video_sync(video_path: str, meeting_id: str, user_id: str):
@@ -4579,12 +4602,20 @@ def get_summary_content(request, id):
         return JsonResponse({"error": str(e)}, status=500)
 
 @require_http_methods(["GET"])
+@csrf_exempt
 def health_check(request):
     """Lightweight health check endpoint - NO DATABASE QUERIES"""
     return JsonResponse({
         "status": "healthy",
-        "service": "imeetpro-backend"
+        "service": "imeetpro-backend",
+        "timestamp": datetime.now().isoformat()
     })
+
+
+# Alias for root-level health check
+def health(request):
+    """Root level health check - alias for health_check"""
+    return health_check(request)
     
 # === URLS CONFIGURATION ===
 urlpatterns = [
@@ -4624,4 +4655,5 @@ urlpatterns = [
     path('api/videos/transcript-content/<str:id>', get_transcript_content, name='get_transcript_content'),
     path('api/videos/summary-content/<str:id>', get_summary_content, name='get_summary_content'),
     path('health', health_check, name='health'),
+    path('api/health', health_check, name='api_health'),
 ]
