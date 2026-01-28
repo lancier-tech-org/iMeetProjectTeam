@@ -2,7 +2,6 @@
 # iMeetPro Backend - Requirements (No GPU)
 # =============================================================================
 
-APScheduler==3.11.2
 Mako==1.3.10
 PySocks==1.7.1
 Werkzeug==3.1.3
@@ -27,8 +26,6 @@ duckduckgo_search==8.0.4
 exceptiongroup==1.3.0
 fastapi==0.115.14
 fonttools==4.58.4
-graphviz==0.21
-groq==1.0.0
 h11==0.16.0
 hf-xet==1.1.10
 importlib_metadata==8.7.0
@@ -39,9 +36,6 @@ jmespath==1.0.1
 jsonschema-specifications==2025.9.1
 jsonschema==4.25.1
 kiwisolver==1.4.8
-livekit-api==1.0.7
-livekit-protocol==1.1.0
-livekit==1.0.19
 matplotlib==3.10.3
 msgpack==1.1.1
 msrest==0.7.1
@@ -50,7 +44,6 @@ mssql-django==1.5
 mysql-connector-python-rf==2.2.2
 mysql==0.0.3
 obsws-python==1.8.0
-openai==2.14.0
 openapi==2.0.0
 outcome==1.3.0.post0
 platformdirs==4.5.0
