@@ -1,13 +1,14 @@
 // =============================================================================
 // iMeetPro CI/CD Pipeline - OPTIMIZED Version
 // =============================================================================
-// Build time: ~15-20 minutes (instead of 50 minutes!)
+// Build time: ~15-20 minutes (Frontend/Backend), ~45-60 minutes (GPU Worker)
 // Key optimizations:
 //   - Docker BuildKit enabled
 //   - ECR cache layer usage
 //   - Pre-pull cache images
 //   - Parallel push operations
 //   - Skip unchanged components
+//   - Increased timeout for GPU builds
 // =============================================================================
 
 pipeline {
@@ -39,7 +40,8 @@ pipeline {
     }
 
     options {
-        timeout(time: 30, unit: 'MINUTES')
+        // ========== FIXED: Increased timeout from 30 to 90 minutes ==========
+        timeout(time: 90, unit: 'MINUTES')
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '10'))
         timestamps()
@@ -225,6 +227,10 @@ pipeline {
                 
                 stage('Build GPU Worker') {
                     when { expression { params.DEPLOY_GPU_WORKERS } }
+                    // ========== FIXED: Separate timeout for GPU Worker ==========
+                    options {
+                        timeout(time: 60, unit: 'MINUTES')
+                    }
                     steps {
                         script {
                             echo "🏗️ Building GPU Worker (using base image)..."
