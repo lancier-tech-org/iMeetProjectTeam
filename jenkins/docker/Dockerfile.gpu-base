@@ -1,24 +1,16 @@
 # =============================================================================
 # iMeetPro GPU Worker BASE Image - BUILD THIS ONCE!
 # =============================================================================
-# This image contains all heavy dependencies (CUDA, PyTorch, face_recognition)
-# Build once and push to ECR, then use as base for GPU worker builds
-# 
-# Build command (run ONCE manually):
-#   docker build -t 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/gpu-worker-base:v1 \
-#       -f Dockerfile.gpu-base .
-#   docker push 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/gpu-worker-base:v1
-# =============================================================================
-
 FROM nvidia/cuda:11.8.0-devel-ubuntu22.04
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:$PATH \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
-# Install ALL system dependencies (cached in base image)
+# Install ALL system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
     python3.11-dev \
@@ -52,12 +44,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python && \
     ln -sf /usr/bin/python3.11 /usr/bin/python3
 
-# Upgrade pip
+# Upgrade pip and install build tools
 RUN python -m pip install --upgrade pip setuptools wheel
-
-# =============================================================================
-# Install ALL Python packages here (CACHED - biggest time saver!)
-# =============================================================================
 
 # Core Django/Backend packages
 RUN pip install --no-cache-dir \
@@ -76,7 +64,7 @@ RUN pip install --no-cache-dir \
     boto3 \
     python-dotenv
 
-# GPU/ML packages (SLOWEST - now cached!)
+# GPU/ML packages
 RUN pip install --no-cache-dir \
     torch==2.0.1+cu118 \
     torchvision==0.15.2+cu118 \
@@ -84,22 +72,23 @@ RUN pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cu118
 
 # =============================================================================
-# CRITICAL: dlib build fix
-# pip installs a broken cmake wrapper that overrides system cmake
-# Solution: Set PATH to prioritize /usr/bin (system cmake) over /usr/local/bin
+# DLIB FIX: Remove broken pip cmake, install dlib build deps, then build dlib
 # =============================================================================
-ENV PATH=/usr/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/bin
+RUN pip install --no-cache-dir numpy scipy scikit-learn opencv-python-headless
 
-# Verify system cmake is being used
+# Install dlib build dependencies first
+RUN pip install --no-cache-dir scikit-build
+
+# Remove any pip cmake wrapper that might exist
+RUN rm -f /usr/local/bin/cmake || true
+
+# Verify we're using system cmake
 RUN which cmake && cmake --version
 
-# Face recognition & CV packages (dlib will now use system cmake)
-RUN pip install --no-cache-dir opencv-python-headless numpy scipy scikit-learn
+# Build dlib with --no-build-isolation to use system cmake
+RUN pip install --no-cache-dir --no-build-isolation dlib
 
-# Install dlib separately with explicit cmake path
-RUN CMAKE_PREFIX_PATH=/usr pip install --no-cache-dir dlib
-
-# Install face_recognition (dlib is already installed)
+# Now install face_recognition (dlib is already installed)
 RUN pip install --no-cache-dir face_recognition
 
 # Video processing
