@@ -431,12 +431,14 @@ pipeline {
                     """
                     
                     // Quick health checks for prod
-                    if (params.ENVIRONMENT == 'prod') {
-                        sh '''
-                            sleep 10
-                            curl -sf --max-time 10 https://www.lancieretech.com -o /dev/null && echo "✅ Frontend: OK" || echo "⚠️ Frontend: Check needed"
-                            curl -sf --max-time 10 https://api.lancieretech.com/api/videos/lists -o /dev/null && echo "✅ Backend API: OK" || echo "⚠️ Backend API: Check needed"
-                        '''
+                    script {
+                        if (params.ENVIRONMENT == 'prod') {
+                            sh '''
+                                sleep 10
+                                curl -sf --max-time 10 https://www.lancieretech.com -o /dev/null && echo "✅ Frontend: OK" || echo "⚠️ Frontend: Check needed"
+                                curl -sf --max-time 10 https://api.lancieretech.com/api/videos/lists -o /dev/null && echo "✅ Backend API: OK" || echo "⚠️ Backend API: Check needed"
+                            '''
+                        }
                     }
                 }
             }
