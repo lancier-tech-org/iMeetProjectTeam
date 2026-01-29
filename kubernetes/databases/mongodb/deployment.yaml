@@ -1,5 +1,7 @@
 # =============================================================================
-# MongoDB Deployment for iMeetPro - Production
+# MongoDB Deployment for iMeetPro - Production (FINAL CORRECTED)
+# =============================================================================
+# Path: kubernetes/databases/mongodb/deployment.yaml
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -56,10 +58,9 @@ spec:
             timeoutSeconds: 10
       volumes:
         - name: mongo-data
-          emptyDir: {}
-          # For production with persistent storage:
-          # persistentVolumeClaim:
-          #   claimName: mongodb-pvc
+          persistentVolumeClaim:
+            claimName: mongodb-pvc
+
 ---
 apiVersion: v1
 kind: Service
@@ -76,17 +77,17 @@ spec:
       protocol: TCP
   selector:
     app: mongodb
+
 ---
-# Uncomment for persistent storage
-# apiVersion: v1
-# kind: PersistentVolumeClaim
-# metadata:
-#   name: mongodb-pvc
-#   namespace: databases
-# spec:
-#   accessModes:
-#     - ReadWriteOnce
-#   resources:
-#     requests:
-#       storage: 20Gi
-#   storageClassName: gp2
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongodb-pvc
+  namespace: databases
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: gp2
