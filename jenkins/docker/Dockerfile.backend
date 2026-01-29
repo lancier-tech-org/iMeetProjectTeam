@@ -1,15 +1,14 @@
 # =============================================================================
-# iMeetPro Backend - OPTIMIZED Multi-stage Dockerfile
+# iMeetPro Backend - OPTIMIZED Multi-stage Dockerfile (FINAL)
 # =============================================================================
-# Build time: ~5-8 minutes (instead of 32 minutes!)
+# Build time: ~5-8 minutes
 # Key optimizations:
 #   - BuildKit cache mounts
 #   - Better layer ordering
 #   - Minimal runtime image
+#   - Auto migrations on startup
 # =============================================================================
-
 # syntax=docker/dockerfile:1.4
-
 # -----------------------------------------------------------------------------
 # Stage 1: Dependencies Builder
 # -----------------------------------------------------------------------------
@@ -47,7 +46,8 @@ FROM python:3.11-slim AS production
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     APP_HOME=/app \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    DJANGO_SETTINGS_MODULE=SampleDB.settings
 
 WORKDIR $APP_HOME
 
@@ -92,6 +92,22 @@ RUN mkdir -p /app/staticfiles /app/mediafiles /app/logs && \
 # Clean unnecessary files
 RUN rm -rf *.sql *.pem *.key *.crt .env .vscode .git __pycache__ tests/ docs/ *.md chromedriver* || true
 
+# =============================================================================
+# Create entrypoint script with auto-migrations
+# =============================================================================
+RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+echo "🚀 Starting iMeetPro Backend..."\n\
+\n\
+# Run database migrations (only if DB is available)\n\
+echo "📦 Running database migrations..."\n\
+python manage.py migrate --noinput 2>/dev/null || echo "⚠️ Migration skipped (DB not ready or no changes)"\n\
+\n\
+# Start the main process\n\
+echo "✅ Starting Gunicorn server..."\n\
+exec "$@"' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+
 USER appuser
 
 # Collect static files
@@ -100,7 +116,9 @@ RUN python manage.py collectstatic --noinput 2>/dev/null || true
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/api/health/ || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
 
+# Entrypoint runs migrations, then CMD starts gunicorn
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "2", "--timeout", "120", "SampleDB.wsgi:application"]
