@@ -16,7 +16,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     CUDA_HOME=/usr/local/cuda \
-    PATH=/usr/local/cuda/bin:$PATH \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 # Install ALL system dependencies (cached in base image)
@@ -84,22 +83,24 @@ RUN pip install --no-cache-dir \
     torchaudio==2.0.2+cu118 \
     --index-url https://download.pytorch.org/whl/cu118
 
-# Remove any broken pip cmake and ensure system cmake is used
-RUN pip uninstall -y cmake 2>/dev/null || true && \
-    rm -f /usr/local/bin/cmake && \
-    ln -sf /usr/bin/cmake /usr/local/bin/cmake
+# =============================================================================
+# CRITICAL: dlib build fix
+# pip installs a broken cmake wrapper that overrides system cmake
+# Solution: Set PATH to prioritize /usr/bin (system cmake) over /usr/local/bin
+# =============================================================================
+ENV PATH=/usr/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/bin
 
-# Verify cmake is working
-RUN cmake --version
+# Verify system cmake is being used
+RUN which cmake && cmake --version
 
-# Face recognition & CV packages
-RUN pip install --no-cache-dir \
-    opencv-python-headless \
-    dlib \
-    face_recognition \
-    numpy \
-    scipy \
-    scikit-learn
+# Face recognition & CV packages (dlib will now use system cmake)
+RUN pip install --no-cache-dir opencv-python-headless numpy scipy scikit-learn
+
+# Install dlib separately with explicit cmake path
+RUN CMAKE_PREFIX_PATH=/usr pip install --no-cache-dir dlib
+
+# Install face_recognition (dlib is already installed)
+RUN pip install --no-cache-dir face_recognition
 
 # Video processing
 RUN pip install --no-cache-dir \
