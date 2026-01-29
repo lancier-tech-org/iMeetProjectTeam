@@ -9,7 +9,7 @@ metadata:
 data:
   # Django Settings
   DEBUG: "False"
-  DJANGO_SETTINGS_MODULE: "config.settings.production"
+  DJANGO_SETTINGS_MODULE: "SampleDB.settings"
   ALLOWED_HOSTS: "*"
   CACHE_CHAT_HOST: "redis.databases.svc.cluster.local"
   CACHE_HAND_RAISE_HOST: "redis.databases.svc.cluster.local"
