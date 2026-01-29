@@ -84,8 +84,15 @@ RUN pip install --no-cache-dir \
     torchaudio==2.0.2+cu118 \
     --index-url https://download.pytorch.org/whl/cu118
 
+# Remove any broken pip cmake and ensure system cmake is used
+RUN pip uninstall -y cmake 2>/dev/null || true && \
+    rm -f /usr/local/bin/cmake && \
+    ln -sf /usr/bin/cmake /usr/local/bin/cmake
+
+# Verify cmake is working
+RUN cmake --version
+
 # Face recognition & CV packages
-# Note: cmake is already installed via apt-get above (system cmake works, pip cmake is broken)
 RUN pip install --no-cache-dir \
     opencv-python-headless \
     dlib \
