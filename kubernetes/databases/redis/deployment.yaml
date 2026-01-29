@@ -1,5 +1,7 @@
 # =============================================================================
-# Redis Deployment for iMeetPro - Production
+# Redis Deployment for iMeetPro - Production (FINAL CORRECTED)
+# =============================================================================
+# Path: kubernetes/databases/redis/deployment.yaml
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -59,10 +61,9 @@ spec:
             timeoutSeconds: 5
       volumes:
         - name: redis-data
-          emptyDir: {}
-          # For production with persistent storage:
-          # persistentVolumeClaim:
-          #   claimName: redis-pvc
+          persistentVolumeClaim:
+            claimName: redis-pvc
+
 ---
 apiVersion: v1
 kind: Service
@@ -79,3 +80,17 @@ spec:
       protocol: TCP
   selector:
     app: redis
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: databases
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: gp2
