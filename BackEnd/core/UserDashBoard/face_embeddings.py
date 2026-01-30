@@ -59,16 +59,38 @@ except ImportError as e:
     print(f"   Error: {e}")
     print("   Face recognition features will be disabled")
 
-# Configure logging
+import os
+import logging
+
+# 1. Resolve log directory safely
+log_dir = os.environ.get("LOG_DIR", "/tmp/logs")
+os.makedirs(log_dir, exist_ok=True)
+
+face_log_path = os.path.join(log_dir, "face_embeddings.log")
+
+# 2. Create logger
 logger = logging.getLogger("face_embeddings")
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/face_embeddings.log'),
-        logging.StreamHandler()
-    ]
+logger.setLevel(logging.INFO)
+logger.propagate = False  # VERY IMPORTANT (prevents duplicate logs)
+
+# 3. Formatter
+formatter = logging.Formatter(
+    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+
+# 4. File handler
+file_handler = logging.FileHandler(face_log_path)
+file_handler.setFormatter(formatter)
+
+# 5. Console handler (for kubectl logs / docker logs)
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+
+# 6. Attach handlers (avoid duplicates)
+if not logger.handlers:
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
+
 
 if FACE_RECOGNITION_ENABLED:
     logger.info("✅ Using shared face model from ../FaceAuth/face_model_shared.py")
