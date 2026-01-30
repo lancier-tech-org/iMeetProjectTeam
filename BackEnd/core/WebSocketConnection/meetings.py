@@ -124,7 +124,7 @@ FORBIDDEN_STATUS = 403
 NOT_FOUND_STATUS = 404
 SERVER_ERROR_STATUS = 500
 
-LOG_FILE_PATH = 'meetings_debug.log'
+LOG_FILE_PATH = '/tmp/logs/meetings_debug.log'
 LOG_LEVEL = logging.DEBUG
 LOG_FORMAT = '%(asctime)s %(levelname)s %(message)s'
 

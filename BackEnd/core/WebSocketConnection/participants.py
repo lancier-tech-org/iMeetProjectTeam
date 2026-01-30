@@ -188,7 +188,7 @@ BAD_REQUEST_STATUS = 400
 NOT_FOUND_STATUS = 404
 SERVER_ERROR_STATUS = 500
 
-LOG_FILE_PATH = 'participants_debug.log'
+LOG_FILE_PATH = '/tmp/logs/participants_debug.log'
 LOG_LEVEL = logging.DEBUG
 LOG_FORMAT = '%(asctime)s %(levelname)s %(message)s'
 
