@@ -1,6 +1,6 @@
 # core/WebSocketConnection/meetings.py
 # ALL YOUR EXISTING CODE + LiveKit functionality
-from core.WebSocketConnection import enhanced_logging_config
+# from core.WebSocketConnection import enhanced_logging_config
 from django.db import connection, transaction, models
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods

@@ -1,5 +1,5 @@
 # cache_only_chat.py - Fixed Enhanced Ephemeral Chat System with Private File Upload
-from core.WebSocketConnection import enhanced_logging_config
+# from core.WebSocketConnection import enhanced_logging_config
 import redis
 import json
 import time

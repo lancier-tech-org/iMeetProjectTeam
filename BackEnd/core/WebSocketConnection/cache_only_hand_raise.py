@@ -1,5 +1,5 @@
 # core/WebSocketConnection/cache_only_hand_raise.py - Ephemeral Hand Raise System (Cache Only, No Database)
-from core.WebSocketConnection import enhanced_logging_config
+# from core.WebSocketConnection import enhanced_logging_config
 import redis
 import json
 import os

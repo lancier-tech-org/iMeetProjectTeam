@@ -1,5 +1,5 @@
 # participants.py - Enhanced with Full LiveKit Integration
-from core.WebSocketConnection import enhanced_logging_config
+# from core.WebSocketConnection import enhanced_logging_config
 from django.db import connection, transaction
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
