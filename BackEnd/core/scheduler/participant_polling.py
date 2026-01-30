@@ -18,7 +18,6 @@ from django.db import connection
 from django.utils import timezone
 
 # ✅ FIXED: Import from correct location - core.WebSocketConnection.meetings
-from core.WebSocketConnection.meetings import livekit_service
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +32,10 @@ def sync_participants_polling():
     3. Marks missing participants as left (stores leave time only)
     4. Your API functions will handle duration calculation
     """
+    from core.WebSocketConnection.meetings import livekit_service
+
     try:
-        # logger.info("🔄 [POLLING-10s] Starting participant sync cycle...")
+        logger.debug("🔄 [POLLING-10s] Starting participant sync cycle...")
         
         sync_results = {
             'meetings_checked': 0,
@@ -57,7 +58,7 @@ def sync_participants_polling():
             active_meetings = cursor.fetchall()
             sync_results['meetings_checked'] = len(active_meetings)
             
-            # logger.info(f"[POLLING] Found {len(active_meetings)} active meetings to check")
+            logger.debug(f"[POLLING] Found {len(active_meetings)} active meetings to check")
             
             # ===== STEP 2: FOR EACH MEETING, CHECK PARTICIPANTS =====
             for meeting_id, room_name, meeting_status in active_meetings:
@@ -67,7 +68,8 @@ def sync_participants_polling():
                         livekit_participants = livekit_service.list_participants(room_name)
                         livekit_identities = {p['identity'] for p in livekit_participants}
                         
-                        # logger.info(f"[POLLING] Meeting {meeting_id}: LiveKit has {len(livekit_identities)} participants")
+                        logger.debug(f"[POLLING] Meeting {meeting_id}: LiveKit has {len(livekit_identities)} participants")
+
                     except Exception as lk_error:
                         logger.warning(f"[POLLING] Could not fetch from LiveKit for meeting {meeting_id}: {lk_error}")
                         continue
@@ -82,7 +84,7 @@ def sync_participants_polling():
                     db_participants = cursor.fetchall()
                     sync_results['participants_checked'] += len(db_participants)
                     
-                    # logger.info(f"[POLLING] Meeting {meeting_id}: DB has {len(db_participants)} active participants")
+                    logger.debug(f"[POLLING] Meeting {meeting_id}: DB has {len(db_participants)} active participants")
                     
                     # ===== C: FIND WHO IS MISSING FROM LIVEKIT =====
                     for participant_row in db_participants:
@@ -93,18 +95,17 @@ def sync_participants_polling():
                         is_still_in_livekit = False
                         
                         for livekit_identity in livekit_identities:
-                            # Extract user_id from identity: "user_456_1234567890_1234"
                             try:
-                                parts = livekit_identity.split('_')
-                                if parts[0] == 'user' and parts[1] == str(user_id):
+                                prefix, identity_user_id, *_ = livekit_identity.split('_')
+                                if prefix == 'user' and identity_user_id == str(user_id):
                                     is_still_in_livekit = True
                                     break
-                            except:
+                            except ValueError:
                                 continue
-                        
+
                         if not is_still_in_livekit:
                             # ===== THIS USER DISCONNECTED =====
-                            # logger.info(f"[POLLING] ❌ User {user_id} in DB but NOT in LiveKit - marking as left")
+                            logger.info(f"[POLLING] ❌ User {user_id} in DB but NOT in LiveKit - marking as left")
                             
                             try:
                                 _mark_participant_as_left(
@@ -124,13 +125,13 @@ def sync_participants_polling():
                     sync_results['errors'].append(f"Meeting {meeting_id}: {str(meeting_error)}")
                     continue
         
-#         logger.info(f"""
-# ✅ [POLLING] Sync cycle completed:
-#    - Meetings checked: {sync_results['meetings_checked']}
-#    - Participants checked: {sync_results['participants_checked']}
-#    - Marked as left: {sync_results['participants_marked_left']}
-#    - Errors: {len(sync_results['errors'])}
-#         """)
+        logger.info(f"""
+✅ [POLLING] Sync cycle completed:
+   - Meetings checked: {sync_results['meetings_checked']}
+   - Participants checked: {sync_results['participants_checked']}
+   - Marked as left: {sync_results['participants_marked_left']}
+   - Errors: {len(sync_results['errors'])}
+        """)
         
         return sync_results
         
@@ -174,17 +175,17 @@ def _mark_participant_as_left(cursor, participant_id, user_id, leave_times_json)
         
         # ===== UPDATE DATABASE: ONLY STORE LEAVE TIME =====
         cursor.execute("""
-            UPDATE tbl_Participants
-            SET Is_Currently_Active = FALSE,
-                Leave_Times = %s
-            WHERE ID = %s
-        """, [
-            json.dumps(leave_times),
-            participant_id
-        ])
-        
-        # logger.info(f"✅ [POLLING] User {user_id} marked as left - Leave_Times stored in database")
-        # logger.info(f"   Leave time: {leave_time_str}")
+                UPDATE tbl_Participants
+                SET Is_Currently_Active = FALSE,
+                    Leave_Times = %s
+                WHERE ID = %s AND Is_Currently_Active = TRUE
+            """, [
+                json.dumps(leave_times),
+                participant_id
+            ])
+
+        logger.info(f"✅ [POLLING] User {user_id} marked as left - Leave_Times stored in database")
+        logger.info(f"   Leave time: {leave_time_str}")
     
     else:
         logger.info(f"[POLLING] Leave time already recorded for user {user_id}")
