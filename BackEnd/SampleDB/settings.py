@@ -271,6 +271,7 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "")
 
 # ======== LOGGING CONFIGURATION - DYNAMIC LOG_DIR (K8s-safe) ========
+# ======== LOGGING CONFIGURATION - CONSOLE ONLY (K8s Safe) ========
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -289,26 +290,6 @@ LOGGING = {
             'class': 'logging.StreamHandler',
             'formatter': 'verbose',
         },
-        'file': {
-            'class': 'logging.FileHandler',
-            'filename': os.path.join(LOG_DIR, 'django.log'),
-            'formatter': 'verbose',
-        },
-        'meetings_file': {
-            'class': 'logging.FileHandler',
-            'filename': os.path.join(LOG_DIR, 'meetings.log'),
-            'formatter': 'verbose',
-        },
-        'scheduler_file': {
-            'class': 'logging.FileHandler',
-            'filename': os.path.join(LOG_DIR, 'scheduler.log'),
-            'formatter': 'verbose',
-        },
-        'celery_file': {
-            'class': 'logging.FileHandler',
-            'filename': os.path.join(LOG_DIR, 'celery.log'),
-            'formatter': 'verbose',
-        },
     },
     'root': {
         'handlers': ['console'],
@@ -321,22 +302,22 @@ LOGGING = {
             'propagate': False,
         },
         'django.request': {
-            'handlers': ['console', 'file'],
+            'handlers': ['console'],
             'level': 'INFO',
             'propagate': False,
         },
         'meetings': {
-            'handlers': ['meetings_file', 'console'],
+            'handlers': ['console'],
             'level': 'INFO',
             'propagate': False,
         },
         'core.scheduler': {
-            'handlers': ['scheduler_file', 'console'],
+            'handlers': ['console'],
             'level': 'INFO',
             'propagate': False,
         },
         'celery': {
-            'handlers': ['celery_file', 'console'],
+            'handlers': ['console'],
             'level': 'INFO',
             'propagate': False,
         },
