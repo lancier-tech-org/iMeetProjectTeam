@@ -1,14 +1,10 @@
 // =============================================================================
-// iMeetPro CI/CD Pipeline - OPTIMIZED Version
+// iMeetPro CI/CD Pipeline - FIXED Version
 // =============================================================================
-// Build time: ~15-20 minutes (Frontend/Backend), ~45-60 minutes (GPU Worker)
-// Key optimizations:
-//   - Docker BuildKit enabled
-//   - ECR cache layer usage
-//   - Pre-pull cache images
-//   - Parallel push operations
-//   - Skip unchanged components
-//   - Increased timeout for GPU builds
+// FIXES APPLIED:
+//   - Added kubectl apply BEFORE set image (handles missing deployments)
+//   - Added K8s resources setup stage (namespace, configmaps, secrets)
+//   - Pipeline works for BOTH fresh clusters AND updates
 // =============================================================================
 
 pipeline {
@@ -33,14 +29,13 @@ pipeline {
         // Image Tag
         IMAGE_TAG = "${env.BUILD_NUMBER}"
         
-        // ========== OPTIMIZATION: Enable BuildKit ==========
+        // Enable BuildKit
         DOCKER_BUILDKIT = '1'
         COMPOSE_DOCKER_CLI_BUILD = '1'
         BUILDKIT_PROGRESS = 'plain'
     }
 
     options {
-        // ========== FIXED: Increased timeout from 30 to 90 minutes ==========
         timeout(time: 90, unit: 'MINUTES')
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '10'))
@@ -140,7 +135,35 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 3: Pull Cache Images (Parallel) - OPTIMIZATION
+        // Stage 3: Setup K8s Resources (NEW - CRITICAL FIX)
+        // =====================================================================
+        stage('Setup K8s Resources') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                    sh """
+                        echo "🔧 Setting up Kubernetes resources..."
+                        
+                        # Create namespace if not exists
+                        kubectl apply -f kubernetes/namespaces/namespaces.yaml || true
+                        
+                        # Apply secrets (if file exists)
+                        if [ -f kubernetes/secrets/secrets.yaml ]; then
+                            kubectl apply -f kubernetes/secrets/secrets.yaml || true
+                        fi
+                        
+                        # Apply ingress (if file exists)
+                        if [ -f kubernetes/ingress/ingress.yaml ]; then
+                            kubectl apply -f kubernetes/ingress/ingress.yaml -n ${env.NAMESPACE} || true
+                        fi
+                        
+                        echo "✅ K8s resources ready!"
+                    """
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 4: Pull Cache Images (Parallel)
         // =====================================================================
         stage('Pull Cache') {
             when {
@@ -170,7 +193,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 4: Build Docker Images (Parallel with BuildKit)
+        // Stage 5: Build Docker Images (Parallel with BuildKit)
         // =====================================================================
         stage('Build Images') {
             parallel {
@@ -182,7 +205,6 @@ pipeline {
                             def cacheFlag = params.FORCE_REBUILD ? "" : "--cache-from ${FRONTEND_REPO}:latest"
                             
                             sh """
-                                # Copy .dockerignore
                                 cp jenkins/docker/.dockerignore.frontend frontend/.dockerignore || true
                                 cp -r jenkins/docker/nginx frontend/ || true
                                 
@@ -209,7 +231,6 @@ pipeline {
                             def cacheFlag = params.FORCE_REBUILD ? "" : "--cache-from ${BACKEND_REPO}:latest"
                             
                             sh """
-                                # Copy .dockerignore
                                 cp jenkins/docker/.dockerignore.backend BackEnd/.dockerignore || true
                                 
                                 DOCKER_BUILDKIT=1 docker build \
@@ -227,17 +248,15 @@ pipeline {
                 
                 stage('Build GPU Worker') {
                     when { expression { params.DEPLOY_GPU_WORKERS } }
-                    // ========== FIXED: Separate timeout for GPU Worker ==========
                     options {
                         timeout(time: 60, unit: 'MINUTES')
                     }
                     steps {
                         script {
-                            echo "🏗️ Building GPU Worker (using base image)..."
+                            echo "🏗️ Building GPU Worker..."
                             def cacheFlag = params.FORCE_REBUILD ? "" : "--cache-from ${GPU_WORKER_REPO}:latest"
                             
                             sh """
-                                # Copy .dockerignore
                                 cp jenkins/docker/.dockerignore.backend BackEnd/.dockerignore || true
                                 
                                 DOCKER_BUILDKIT=1 docker build \
@@ -256,7 +275,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 5: Tag Celery Image
+        // Stage 6: Tag Celery Image
         // =====================================================================
         stage('Tag Celery') {
             when {
@@ -272,7 +291,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 6: Security Scan (Optional - skipped by default for speed)
+        // Stage 7: Security Scan (Optional)
         // =====================================================================
         stage('Security Scan') {
             when {
@@ -292,7 +311,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 7: Push to ECR (Parallel) - OPTIMIZATION
+        // Stage 8: Push to ECR (Parallel)
         // =====================================================================
         stage('Push to ECR') {
             parallel {
@@ -351,7 +370,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 8: Deploy to EKS (Parallel) - OPTIMIZATION
+        // Stage 9: Deploy to EKS (FIXED - kubectl apply BEFORE set image)
         // =====================================================================
         stage('Deploy to EKS') {
             parallel {
@@ -360,9 +379,17 @@ pipeline {
                     steps {
                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
                             sh """
+                                echo "🚀 Deploying Frontend..."
+                                
+                                # CRITICAL: Apply deployment first (creates if not exists, updates if exists)
+                                kubectl apply -f kubernetes/apps/frontend/deployment.yaml -n ${env.NAMESPACE}
+                                
+                                # Then update image to current build
                                 kubectl set image deployment/frontend \
                                     frontend=${FRONTEND_REPO}:${IMAGE_TAG} \
                                     -n ${env.NAMESPACE}
+                                
+                                # Wait for rollout
                                 kubectl rollout status deployment/frontend \
                                     -n ${env.NAMESPACE} --timeout=180s
                             """
@@ -376,9 +403,18 @@ pipeline {
                     steps {
                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
                             sh """
+                                echo "🚀 Deploying Backend..."
+                                
+                                # CRITICAL: Apply configmap and deployment first
+                                kubectl apply -f kubernetes/apps/backend/configmap.yaml -n ${env.NAMESPACE}
+                                kubectl apply -f kubernetes/apps/backend/deployment.yaml -n ${env.NAMESPACE}
+                                
+                                # Then update image to current build
                                 kubectl set image deployment/backend \
                                     backend=${BACKEND_REPO}:${IMAGE_TAG} \
                                     -n ${env.NAMESPACE}
+                                
+                                # Wait for rollout
                                 kubectl rollout status deployment/backend \
                                     -n ${env.NAMESPACE} --timeout=180s
                             """
@@ -392,9 +428,16 @@ pipeline {
                     steps {
                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
                             sh """
+                                echo "🚀 Deploying Celery..."
+                                
+                                # Apply deployment first
+                                kubectl apply -f kubernetes/apps/celery/deployment.yaml -n ${env.NAMESPACE}
+                                
+                                # Then update image
                                 kubectl set image deployment/celery-worker \
                                     celery-worker=${CELERY_REPO}:${IMAGE_TAG} \
                                     -n ${env.NAMESPACE}
+                                
                                 kubectl rollout status deployment/celery-worker \
                                     -n ${env.NAMESPACE} --timeout=180s
                             """
@@ -408,9 +451,16 @@ pipeline {
                     steps {
                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
                             sh """
+                                echo "🚀 Deploying GPU Worker..."
+                                
+                                # Apply deployment first
+                                kubectl apply -f kubernetes/apps/gpu-workers/deployment.yaml -n ${env.NAMESPACE}
+                                
+                                # Then update image
                                 kubectl set image deployment/gpu-worker \
                                     gpu-worker=${GPU_WORKER_REPO}:${IMAGE_TAG} \
                                     -n ${env.NAMESPACE}
+                                
                                 kubectl rollout status deployment/gpu-worker \
                                     -n ${env.NAMESPACE} --timeout=300s
                             """
@@ -422,7 +472,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 9: Verify Deployment
+        // Stage 10: Verify Deployment
         // =====================================================================
         stage('Verify') {
             steps {
@@ -436,7 +486,6 @@ pipeline {
                         echo "============================================="
                     """
                     
-                    // Quick health checks for prod - wrapped in script block
                     script {
                         if (params.ENVIRONMENT == 'prod') {
                             sh '''
