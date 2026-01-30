@@ -1,7 +1,5 @@
 # =============================================================================
-# iMeetPro Backend Deployment - Production (FINAL CORRECTED)
-# =============================================================================
-# Path: kubernetes/apps/backend/deployment.yaml
+# iMeetPro Backend Deployment - Production (Rootless + Log Fix)
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -34,7 +32,7 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: imeetpro-sa
-      
+
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
@@ -42,23 +40,23 @@ spec:
           labelSelector:
             matchLabels:
               app: backend
-      
+
       containers:
         - name: backend
-          image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/backend:latest
+          image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/backend:149
           imagePullPolicy: Always
-          
+
           ports:
             - name: http
               containerPort: 8000
               protocol: TCP
-          
+
           envFrom:
             - configMapRef:
                 name: backend-config
             - secretRef:
                 name: backend-secrets
-          
+
           env:
             - name: POD_NAME
               valueFrom:
@@ -68,6 +66,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # 👇 New env var tells Django/Celery/Gunicorn where to write logs
+            - name: LOG_DIR
+              value: "/tmp/logs"
+            - name: CELERY_LOG_PATH
+              value: "/tmp/logs/celery.log"
             - name: AWS_STORAGE_BUCKET_NAME
               value: "imeetpro-prod-recordings"
             - name: MONGO_URI
@@ -96,7 +99,7 @@ spec:
               value: "wss://imeetpro-fbrcr2mk.livekit.cloud"
             - name: LIVEKIT_WSS_URL
               value: "wss://imeetpro-fbrcr2mk.livekit.cloud"
-          
+
           resources:
             requests:
               memory: "4Gi"
@@ -104,7 +107,7 @@ spec:
             limits:
               memory: "8Gi"
               cpu: "4000m"
-          
+
           startupProbe:
             httpGet:
               path: /health
@@ -114,7 +117,7 @@ spec:
             timeoutSeconds: 10
             failureThreshold: 40
             successThreshold: 1
-          
+
           readinessProbe:
             httpGet:
               path: /health
@@ -124,7 +127,7 @@ spec:
             timeoutSeconds: 10
             failureThreshold: 3
             successThreshold: 1
-          
+
           livenessProbe:
             httpGet:
               path: /health
@@ -134,28 +137,24 @@ spec:
             timeoutSeconds: 10
             failureThreshold: 5
             successThreshold: 1
-          
+
           volumeMounts:
-            - name: logs
-              mountPath: /app/logs
             - name: tmp
-              mountPath: /tmp
-      
+              mountPath: /tmp     # ✅ writable for logs and tmp files
+
       volumes:
-        - name: logs
-          emptyDir: {}
         - name: tmp
           emptyDir:
             sizeLimit: 2Gi
-      
+
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
-      
+
       terminationGracePeriodSeconds: 60
-      
+
       tolerations:
         - key: "node.kubernetes.io/not-ready"
           operator: "Exists"

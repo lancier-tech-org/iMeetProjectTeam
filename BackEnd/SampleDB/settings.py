@@ -19,9 +19,10 @@ import certifi
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-# Ensure logs directory exists
-LOGS_DIR = os.path.join(BASE_DIR, 'logs')
-os.makedirs(LOGS_DIR, exist_ok=True)
+# Docker/Kubernetes-aware log directory (writable in containers)
+# Kubernetes deployment sets LOG_DIR=/tmp/logs; fallback to BASE_DIR/logs for local/dev
+LOG_DIR = os.environ.get("LOG_DIR", os.path.join(BASE_DIR, "logs"))
+os.makedirs(LOG_DIR, exist_ok=True)
 
 # Docker/Kubernetes-aware host configuration
 DB_HOST_OVERRIDE = os.getenv("DB_HOST", "localhost")
@@ -269,7 +270,7 @@ EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "")
 
-# ======== LOGGING CONFIGURATION - FIXED PATHS ========
+# ======== LOGGING CONFIGURATION - DYNAMIC LOG_DIR (K8s-safe) ========
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -290,22 +291,22 @@ LOGGING = {
         },
         'file': {
             'class': 'logging.FileHandler',
-            'filename': os.path.join(LOGS_DIR, 'django.log'),
+            'filename': os.path.join(LOG_DIR, 'django.log'),
             'formatter': 'verbose',
         },
         'meetings_file': {
             'class': 'logging.FileHandler',
-            'filename': os.path.join(LOGS_DIR, 'meetings.log'),
+            'filename': os.path.join(LOG_DIR, 'meetings.log'),
             'formatter': 'verbose',
         },
         'scheduler_file': {
             'class': 'logging.FileHandler',
-            'filename': os.path.join(LOGS_DIR, 'scheduler.log'),
+            'filename': os.path.join(LOG_DIR, 'scheduler.log'),
             'formatter': 'verbose',
         },
         'celery_file': {
             'class': 'logging.FileHandler',
-            'filename': os.path.join(LOGS_DIR, 'celery.log'),
+            'filename': os.path.join(LOG_DIR, 'celery.log'),
             'formatter': 'verbose',
         },
     },
