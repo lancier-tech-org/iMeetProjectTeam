@@ -42,7 +42,6 @@ urlpatterns = [
     path('', include('core.WebSocketConnection.cache_only_hand_raise')),
     path('', include('core.Whiteboard.whiteboard_urls')),
     path('', include('core.livekit_recording.urls')),
-    path('', include('core.livekit_recording.urls')),
     path('', include('core.FaceAuth.face_auth')),
     path('', include('core.super_adminDashboard.super_admin')),
     path('', include('core.super_adminDashboard.plans')),
