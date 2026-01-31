@@ -1,5 +1,5 @@
 # =============================================================================
-# iMeetPro Backend - OPTIMIZED Multi-stage Dockerfile (FINAL - FIXED)
+# iMeetPro Backend - FINAL PRODUCTION Dockerfile (PERMISSION SAFE)
 # =============================================================================
 # syntax=docker/dockerfile:1.4
 
@@ -60,9 +60,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Create non-root user
-# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
 # Copy Python deps
@@ -72,30 +72,22 @@ COPY --from=deps /usr/local/bin /usr/local/bin
 # Copy application code
 COPY . .
 
-# -------------------------------------------------------------------------
-# 🔥 FIX: Create logs & runtime dirs WITH CORRECT OWNERSHIP
-# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 🔥 CRITICAL FIX: Logs directory MUST be writable
+# -----------------------------------------------------------------------------
 RUN mkdir -p /app/staticfiles \
              /app/mediafiles \
              /app/logs \
-    && touch /app/logs/django.log \
-             /app/logs/celery.log \
-             /app/logs/attendance_verification.log \
-             /app/logs/meetings_debug.log \
-             /app/logs/recurring_meetings.log \
-             /app/logs/notifications_debug.log \
-             /app/logs/participants_debug.log \
-             /app/logs/recording_service_debug.log \
-    && chown -R appuser:appgroup /app \
-    && chmod -R 755 /app
+    && chmod -R 777 /app/logs \
+    && chown -R appuser:appgroup /app
 
 # Cleanup unnecessary files
 RUN rm -rf *.sql *.pem *.key *.crt .env .vscode .git \
            __pycache__ tests/ docs/ *.md chromedriver* || true
 
-# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Entrypoint with safe auto-migrations
-# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 RUN printf '#!/bin/bash\n\
 set -e\n\
 echo "🚀 Starting iMeetPro Backend..."\n\
@@ -106,7 +98,7 @@ exec "$@"\n' > /app/entrypoint.sh \
 && chmod +x /app/entrypoint.sh \
 && chown appuser:appgroup /app/entrypoint.sh
 
-# Switch to non-root user (VERY IMPORTANT)
+# Switch to non-root user
 USER appuser
 
 # Collect static files (safe)
