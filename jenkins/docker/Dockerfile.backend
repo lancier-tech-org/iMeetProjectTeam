@@ -1,14 +1,8 @@
 # =============================================================================
-# iMeetPro Backend - OPTIMIZED Multi-stage Dockerfile (FINAL)
-# =============================================================================
-# Build time: ~5-8 minutes
-# Key optimizations:
-#   - BuildKit cache mounts
-#   - Better layer ordering
-#   - Minimal runtime image
-#   - Auto migrations on startup
+# iMeetPro Backend - OPTIMIZED Multi-stage Dockerfile (FINAL - FIXED)
 # =============================================================================
 # syntax=docker/dockerfile:1.4
+
 # -----------------------------------------------------------------------------
 # Stage 1: Dependencies Builder
 # -----------------------------------------------------------------------------
@@ -21,7 +15,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install build dependencies
+# Build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
@@ -31,10 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy ONLY requirements first (better cache utilization)
+# Copy requirements first (cache-friendly)
 COPY requirements.txt .
 
-# Install Python dependencies with cache mount
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
 
@@ -51,7 +44,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR $APP_HOME
 
-# Install ONLY runtime dependencies (minimal)
+# Runtime OS dependencies only
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     default-mysql-client \
@@ -67,58 +60,64 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
+# -------------------------------------------------------------------------
 # Create non-root user
+# -------------------------------------------------------------------------
 RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
-# Copy Python packages from deps stage
+# Copy Python deps
 COPY --from=deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
 
 # Copy application code
-COPY --chown=appuser:appgroup . .
+COPY . .
 
-# Create directories and log files
-RUN mkdir -p /app/staticfiles /app/mediafiles /app/logs && \
-    touch /app/attendance_verification.log \
-          /app/django.log \
-          /app/celery.log \
-          /app/meetings_debug.log \
-          /app/recurring_meetings.log \
-          /app/notifications_debug.log \
-          /app/participants_debug.log \
-          /app/recording_service_debug.log && \
-    chown -R appuser:appgroup /app
+# -------------------------------------------------------------------------
+# 🔥 FIX: Create logs & runtime dirs WITH CORRECT OWNERSHIP
+# -------------------------------------------------------------------------
+RUN mkdir -p /app/staticfiles \
+             /app/mediafiles \
+             /app/logs \
+    && touch /app/logs/django.log \
+             /app/logs/celery.log \
+             /app/logs/attendance_verification.log \
+             /app/logs/meetings_debug.log \
+             /app/logs/recurring_meetings.log \
+             /app/logs/notifications_debug.log \
+             /app/logs/participants_debug.log \
+             /app/logs/recording_service_debug.log \
+    && chown -R appuser:appgroup /app \
+    && chmod -R 755 /app
 
-# Clean unnecessary files
-RUN rm -rf *.sql *.pem *.key *.crt .env .vscode .git __pycache__ tests/ docs/ *.md chromedriver* || true
+# Cleanup unnecessary files
+RUN rm -rf *.sql *.pem *.key *.crt .env .vscode .git \
+           __pycache__ tests/ docs/ *.md chromedriver* || true
 
-# =============================================================================
-# Create entrypoint script with auto-migrations
-# =============================================================================
-RUN echo '#!/bin/bash\n\
+# -------------------------------------------------------------------------
+# Entrypoint with safe auto-migrations
+# -------------------------------------------------------------------------
+RUN printf '#!/bin/bash\n\
 set -e\n\
-\n\
 echo "🚀 Starting iMeetPro Backend..."\n\
-\n\
-# Run database migrations (only if DB is available)\n\
 echo "📦 Running database migrations..."\n\
-python manage.py migrate --noinput 2>/dev/null || echo "⚠️ Migration skipped (DB not ready or no changes)"\n\
-\n\
-# Start the main process\n\
+python manage.py migrate --noinput 2>/dev/null || echo "⚠️ Migration skipped"\n\
 echo "✅ Starting Gunicorn server..."\n\
-exec "$@"' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+exec "$@"\n' > /app/entrypoint.sh \
+&& chmod +x /app/entrypoint.sh \
+&& chown appuser:appgroup /app/entrypoint.sh
 
+# Switch to non-root user (VERY IMPORTANT)
 USER appuser
 
-# Collect static files
+# Collect static files (safe)
 RUN python manage.py collectstatic --noinput 2>/dev/null || true
 
 EXPOSE 8000
 
-# Health check
+# Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Entrypoint runs migrations, then CMD starts gunicorn
 ENTRYPOINT ["/app/entrypoint.sh"]
+
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "2", "--timeout", "120", "SampleDB.wsgi:application"]
