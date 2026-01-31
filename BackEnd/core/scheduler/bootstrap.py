@@ -1,5 +1,4 @@
 # core/scheduler/bootstrap.py
-
 import logging
 import os
 import time
@@ -8,78 +7,86 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 logger = logging.getLogger(__name__)
 
+_scheduler = None
+
 
 def acquire_scheduler_lock():
     """
-    GLOBAL lock — ensures only ONE scheduler
-    across ALL gunicorn workers.
-    Works with REDIS_HOST / REDIS_PORT or REDIS_URL.
+    GLOBAL Redis lock
+    Ensures only ONE scheduler runs across all Gunicorn workers
     """
     redis_url = os.getenv("REDIS_URL")
-
     if not redis_url:
-        redis_host = os.getenv("REDIS_HOST", "redis.databases.svc.cluster.local")
-        redis_port = int(os.getenv("REDIS_PORT", 6379))
-        redis_url = f"redis://{redis_host}:{redis_port}/0"
+        logger.warning("⚠️ REDIS_URL not set — scheduler lock disabled")
+        return True  # allow scheduler in single-instance setups
 
     try:
-        r = redis.Redis.from_url(redis_url)
+        r = redis.Redis.from_url(redis_url, socket_timeout=2)
         return r.set("core:scheduler:lock", "1", nx=True, ex=300)
     except Exception as e:
-        logger.error(f"❌ Redis unavailable — scheduler will NOT start: {e}")
-        return False
+        logger.warning(f"⚠️ Redis lock failed: {e}")
+        return True
 
 
 def start_scheduler_safely():
-    # Give Django & Gunicorn time to serve traffic
-    time.sleep(10)
+    global _scheduler
 
-    if not acquire_scheduler_lock():
-        logger.info("⏭️ Scheduler already running in another worker")
+    # Small delay so Gunicorn can finish startup
+    time.sleep(5)
+
+    if _scheduler and _scheduler.running:
+        logger.info("⏭️ Scheduler already running")
         return
 
-    logger.info("🚀 Starting APScheduler (single instance)")
+    if not acquire_scheduler_lock():
+        logger.info("⏭️ Another worker owns the scheduler lock")
+        return
+
+    logger.info("🚀 Starting APScheduler (safe mode)")
 
     scheduler = BackgroundScheduler()
 
-    # ===== JOB 1: PARTICIPANT POLLING =====
-    scheduler.add_job(
-        func=_lazy_participant_polling,
-        trigger="interval",
-        seconds=10,
-        id="sync_participants_polling",
-        name="Sync participants with LiveKit",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    # -------------------------------
+    # JOB 1: Participant Polling
+    # -------------------------------
+    try:
+        from core.scheduler.participant_polling import sync_participants_polling
 
-    # ===== JOB 2: CLEANUP EMPTY ROOMS =====
-    scheduler.add_job(
-        func=_lazy_cleanup_rooms,
-        trigger="interval",
-        minutes=5,
-        id="cleanup_empty_rooms",
-        name="Cleanup empty LiveKit rooms",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+        scheduler.add_job(
+            func=sync_participants_polling,
+            trigger="interval",
+            seconds=10,
+            id="sync_participants_polling",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        logger.info("✅ Participant polling scheduled (every 10s)")
+    except Exception as e:
+        logger.error(f"❌ Failed to add participant polling job: {e}")
+
+    # -------------------------------
+    # JOB 2: Cleanup Empty Rooms
+    # -------------------------------
+    try:
+        from core.WebSocketConnection.meetings import livekit_service
+
+        scheduler.add_job(
+            func=livekit_service.cleanup_empty_rooms,
+            trigger="interval",
+            minutes=5,
+            id="cleanup_empty_rooms",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        logger.info("✅ Empty room cleanup scheduled (every 5 min)")
+    except Exception as e:
+        logger.error(f"❌ Failed to add cleanup job: {e}")
 
     scheduler.start()
-    logger.info("✅ APScheduler initialized successfully!")
+    _scheduler = scheduler
 
-
-def _lazy_participant_polling():
-    """
-    IMPORTANT:
-    Import happens INSIDE the job,
-    not during scheduler startup.
-    """
-    from core.scheduler.participant_polling import sync_participants_polling
-    sync_participants_polling()
-
-
-def _lazy_cleanup_rooms():
-    from core.WebSocketConnection.meetings import livekit_service
-    livekit_service.cleanup_empty_rooms()
+    logger.info("🎉 APScheduler started successfully")
