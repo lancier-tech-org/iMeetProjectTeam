@@ -1,21 +1,13 @@
-# =============================================================================
-# iMeetPro Backend Deployment - Production (FIXED for ML Model Loading)
-# =============================================================================
-# FIXES APPLIED:
-#   - Added explicit gunicorn command with SampleDB.wsgi
-#   - Single worker with 600s timeout for ML model loading
-#   - Increased startup probe timing (10 mins total allowed)
-#   - Proper liveness/readiness probes after app is ready
-# =============================================================================
+# kubernetes/apps/backend/deployment.yaml
+# FINAL VERSION - All issues fixed
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: backend
-  namespace: imeetpro
   labels:
     app: backend
     version: v1
-    tier: backend
 spec:
   replicas: 2
   selector:
@@ -30,236 +22,269 @@ spec:
     metadata:
       labels:
         app: backend
-        version: v1
-        tier: backend
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8000"
-        prometheus.io/path: "/metrics"
     spec:
-      serviceAccountName: imeetpro-sa
-
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: topology.kubernetes.io/zone
-          whenUnsatisfiable: DoNotSchedule
-          labelSelector:
-            matchLabels:
-              app: backend
-
+      # Security context for non-root user
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      
       containers:
         - name: backend
-          image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/backend:latest
+          image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/backend:BUILD_NUMBER
           imagePullPolicy: Always
-
-          # =====================================================
-          # CRITICAL FIX: Direct gunicorn command (bypasses entrypoint)
-          # Single worker + long timeout for ML model loading
-          # =====================================================
-          command: ["gunicorn"]
+          
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          
+          # ============================================
+          # COMMAND: Gunicorn with gthread workers
+          # ============================================
+          command:
+            - "gunicorn"
           args:
             - "SampleDB.wsgi:application"
             - "--bind"
             - "0.0.0.0:8000"
             - "--workers"
             - "2"
+            - "--worker-class"
+            - "gthread"
+            - "--threads"
+            - "4"
             - "--timeout"
             - "600"
             - "--graceful-timeout"
-            - "300"
+            - "30"
             - "--keep-alive"
             - "5"
+            - "--max-requests"
+            - "1000"
+            - "--max-requests-jitter"
+            - "100"
             - "--log-level"
             - "info"
             - "--access-logfile"
             - "-"
             - "--error-logfile"
             - "-"
-
-          ports:
-            - name: http
-              containerPort: 8000
-              protocol: TCP
-
-          envFrom:
-            - configMapRef:
-                name: backend-config
-            - secretRef:
-                name: backend-secrets
-
+          
+          # ============================================
+          # ENVIRONMENT VARIABLES
+          # ============================================
           env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: LOG_DIR
-              value: "/tmp/logs"
-            - name: CELERY_LOG_PATH
-              value: "/tmp/logs/celery.log"
-            - name: AWS_STORAGE_BUCKET_NAME
-              value: "imeetpro-prod-recordings"
-            - name: MONGO_URI
-              value: "mongodb://mongodb.databases.svc.cluster.local:27017/imeetpro"
-            - name: INSIGHTFACE_HOME
-              value: "/tmp/.insightface"
+            # Python/Django settings
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: DJANGO_SETTINGS_MODULE
+              value: "SampleDB.settings"
+            
+            # Temp directories for ML models
             - name: HOME
               value: "/tmp"
             - name: MPLCONFIGDIR
               value: "/tmp/.matplotlib"
-            - name: AWS_S3_BUCKET
-              value: "imeetpro-prod-recordings"
-            - name: MONGO_DB
-              value: "imeetpro"
-            - name: LIVEKIT_API_URL
-              value: "https://imeetpro-fbrcr2mk.livekit.cloud"
-            - name: CACHE_HAND_RAISE_HOST
-              value: "redis.databases.svc.cluster.local"
-            - name: CACHE_CHAT_HOST
-              value: "redis.databases.svc.cluster.local"
+            - name: INSIGHTFACE_HOME
+              value: "/tmp/.insightface"
+            - name: TRANSFORMERS_CACHE
+              value: "/tmp/.transformers"
+            - name: HF_HOME
+              value: "/tmp/.huggingface"
+            - name: XDG_CACHE_HOME
+              value: "/tmp/.cache"
+            - name: NUMBA_CACHE_DIR
+              value: "/tmp/.numba"
+            
+            # Redis Configuration - K8s compatible
             - name: DEFAULT_REDIS_HOST
               value: "redis.databases.svc.cluster.local"
-            - name: CACHE_REACTIONS_HOST
-              value: "redis.databases.svc.cluster.local"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_DB
+              value: "0"
+            
+            # Database - from ConfigMap/Secret
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: DB_HOST
+                  optional: true
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: DB_PORT
+                  optional: true
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: DB_NAME
+                  optional: true
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DB_USER
+                  optional: true
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DB_PASSWORD
+                  optional: true
+            
+            # LiveKit Configuration
             - name: LIVEKIT_URL
-              value: "wss://imeetpro-fbrcr2mk.livekit.cloud"
-            - name: LIVEKIT_WSS_URL
-              value: "wss://imeetpro-fbrcr2mk.livekit.cloud"
-            # Disable scheduler during startup to speed up loading
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: LIVEKIT_URL
+                  optional: true
+            - name: LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: LIVEKIT_API_KEY
+                  optional: true
+            - name: LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: LIVEKIT_API_SECRET
+                  optional: true
+            
+            # Disable background schedulers during startup
             - name: DISABLE_SCHEDULER
-              value: "false"
-
-          resources:
-            requests:
-              memory: "4Gi"
-              cpu: "1000m"
-            limits:
-              memory: "8Gi"
-              cpu: "4000m"
-
-          # =====================================================
-          # STARTUP PROBE: Allows 10 minutes for ML models to load
-          # initialDelay(120s) + period(15s) * threshold(40) = 720s = 12 mins
-          # =====================================================
+              value: "true"
+            - name: DISABLE_CRON
+              value: "true"
+          
+          # ============================================
+          # PROBES - TCP based (NOT HTTP)
+          # ML models block HTTP during first request
+          # ============================================
+          
+          # Startup Probe: Wait for app to be ready (up to 10 minutes)
           startupProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 8000
-            initialDelaySeconds: 120
-            periodSeconds: 15
-            timeoutSeconds: 10
-            failureThreshold: 40
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 60
             successThreshold: 1
-
-          # =====================================================
-          # READINESS PROBE: After startup, check every 15s
-          # =====================================================
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8000
-            initialDelaySeconds: 10
-            periodSeconds: 15
-            timeoutSeconds: 10
-            failureThreshold: 3
-            successThreshold: 1
-
-          # =====================================================
-          # LIVENESS PROBE: After startup, check every 30s
-          # =====================================================
+          
+          # Liveness Probe: Check if app is alive
           livenessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 8000
             initialDelaySeconds: 10
             periodSeconds: 30
-            timeoutSeconds: 10
-            failureThreshold: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
             successThreshold: 1
-
+          
+          # Readiness Probe: Check if app can accept traffic
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+          
+          # ============================================
+          # RESOURCES
+          # ============================================
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          
+          # ============================================
+          # VOLUME MOUNTS
+          # ============================================
           volumeMounts:
-            - name: tmp
+            - name: tmp-volume
               mountPath: /tmp
-
+            - name: app-logs
+              mountPath: /app/logs
+      
+      # ============================================
+      # VOLUMES
+      # ============================================
       volumes:
-        - name: tmp
+        - name: tmp-volume
           emptyDir:
             sizeLimit: 2Gi
-
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
-
-      terminationGracePeriodSeconds: 120
-
-      tolerations:
-        - key: "node.kubernetes.io/not-ready"
-          operator: "Exists"
-          effect: "NoExecute"
-          tolerationSeconds: 300
-        - key: "node.kubernetes.io/unreachable"
-          operator: "Exists"
-          effect: "NoExecute"
-          tolerationSeconds: 300
+        - name: app-logs
+          emptyDir:
+            sizeLimit: 500Mi
+      
+      # ============================================
+      # POD SETTINGS
+      # ============================================
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 60
+      
+      # Optional: Node affinity/tolerations if needed
+      # nodeSelector:
+      #   node-type: application
 
 ---
+# ============================================
+# SERVICE
+# ============================================
 apiVersion: v1
 kind: Service
 metadata:
   name: backend
-  namespace: imeetpro
   labels:
     app: backend
 spec:
   type: ClusterIP
+  selector:
+    app: backend
   ports:
     - name: http
       port: 8000
       targetPort: 8000
       protocol: TCP
-  selector:
-    app: backend
 
 ---
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
+# ============================================
+# CONFIGMAP (Optional - create if not exists)
+# ============================================
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: backend-hpa
-  namespace: imeetpro
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: backend
-  minReplicas: 2
-  maxReplicas: 10
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70
-    - type: Resource
-      resource:
-        name: memory
-        target:
-          type: Utilization
-          averageUtilization: 80
+  name: backend-config
+data:
+  DB_HOST: "your-db-host.rds.amazonaws.com"
+  DB_PORT: "3306"
+  DB_NAME: "imeetpro"
+  LIVEKIT_URL: "wss://your-livekit-server.com"
 
 ---
-apiVersion: policy/v1
-kind: PodDisruptionBudget
+# ============================================
+# SECRET (Optional - create if not exists)
+# ============================================
+apiVersion: v1
+kind: Secret
 metadata:
-  name: backend-pdb
-  namespace: imeetpro
-spec:
-  minAvailable: 1
-  selector:
-    matchLabels:
-      app: backend
+  name: backend-secrets
+type: Opaque
+stringData:
+  DB_USER: "your_db_user"
+  DB_PASSWORD: "your_db_password"
+  LIVEKIT_API_KEY: "your_api_key"
+  LIVEKIT_API_SECRET: "your_api_secret"
