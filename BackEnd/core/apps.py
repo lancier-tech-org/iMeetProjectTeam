@@ -148,6 +148,7 @@
 
 
 # core/apps.py
+# core/apps.py
 from django.apps import AppConfig
 import logging
 import os
@@ -160,25 +161,36 @@ logger = logging.getLogger(__name__)
 class CoreConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "core"
-    _triggered = False
+
+    _triggered = False  # per-process guard
 
     def ready(self):
         # Skip management commands
-        if any(cmd in sys.argv for cmd in ("migrate", "makemigrations", "collectstatic", "shell")):
+        if any(cmd in sys.argv for cmd in (
+            "migrate",
+            "makemigrations",
+            "collectstatic",
+            "shell",
+            "createsuperuser",
+        )):
             return
 
-        # Env kill switch
+        # Env-based kill switch
         if os.getenv("DISABLE_SCHEDULER", "false").lower() == "true":
             logger.info("⏭️ Scheduler disabled via env")
             return
 
-        # Per-worker guard
+        # Prevent duplicate execution per worker
         if CoreConfig._triggered:
             return
         CoreConfig._triggered = True
 
-        # Trigger scheduler bootstrap in background - DON'T BLOCK!
-        threading.Thread(target=self._bootstrap_scheduler, daemon=True).start()
+        # IMPORTANT: run scheduler bootstrap in background thread
+        threading.Thread(
+            target=self._bootstrap_scheduler,
+            daemon=True
+        ).start()
+
         logger.info("✅ Core ready — scheduler bootstrap triggered")
 
     def _bootstrap_scheduler(self):
