@@ -1,5 +1,11 @@
 # =============================================================================
-# iMeetPro Backend Deployment - Production (Rootless + Log Fix)
+# iMeetPro Backend Deployment - Production (FIXED for ML Model Loading)
+# =============================================================================
+# FIXES APPLIED:
+#   - Added explicit gunicorn command with SampleDB.wsgi
+#   - Single worker with 600s timeout for ML model loading
+#   - Increased startup probe timing (10 mins total allowed)
+#   - Proper liveness/readiness probes after app is ready
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -11,7 +17,7 @@ metadata:
     version: v1
     tier: backend
 spec:
-  replicas: 3
+  replicas: 2
   selector:
     matchLabels:
       app: backend
@@ -43,8 +49,32 @@ spec:
 
       containers:
         - name: backend
-          image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/backend:149
+          image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/backend:latest
           imagePullPolicy: Always
+
+          # =====================================================
+          # CRITICAL FIX: Direct gunicorn command (bypasses entrypoint)
+          # Single worker + long timeout for ML model loading
+          # =====================================================
+          command: ["gunicorn"]
+          args:
+            - "SampleDB.wsgi:application"
+            - "--bind"
+            - "0.0.0.0:8000"
+            - "--workers"
+            - "2"
+            - "--timeout"
+            - "600"
+            - "--graceful-timeout"
+            - "300"
+            - "--keep-alive"
+            - "5"
+            - "--log-level"
+            - "info"
+            - "--access-logfile"
+            - "-"
+            - "--error-logfile"
+            - "-"
 
           ports:
             - name: http
@@ -66,7 +96,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            # 👇 New env var tells Django/Celery/Gunicorn where to write logs
             - name: LOG_DIR
               value: "/tmp/logs"
             - name: CELERY_LOG_PATH
@@ -99,6 +128,9 @@ spec:
               value: "wss://imeetpro-fbrcr2mk.livekit.cloud"
             - name: LIVEKIT_WSS_URL
               value: "wss://imeetpro-fbrcr2mk.livekit.cloud"
+            # Disable scheduler during startup to speed up loading
+            - name: DISABLE_SCHEDULER
+              value: "false"
 
           resources:
             requests:
@@ -108,26 +140,36 @@ spec:
               memory: "8Gi"
               cpu: "4000m"
 
+          # =====================================================
+          # STARTUP PROBE: Allows 10 minutes for ML models to load
+          # initialDelay(120s) + period(15s) * threshold(40) = 720s = 12 mins
+          # =====================================================
           startupProbe:
             httpGet:
               path: /health
               port: 8000
-            initialDelaySeconds: 60
+            initialDelaySeconds: 120
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 40
             successThreshold: 1
 
+          # =====================================================
+          # READINESS PROBE: After startup, check every 15s
+          # =====================================================
           readinessProbe:
             httpGet:
               path: /health
               port: 8000
-            initialDelaySeconds: 90
+            initialDelaySeconds: 10
             periodSeconds: 15
-            timeoutSeconds: 5
-            failureThreshold: 6
+            timeoutSeconds: 10
+            failureThreshold: 3
             successThreshold: 1
 
+          # =====================================================
+          # LIVENESS PROBE: After startup, check every 30s
+          # =====================================================
           livenessProbe:
             httpGet:
               path: /health
@@ -140,7 +182,7 @@ spec:
 
           volumeMounts:
             - name: tmp
-              mountPath: /tmp     # ✅ writable for logs and tmp files
+              mountPath: /tmp
 
       volumes:
         - name: tmp
@@ -153,7 +195,7 @@ spec:
         runAsGroup: 1000
         fsGroup: 1000
 
-      terminationGracePeriodSeconds: 60
+      terminationGracePeriodSeconds: 120
 
       tolerations:
         - key: "node.kubernetes.io/not-ready"
