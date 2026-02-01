@@ -6,6 +6,7 @@
 # 2. NVIDIA Device Plugin installed:
 #    kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.14.1/nvidia-device-plugin.yml
 # =============================================================================
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,6 +16,11 @@ metadata:
     app: gpu-worker
 spec:
   replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: gpu-worker
@@ -23,7 +29,6 @@ spec:
       labels:
         app: gpu-worker
     spec:
-      # Schedule on GPU nodes
       nodeSelector:
         nvidia.com/gpu: "true"
       tolerations:
