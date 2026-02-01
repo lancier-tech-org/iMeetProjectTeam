@@ -382,7 +382,7 @@ class ProductionLiveKitService:
 
     def generate_access_token(self, room_name: str, participant_name: str, 
                 metadata: Dict = None, permissions: Dict = None) -> str:
-        """Generate LiveKit access token with extended TTL - FIXED: No null values"""
+        """Generate LiveKit access token with extended TTL - FIXED: Removed invalid roomConfig"""
         try:
             import jwt
             import time
@@ -400,12 +400,23 @@ class ProductionLiveKitService:
                     'canUpdateOwnMetadata': True,
                     'roomJoin': True,
                     'hidden': False,
-                    'recorder': False,
-                    'canPublishSources': ['camera', 'microphone', 'screen_share', 'screen_share_audio'],
-                    'canSubscribeSources': ['camera', 'microphone', 'screen_share', 'screen_share_audio']
+                    'recorder': False
                 }
             
-            # ✅ FIX: Build video grants WITHOUT null values
+            # Build metadata for video grants
+            enhanced_metadata = {
+                'audioFirst': True,
+                'autoSubscribeAudio': True,
+                'fastJoin': True,
+                'largeGroup': True,
+                'tokenExpiresIn': ttl,
+                'tokenGeneratedAt': now
+            }
+            
+            if metadata:
+                enhanced_metadata.update(metadata)
+            
+            # Build video grants (LiveKit standard format)
             video_grants = {
                 'room': room_name,
                 'roomJoin': permissions.get('roomJoin', True),
@@ -421,48 +432,18 @@ class ProductionLiveKitService:
                 'roomRecord': permissions.get('roomRecord', False)
             }
             
-            # ✅ FIX: Only add these fields if they have actual values (not None)
-            if permissions.get('canPublishSources') is not None:
-                video_grants['canPublishSources'] = permissions['canPublishSources']
-            if permissions.get('canSubscribeSources') is not None:
-                video_grants['canSubscribeSources'] = permissions['canSubscribeSources']
+            # Add metadata inside video grants (where LiveKit expects it)
+            video_grants['metadata'] = json.dumps(enhanced_metadata)
             
+            # Build payload WITHOUT roomConfig (not a valid LiveKit JWT claim)
             payload = {
                 'iss': self.config['api_key'],
                 'sub': participant_name,
                 'iat': now,
                 'nbf': now,
                 'exp': now + ttl,
-                'video': video_grants,  # ✅ Use the cleaned video_grants
-                'roomConfig': {
-                    'audioEnabled': True,
-                    'videoEnabled': True,
-                    'autoSubscribe': True,
-                    'audioPriority': 'high',
-                    'adaptiveStream': True,
-                    'dynacast': True,
-                    'startAudioMuted': False,
-                    'startVideoMuted': False,
-                    'simulcast': True,
-                    'maxBitrate': 2000000,
-                    'preferredCodec': 'vp8',
-                    'enableRedundantEncoding': True
-                }
+                'video': video_grants
             }
-            
-            enhanced_metadata = {
-                'audioFirst': True,
-                'autoSubscribeAudio': True,
-                'fastJoin': True,
-                'largeGroup': True,
-                'tokenExpiresIn': ttl,
-                'tokenGeneratedAt': now
-            }
-            
-            if metadata:
-                enhanced_metadata.update(metadata)
-            
-            payload['metadata'] = json.dumps(enhanced_metadata)
             
             token = jwt.encode(payload, self.config['api_secret'], algorithm='HS256')
             
@@ -473,7 +454,7 @@ class ProductionLiveKitService:
         except Exception as e:
             logging.error(f"❌ Token generation failed: {e}")
             raise
-
+        
     def create_room(self, room_name: str, room_config: Dict) -> Dict:
         """
         Create LiveKit room OPTIMIZED FOR UNLIMITED PARTICIPANTS
