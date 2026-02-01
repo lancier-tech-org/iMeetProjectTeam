@@ -381,8 +381,8 @@ class ProductionLiveKitService:
             raise Exception(f"Failed to generate room-specific token: {str(e)}")
 
     def generate_access_token(self, room_name: str, participant_name: str, 
-                    metadata: Dict = None, permissions: Dict = None) -> str:
-        """Generate LiveKit access token with extended TTL"""
+                metadata: Dict = None, permissions: Dict = None) -> str:
+        """Generate LiveKit access token with extended TTL - FIXED: No null values"""
         try:
             import jwt
             import time
@@ -405,28 +405,35 @@ class ProductionLiveKitService:
                     'canSubscribeSources': ['camera', 'microphone', 'screen_share', 'screen_share_audio']
                 }
             
+            # ✅ FIX: Build video grants WITHOUT null values
+            video_grants = {
+                'room': room_name,
+                'roomJoin': permissions.get('roomJoin', True),
+                'canPublish': permissions.get('canPublish', True),
+                'canSubscribe': permissions.get('canSubscribe', True),
+                'canPublishData': permissions.get('canPublishData', True),
+                'canUpdateOwnMetadata': permissions.get('canUpdateOwnMetadata', True),
+                'hidden': permissions.get('hidden', False),
+                'recorder': permissions.get('recorder', False),
+                'roomAdmin': permissions.get('roomAdmin', False),
+                'roomCreate': permissions.get('roomCreate', False),
+                'roomList': permissions.get('roomList', False),
+                'roomRecord': permissions.get('roomRecord', False)
+            }
+            
+            # ✅ FIX: Only add these fields if they have actual values (not None)
+            if permissions.get('canPublishSources') is not None:
+                video_grants['canPublishSources'] = permissions['canPublishSources']
+            if permissions.get('canSubscribeSources') is not None:
+                video_grants['canSubscribeSources'] = permissions['canSubscribeSources']
+            
             payload = {
                 'iss': self.config['api_key'],
                 'sub': participant_name,
                 'iat': now,
                 'nbf': now,
-                'exp': now + ttl,  # INCREASED TTL
-                'video': {
-                    'room': room_name,
-                    'roomJoin': permissions.get('roomJoin', True),
-                    'canPublish': permissions.get('canPublish', True),
-                    'canSubscribe': permissions.get('canSubscribe', True),
-                    'canPublishData': permissions.get('canPublishData', True),
-                    'canUpdateOwnMetadata': permissions.get('canUpdateOwnMetadata', True),
-                    'hidden': permissions.get('hidden', False),
-                    'recorder': permissions.get('recorder', False),
-                    'canPublishSources': permissions.get('canPublishSources'),
-                    'canSubscribeSources': permissions.get('canSubscribeSources'),
-                    'roomAdmin': permissions.get('roomAdmin', False),
-                    'roomCreate': permissions.get('roomCreate', False),
-                    'roomList': permissions.get('roomList', False),
-                    'roomRecord': permissions.get('roomRecord', False)
-                },
+                'exp': now + ttl,
+                'video': video_grants,  # ✅ Use the cleaned video_grants
                 'roomConfig': {
                     'audioEnabled': True,
                     'videoEnabled': True,
@@ -448,7 +455,7 @@ class ProductionLiveKitService:
                 'autoSubscribeAudio': True,
                 'fastJoin': True,
                 'largeGroup': True,
-                'tokenExpiresIn': ttl,  # Add this for debugging
+                'tokenExpiresIn': ttl,
                 'tokenGeneratedAt': now
             }
             
