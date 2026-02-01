@@ -1,10 +1,19 @@
-# kubernetes/apps/backend/deployment.yaml
-# FINAL VERSION - All issues fixed
+# =============================================================================
+# iMeetPro Backend Deployment - Production (FINAL UPDATED)
+# =============================================================================
+# Updated: 2026-02-01
+# Changes:
+#   - Memory limits increased: 2Gi → 4Gi (for face model loading)
+#   - Memory requests increased: 512Mi → 2Gi
+#   - Added AWS credentials env vars (for S3 uploads)
+#   - Added MONGO_URI env var
+# =============================================================================
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: backend
+  namespace: imeetpro
   labels:
     app: backend
     version: v1
@@ -138,6 +147,40 @@ spec:
                   key: DB_PASSWORD
                   optional: true
             
+            # MongoDB Configuration - from ConfigMap
+            - name: MONGO_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: MONGO_URI
+                  optional: true
+            
+            # AWS Credentials - from Secret (for S3 uploads)
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: AWS_ACCESS_KEY_ID
+                  optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+                  optional: true
+            - name: AWS_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: AWS_S3_BUCKET
+                  optional: true
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: AWS_REGION
+                  optional: true
+            
             # LiveKit Configuration
             - name: LIVEKIT_URL
               valueFrom:
@@ -200,14 +243,14 @@ spec:
             successThreshold: 1
           
           # ============================================
-          # RESOURCES
+          # RESOURCES - UPDATED for ML model loading
           # ============================================
           resources:
             requests:
-              memory: "512Mi"
+              memory: "2Gi"
               cpu: "250m"
             limits:
-              memory: "2Gi"
+              memory: "4Gi"
               cpu: "1000m"
           
           # ============================================
@@ -235,10 +278,6 @@ spec:
       # ============================================
       restartPolicy: Always
       terminationGracePeriodSeconds: 60
-      
-      # Optional: Node affinity/tolerations if needed
-      # nodeSelector:
-      #   node-type: application
 
 ---
 # ============================================
@@ -248,6 +287,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: backend
+  namespace: imeetpro
   labels:
     app: backend
 spec:
@@ -259,32 +299,3 @@ spec:
       port: 8000
       targetPort: 8000
       protocol: TCP
-
----
-# ============================================
-# CONFIGMAP (Optional - create if not exists)
-# ============================================
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: backend-config
-data:
-  DB_HOST: "your-db-host.rds.amazonaws.com"
-  DB_PORT: "3306"
-  DB_NAME: "imeetpro"
-  LIVEKIT_URL: "wss://your-livekit-server.com"
-
----
-# ============================================
-# SECRET (Optional - create if not exists)
-# ============================================
-apiVersion: v1
-kind: Secret
-metadata:
-  name: backend-secrets
-type: Opaque
-stringData:
-  DB_USER: "your_db_user"
-  DB_PASSWORD: "your_db_password"
-  LIVEKIT_API_KEY: "your_api_key"
-  LIVEKIT_API_SECRET: "your_api_secret"
