@@ -1,18 +1,11 @@
 // =============================================================================
-// iMeetPro CI/CD Pipeline - OPTIMIZED Version (FIXED)
+// iMeetPro CI/CD Pipeline - PRODUCTION READY
 // =============================================================================
-// Build time: ~15-20 minutes (Frontend/Backend), ~45-60 minutes (GPU Worker)
-// Key optimizations:
-//   - Docker BuildKit enabled
-//   - ECR cache layer usage
-//   - Pre-pull cache images
-//   - Parallel push operations
-//   - Skip unchanged components
-//   - Increased timeout for GPU builds
-// 
-// FIXES:
-//   - Added kubectl apply before set image (handles fresh deployments)
-//   - Added K8s resources setup stage (namespace, secrets, ingress)
+// FIXES APPLIED:
+//   - Added kubectl apply BEFORE set image (handles missing deployments)
+//   - Added K8s resources setup stage (namespace, configmaps, secrets)
+//   - Increased backend rollout timeout to 600s for ML model loading
+//   - Pipeline works for BOTH fresh clusters AND updates
 // =============================================================================
 
 pipeline {
@@ -37,15 +30,14 @@ pipeline {
         // Image Tag
         IMAGE_TAG = "${env.BUILD_NUMBER}"
         
-        // ========== OPTIMIZATION: Enable BuildKit ==========
+        // Enable BuildKit
         DOCKER_BUILDKIT = '1'
         COMPOSE_DOCKER_CLI_BUILD = '1'
         BUILDKIT_PROGRESS = 'plain'
     }
 
     options {
-        // ========== FIXED: Increased timeout from 30 to 90 minutes ==========
-        timeout(time: 90, unit: 'MINUTES')
+        timeout(time: 120, unit: 'MINUTES')
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '10'))
         timestamps()
@@ -54,7 +46,7 @@ pipeline {
     parameters {
         choice(
             name: 'ENVIRONMENT',
-            choices: ['dev', 'staging', 'prod'],
+            choices: ['prod', 'dev', 'staging'],
             description: 'Target environment for deployment'
         )
         booleanParam(
@@ -98,7 +90,7 @@ pipeline {
         // =====================================================================
         // Stage 1: Checkout
         // =====================================================================
-        stage('Declarative: Checkout SCM') {
+        stage('Checkout') {
             steps {
                 script {
                     echo "🔄 Checking out source code..."
@@ -144,7 +136,35 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 3: Pull Cache Images (Parallel) - OPTIMIZATION
+        // Stage 3: Setup K8s Resources
+        // =====================================================================
+        stage('Setup K8s Resources') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                    sh """
+                        echo "🔧 Setting up Kubernetes resources..."
+                        
+                        # Create namespace if not exists
+                        kubectl apply -f kubernetes/namespaces/namespaces.yaml || true
+                        
+                        # Apply secrets (if file exists)
+                        if [ -f kubernetes/secrets/secrets.yaml ]; then
+                            kubectl apply -f kubernetes/secrets/secrets.yaml -n imeetpro || true
+                        fi
+                        
+                        # Apply ingress (if file exists)
+                        if [ -f kubernetes/ingress/ingress.yaml ]; then
+                            kubectl apply -f kubernetes/ingress/ingress.yaml -n imeetpro || true
+                        fi
+                        
+                        echo "✅ K8s resources ready!"
+                    """
+                }
+            }
+        }
+
+        // =====================================================================
+        // Stage 4: Pull Cache Images (Parallel)
         // =====================================================================
         stage('Pull Cache') {
             when {
@@ -174,7 +194,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 4: Build Docker Images (Parallel with BuildKit)
+        // Stage 5: Build Docker Images (Parallel with BuildKit)
         // =====================================================================
         stage('Build Images') {
             parallel {
@@ -186,7 +206,6 @@ pipeline {
                             def cacheFlag = params.FORCE_REBUILD ? "" : "--cache-from ${FRONTEND_REPO}:latest"
                             
                             sh """
-                                # Copy .dockerignore
                                 cp jenkins/docker/.dockerignore.frontend frontend/.dockerignore || true
                                 cp -r jenkins/docker/nginx frontend/ || true
                                 
@@ -213,7 +232,6 @@ pipeline {
                             def cacheFlag = params.FORCE_REBUILD ? "" : "--cache-from ${BACKEND_REPO}:latest"
                             
                             sh """
-                                # Copy .dockerignore
                                 cp jenkins/docker/.dockerignore.backend BackEnd/.dockerignore || true
                                 
                                 DOCKER_BUILDKIT=1 docker build \
@@ -231,17 +249,15 @@ pipeline {
                 
                 stage('Build GPU Worker') {
                     when { expression { params.DEPLOY_GPU_WORKERS } }
-                    // ========== FIXED: Separate timeout for GPU Worker ==========
                     options {
                         timeout(time: 60, unit: 'MINUTES')
                     }
                     steps {
                         script {
-                            echo "🏗️ Building GPU Worker (using base image)..."
+                            echo "🏗️ Building GPU Worker..."
                             def cacheFlag = params.FORCE_REBUILD ? "" : "--cache-from ${GPU_WORKER_REPO}:latest"
                             
                             sh """
-                                # Copy .dockerignore
                                 cp jenkins/docker/.dockerignore.backend BackEnd/.dockerignore || true
                                 
                                 DOCKER_BUILDKIT=1 docker build \
@@ -260,7 +276,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 5: Tag Celery Image
+        // Stage 6: Tag Celery Image
         // =====================================================================
         stage('Tag Celery') {
             when {
@@ -276,7 +292,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 6: Security Scan (Optional - skipped by default for speed)
+        // Stage 7: Security Scan (Optional)
         // =====================================================================
         stage('Security Scan') {
             when {
@@ -296,7 +312,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 7: Push to ECR (Parallel) - OPTIMIZATION
+        // Stage 8: Push to ECR (Parallel)
         // =====================================================================
         stage('Push to ECR') {
             parallel {
@@ -355,31 +371,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 8: Setup Kubernetes Resources (NEW - FIXED)
-        // =====================================================================
-        stage('Setup K8s Resources') {
-            steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-                    sh """
-                        echo "🔧 Setting up Kubernetes resources..."
-                        
-                        # Create namespace if not exists
-                        kubectl apply -f kubernetes/namespaces/namespaces.yaml
-                        
-                        # Apply secrets (idempotent - creates or updates)
-                        kubectl apply -f kubernetes/secrets/secrets.yaml -n ${env.NAMESPACE} || true
-                        
-                        # Apply ingress
-                        kubectl apply -f kubernetes/ingress/ingress.yaml -n ${env.NAMESPACE} || true
-                        
-                        echo "✅ K8s resources configured!"
-                    """
-                }
-            }
-        }
-
-        // =====================================================================
-        // Stage 9: Deploy to EKS (Parallel) - FIXED with kubectl apply
+        // Stage 9: Deploy to EKS (FIXED - Increased timeouts for ML loading)
         // =====================================================================
         stage('Deploy to EKS') {
             parallel {
@@ -390,17 +382,17 @@ pipeline {
                             sh """
                                 echo "🚀 Deploying Frontend..."
                                 
-                                # Apply deployment manifest (creates if not exists, updates if exists)
-                                kubectl apply -f kubernetes/apps/frontend/deployment.yaml -n ${env.NAMESPACE}
+                                # Apply deployment first (creates if not exists)
+                                kubectl apply -f kubernetes/apps/frontend/deployment.yaml -n imeetpro
                                 
-                                # Update the image to current build tag
+                                # Update image to current build
                                 kubectl set image deployment/frontend \
                                     frontend=${FRONTEND_REPO}:${IMAGE_TAG} \
-                                    -n ${env.NAMESPACE}
+                                    -n imeetpro
                                 
-                                # Wait for rollout to complete
+                                # Wait for rollout
                                 kubectl rollout status deployment/frontend \
-                                    -n ${env.NAMESPACE} --timeout=180s
+                                    -n imeetpro --timeout=300s
                             """
                         }
                         echo "✅ Frontend deployed!"
@@ -414,20 +406,18 @@ pipeline {
                             sh """
                                 echo "🚀 Deploying Backend..."
                                 
-                                # Apply configmap first
-                                kubectl apply -f kubernetes/apps/backend/configmap.yaml -n ${env.NAMESPACE}
+                                # Apply configmap and deployment first
+                                kubectl apply -f kubernetes/apps/backend/configmap.yaml -n imeetpro
+                                kubectl apply -f kubernetes/apps/backend/deployment.yaml -n imeetpro
                                 
-                                # Apply deployment manifest
-                                kubectl apply -f kubernetes/apps/backend/deployment.yaml -n ${env.NAMESPACE}
-                                
-                                # Update the image to current build tag
+                                # Update image to current build
                                 kubectl set image deployment/backend \
                                     backend=${BACKEND_REPO}:${IMAGE_TAG} \
-                                    -n ${env.NAMESPACE}
+                                    -n imeetpro
                                 
-                                # Wait for rollout to complete
+                                # INCREASED TIMEOUT: ML models take 3-5 mins to load
                                 kubectl rollout status deployment/backend \
-                                    -n ${env.NAMESPACE} --timeout=180s
+                                    -n imeetpro --timeout=600s
                             """
                         }
                         echo "✅ Backend deployed!"
@@ -439,19 +429,16 @@ pipeline {
                     steps {
                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
                             sh """
-                                echo "🚀 Deploying Celery Workers..."
+                                echo "🚀 Deploying Celery..."
                                 
-                                # Apply deployment manifest
-                                kubectl apply -f kubernetes/apps/celery/deployment.yaml -n ${env.NAMESPACE}
+                                kubectl apply -f kubernetes/apps/celery/deployment.yaml -n imeetpro
                                 
-                                # Update the image to current build tag
                                 kubectl set image deployment/celery-worker \
                                     celery-worker=${CELERY_REPO}:${IMAGE_TAG} \
-                                    -n ${env.NAMESPACE}
+                                    -n imeetpro
                                 
-                                # Wait for rollout to complete
                                 kubectl rollout status deployment/celery-worker \
-                                    -n ${env.NAMESPACE} --timeout=180s
+                                    -n imeetpro --timeout=300s
                             """
                         }
                         echo "✅ Celery deployed!"
@@ -463,19 +450,16 @@ pipeline {
                     steps {
                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
                             sh """
-                                echo "🚀 Deploying GPU Workers..."
+                                echo "🚀 Deploying GPU Worker..."
                                 
-                                # Apply all GPU worker manifests
-                                kubectl apply -f kubernetes/apps/gpu-workers/ -n ${env.NAMESPACE}
+                                kubectl apply -f kubernetes/apps/gpu-workers/deployment.yaml -n imeetpro
                                 
-                                # Update the image to current build tag
                                 kubectl set image deployment/gpu-worker \
                                     gpu-worker=${GPU_WORKER_REPO}:${IMAGE_TAG} \
-                                    -n ${env.NAMESPACE}
+                                    -n imeetpro
                                 
-                                # Wait for rollout to complete (longer timeout for GPU)
                                 kubectl rollout status deployment/gpu-worker \
-                                    -n ${env.NAMESPACE} --timeout=300s
+                                    -n imeetpro --timeout=600s
                             """
                         }
                         echo "✅ GPU Worker deployed!"
@@ -494,29 +478,17 @@ pipeline {
                         echo "============================================="
                         echo "        🔍 DEPLOYMENT VERIFICATION"
                         echo "============================================="
-                        echo ""
-                        echo "📦 Deployments:"
-                        kubectl get deployments -n ${env.NAMESPACE}
-                        echo ""
-                        echo "🐳 Pods:"
-                        kubectl get pods -n ${env.NAMESPACE}
-                        echo ""
-                        echo "🌐 Services:"
-                        kubectl get svc -n ${env.NAMESPACE}
-                        echo ""
-                        echo "🔗 Ingress:"
-                        kubectl get ingress -n ${env.NAMESPACE}
+                        kubectl get pods -n imeetpro
+                        kubectl get svc -n imeetpro
                         echo "============================================="
                     """
                     
-                    // Quick health checks for prod
                     script {
                         if (params.ENVIRONMENT == 'prod') {
                             sh '''
-                                echo "🏥 Running health checks..."
-                                sleep 10
-                                curl -sf --max-time 10 https://www.lancieretech.com -o /dev/null && echo "✅ Frontend: OK" || echo "⚠️ Frontend: Check needed"
-                                curl -sf --max-time 10 https://api.lancieretech.com/api/videos/lists -o /dev/null && echo "✅ Backend API: OK" || echo "⚠️ Backend API: Check needed"
+                                sleep 15
+                                curl -sf --max-time 30 https://www.lancieretech.com -o /dev/null && echo "✅ Frontend: OK" || echo "⚠️ Frontend: Check needed"
+                                curl -sf --max-time 30 https://api.lancieretech.com/health -o /dev/null && echo "✅ Backend API: OK" || echo "⚠️ Backend API: Check needed"
                             '''
                         }
                     }
@@ -525,9 +497,6 @@ pipeline {
         }
     }
 
-    // =========================================================================
-    // Post Actions
-    // =========================================================================
     post {
         success {
             echo "✅ Pipeline completed in ${currentBuild.durationString.replace(' and counting', '')}!"
@@ -538,14 +507,6 @@ pipeline {
                     <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
                     <p><b>Build Tag:</b> ${IMAGE_TAG}</p>
                     <p><b>Duration:</b> ${currentBuild.durationString.replace(' and counting', '')}</p>
-                    <hr>
-                    <h3>Deployed Components:</h3>
-                    <ul>
-                        <li>Frontend: ${params.DEPLOY_FRONTEND ? '✅' : '⏭️ Skipped'}</li>
-                        <li>Backend: ${params.DEPLOY_BACKEND ? '✅' : '⏭️ Skipped'}</li>
-                        <li>Celery: ${params.DEPLOY_CELERY ? '✅' : '⏭️ Skipped'}</li>
-                        <li>GPU Worker: ${params.DEPLOY_GPU_WORKERS ? '✅' : '⏭️ Skipped'}</li>
-                    </ul>
                     <hr>
                     <p>🎯 <a href="https://www.lancieretech.com">Frontend</a> | <a href="https://api.lancieretech.com">Backend API</a></p>
                 """,
@@ -562,10 +523,7 @@ pipeline {
                     <h2>❌ iMeetPro CI/CD - FAILURE</h2>
                     <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
                     <p><b>Build Tag:</b> ${IMAGE_TAG}</p>
-                    <p><b>Failed Stage:</b> ${env.STAGE_NAME}</p>
-                    <hr>
-                    <p>🔗 <a href="${env.BUILD_URL}">View Jenkins Build</a></p>
-                    <p>📋 <a href="${env.BUILD_URL}console">View Console Output</a></p>
+                    <p>🔗 <a href="${env.BUILD_URL}">Jenkins Build</a></p>
                 """,
                 mimeType: 'text/html',
                 to: 'lancieretech@googlegroups.com'

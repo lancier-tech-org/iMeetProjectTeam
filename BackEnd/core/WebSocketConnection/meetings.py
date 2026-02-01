@@ -96,10 +96,12 @@ except ImportError as e:
 
 # Redis configuration for caching
 REDIS_CONFIG = {
-    'host': os.getenv("REDIS_HOST", "127.0.0.1"),
+    'host': os.getenv("DEFAULT_REDIS_HOST", "redis.databases.svc.cluster.local"),
     'port': int(os.getenv("REDIS_PORT", 6379)),
     'db': int(os.getenv("REDIS_DB", 0)),
-    'decode_responses': os.getenv("REDIS_DECODE_RESPONSES", "True") == "True"
+    'decode_responses': True,
+    'socket_timeout': 2,
+    'socket_connect_timeout': 2
 }
 
 # Initialize Redis client
@@ -291,11 +293,20 @@ class ProductionLiveKitService:
         
         # Optional Redis connection
         try:
-            self.redis_client = redis.Redis(host='192.168.48.201', port=6379, db=0, decode_responses=True)
+            redis_host = os.getenv("DEFAULT_REDIS_HOST", "redis.databases.svc.cluster.local")
+            self.redis_client = redis.Redis(
+                host=redis_host,
+                port=6379,
+                db=0,
+                decode_responses=True,
+                socket_timeout=2,
+                socket_connect_timeout=2
+            )
             self.redis_client.ping()
-            logging.info("✅ Redis connected for caching")
-        except:
-            logging.info("ℹ Redis not available, proceeding without caching")
+            logging.info(f"✅ Redis connected for caching at {redis_host}")
+        except Exception as e:
+            logging.info(f"ℹ Redis not available ({e}), proceeding without caching")
+            self.redis_client = None
     
     def generate_admin_token(self) -> str:
         """Generate admin JWT token with correct structure for LiveKit API"""
