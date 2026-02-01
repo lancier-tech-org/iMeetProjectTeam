@@ -1,4 +1,4 @@
-// src/components/meeting/MeetingRoom.jsx - COMPLETE REFACTORED VERSION
+  // src/components/meeting/MeetingRoom.jsx - COMPLETE REFACTORED VERSION
 import React, {
   useState,
   useEffect,
