@@ -631,6 +631,13 @@ class StreamingRecordingWithChunks:
         self.last_screen_frame = None  # Store last frame for gap filling
         self.last_screen_frame_time = 0  # When was last frame received
         self.screen_share_lock = threading.Lock()
+        
+        # ✅ NEW: Ring buffer for timeline-driven video writing
+        from collections import deque
+        self.frame_ring_buffer = deque(maxlen=10)  # Last 10 frames
+        self.frame_buffer_lock = threading.Lock()
+        self.video_writer_thread = None
+        self.placeholder_frame = None  # Generated once on startup
 
         # Audio mixer for multiple sources
         self.audio_sources = {}  # {source_id: deque of samples}
@@ -651,6 +658,37 @@ class StreamingRecordingWithChunks:
         
         logger.info(f"✅ Production Recorder initialized - Target: {target_fps} FPS")
         logger.info(f"📝 Output file: {self.temp_video_path}")
+
+    def _create_placeholder_frame(self):
+        """Create a placeholder frame for when no screen share is active"""
+        try:
+            import cv2
+            import numpy as np
+            
+            # Create 1280x720 dark gray frame
+            frame = np.full((720, 1280, 3), 40, dtype=np.uint8)
+            
+            # Add text: "Waiting for screen share..."
+            text = "Waiting for screen share..."
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 1.5
+            thickness = 3
+            color = (200, 200, 200)
+            
+            # Get text size for centering
+            text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+            text_x = (1280 - text_size[0]) // 2
+            text_y = (720 + text_size[1]) // 2
+            
+            cv2.putText(frame, text, (text_x, text_y), font, font_scale, color, thickness)
+            
+            self.placeholder_frame = frame
+            logger.info("✅ Placeholder frame created")
+            
+        except Exception as e:
+            logger.error(f"Failed to create placeholder: {e}")
+            # Fallback: solid gray frame
+            self.placeholder_frame = np.full((720, 1280, 3), 60, dtype=np.uint8)
 
     def _start_audio_clock_thread(self):
         """Independent master clock that pulls & writes audio at perfect rate"""
@@ -810,7 +848,11 @@ class StreamingRecordingWithChunks:
             logger.info("✅ All pipes ready - recording enabled")
             
             self._start_audio_clock_thread()
-            # Video writes directly on frame arrival (no separate thread)
+            
+            # ✅ NEW: Start timeline-driven video writer
+            self._create_placeholder_frame()
+            self._start_video_writer_thread()
+
             # Start chunk uploader (video only)
             self.chunk_uploader = S3ChunkUploader(
                 bucket=AWS_S3_BUCKET,
@@ -877,7 +919,7 @@ class StreamingRecordingWithChunks:
             logger.error(f"Cleanup error: {e}")
     
     def add_video_frame(self, frame, source_type="video"):
-        """Write video frame directly to FFmpeg on arrival (variable frame rate)"""
+        """Store video frame in ring buffer with timestamp (capture layer)"""
         if not self.is_recording:
             return
         
@@ -892,43 +934,155 @@ class StreamingRecordingWithChunks:
             if source_type == "screen_share":
                 current_pts = self.timeline.get_current_pts()
                 
-                # Write frame immediately to FFmpeg
-                with self.video_lock:
-                    # Resize if needed
-                    if frame.shape[:2] != (720, 1280):
-                        frame = cv2.resize(frame, (1280, 720))
+                # Resize if needed
+                if frame.shape[:2] != (720, 1280):
+                    frame = cv2.resize(frame, (1280, 720))
+                
+                # Store in ring buffer with timestamp
+                with self.frame_buffer_lock:
+                    self.frame_ring_buffer.append({
+                        'frame': frame.copy(),
+                        'pts': current_pts,
+                        'capture_time': time.perf_counter()
+                    })
                     
-                    # Write to stdin
-                    if self.ffmpeg_video_pipe and self.ffmpeg_video_process.poll() is None:
-                        try:
-                            self.ffmpeg_video_pipe.write(frame.tobytes())
-                            
-                            # Flush every 10 frames
-                            if self.frames_written % 10 == 0:
-                                self.ffmpeg_video_pipe.flush()
-                            
-                            self.frames_written += 1
-                            
-                            # Update screen share state
-                            with self.screen_share_lock:
-                                self.last_screen_frame = frame.copy()
-                                self.last_screen_frame_time = time.perf_counter()
-                                self.has_screen_share = True
-                            
-                            # Periodic logging
-                            if self.frames_written % 200 == 0:
-                                logger.info(
-                                    f"📹 Video: {self.frames_written} frames | "
-                                    f"Timeline: {current_pts:.1f}s | "
-                                    f"Source: {source_type}"
-                                )
-                        except (BrokenPipeError, IOError) as e:
-                            logger.error(f"❌ Video write error: {e}")
-                            self.is_recording = False
+                    # Update screen share state
+                    with self.screen_share_lock:
+                        self.last_screen_frame = frame.copy()
+                        self.last_screen_frame_time = time.perf_counter()
+                        self.has_screen_share = True
                     
         except Exception as e:
-            logger.warning(f"Frame write error: {e}")
+            logger.warning(f"Frame buffer error: {e}")
 
+    def _start_video_writer_thread(self):
+        """Start timeline-driven video writer (proactive, not reactive)"""
+        def video_writer_loop():
+            logger.info("🎬 Video writer clock thread started (20 FPS)")
+            frame_interval = 1.0 / self.target_fps  # 0.05 seconds for 20 FPS
+            next_frame_pts = 0.0
+            frames_written_local = 0
+            last_log_time = time.perf_counter()
+            
+            while self.is_recording and not self.stop_event.is_set():
+                try:
+                    # Skip writing when timeline is paused
+                    if self.timeline.is_paused:
+                        time.sleep(0.1)
+                        next_frame_pts = self.timeline.get_current_pts()  # Reset on resume
+                        continue
+                    
+                    current_pts = self.timeline.get_current_pts()
+                    
+                    # Only write if we've reached the next frame time
+                    if current_pts >= next_frame_pts:
+                        # Select frame to write
+                        frame_to_write = self._get_frame_for_pts(next_frame_pts)
+                        
+                        if frame_to_write is not None:
+                            # Write to FFmpeg
+                            with self.video_lock:
+                                if self.ffmpeg_video_pipe and self.ffmpeg_video_process.poll() is None:
+                                    try:
+                                        self.ffmpeg_video_pipe.write(frame_to_write.tobytes())
+                                        
+                                        # Flush every 10 frames
+                                        if frames_written_local % 10 == 0:
+                                            self.ffmpeg_video_pipe.flush()
+                                        
+                                        frames_written_local += 1
+                                        self.frames_written = frames_written_local
+                                        
+                                        # Periodic logging
+                                        now = time.perf_counter()
+                                        if now - last_log_time >= 5.0:
+                                            logger.info(
+                                                f"📹 Video Writer: {frames_written_local} frames | "
+                                                f"Timeline: {current_pts:.1f}s | "
+                                                f"Target PTS: {next_frame_pts:.2f}s"
+                                            )
+                                            last_log_time = now
+                                        
+                                    except (BrokenPipeError, IOError) as e:
+                                        logger.error(f"❌ Video write error: {e}")
+                                        self.is_recording = False
+                                        break
+                        
+                        # Advance to next frame time
+                        next_frame_pts += frame_interval
+                    
+                    # Sleep for a fraction of frame interval
+                    time.sleep(frame_interval / 4)  # 12.5ms for 20 FPS
+                    
+                except Exception as e:
+                    logger.error(f"Video writer error: {e}")
+                    time.sleep(0.1)
+            
+            logger.info(f"✅ Video writer clock stopped - {frames_written_local} frames written")
+        
+        self.video_writer_thread = threading.Thread(
+            target=video_writer_loop,
+            name="VideoWriterClock",
+            daemon=True
+        )
+        self.video_writer_thread.start()
+        logger.info("✅ Video writer clock thread launched")
+
+    def _get_frame_for_pts(self, target_pts):
+        """Get the best frame for a given timeline PTS"""
+        try:
+            with self.frame_buffer_lock:
+                # If no frames in buffer yet
+                if len(self.frame_ring_buffer) == 0:
+                    # Check if we have screen share active
+                    with self.screen_share_lock:
+                        if self.has_screen_share and self.last_screen_frame is not None:
+                            # Use last known screen frame
+                            return self.last_screen_frame.copy()
+                        else:
+                            # Use placeholder
+                            if self.placeholder_frame is None:
+                                self._create_placeholder_frame()
+                            return self.placeholder_frame.copy()
+                
+                # Find frame closest to target PTS (but not in the future)
+                best_frame = None
+                best_diff = float('inf')
+                
+                for frame_data in self.frame_ring_buffer:
+                    frame_pts = frame_data['pts']
+                    
+                    # Only consider frames at or before target PTS
+                    if frame_pts <= target_pts:
+                        diff = abs(target_pts - frame_pts)
+                        if diff < best_diff:
+                            best_diff = diff
+                            best_frame = frame_data['frame']
+                
+                # If we found a good frame, return it
+                if best_frame is not None:
+                    return best_frame.copy()
+                
+                # Fallback: use most recent frame
+                if len(self.frame_ring_buffer) > 0:
+                    return self.frame_ring_buffer[-1]['frame'].copy()
+                
+                # Last resort: placeholder
+                with self.screen_share_lock:
+                    if self.has_screen_share and self.last_screen_frame is not None:
+                        return self.last_screen_frame.copy()
+                    else:
+                        if self.placeholder_frame is None:
+                            self._create_placeholder_frame()
+                        return self.placeholder_frame.copy()
+                
+        except Exception as e:
+            logger.error(f"Frame selection error: {e}")
+            # Emergency fallback
+            if self.placeholder_frame is None:
+                self._create_placeholder_frame()
+            return self.placeholder_frame.copy()
+        
     def add_audio_samples(self, samples, participant_id="unknown", source_type="microphone"):
         """
         Just store incoming audio samples per source — do NOT mix or write here.
@@ -1093,11 +1247,19 @@ class StreamingRecordingWithChunks:
         # Stop timeline
         final_pts = self.timeline.stop()
 
-        logger.info(f"🛑 Stopping recording - Final duration: {final_pts:.1f}s")
-        logger.info(f"   - Frames: {self.frames_written}, Audio samples: {self.audio_samples_written}")
+        expected_frames = int(final_pts * self.target_fps)
+        frame_match_pct = (self.frames_written / expected_frames * 100) if expected_frames > 0 else 0
         
-        # Wait for pending writes + clock to wind down
-        time.sleep(1.2)        
+        logger.info(f"🛑 Stopping recording - Final duration: {final_pts:.1f}s")
+        logger.info(f"   - Expected frames: {expected_frames} ({self.target_fps} FPS)")
+        logger.info(f"   - Actual frames: {self.frames_written} ({frame_match_pct:.1f}% match)")
+        logger.info(f"   - Audio samples: {self.audio_samples_written}")
+        
+        if frame_match_pct < 95:
+            logger.warning(f"⚠️ Frame count low - video writer may have issues")
+        else:
+            logger.info(f"✅ Frame count acceptable")
+            
         # Close video stdin
         if self.ffmpeg_video_pipe:
             try:
@@ -2443,90 +2605,39 @@ class FixedGoogleMeetRecorder:
                     except Exception as e:
                         logger.warning(f"⚠️ Audio duration detection failed: {e}")
                 
-                # Step 2: Normalize video to match audio duration (if needed)
+                # ✅ NEW: Validate frame count instead of post-processing
+                expected_frames = int(duration * self.target_fps)
+                actual_frames_written = recording_info.get("bot_instance").stream_recorder.frames_written
+                
+                logger.info(f"📊 Frame count validation:")
+                logger.info(f"   Timeline duration: {duration:.2f}s")
+                logger.info(f"   Expected frames: {expected_frames} ({self.target_fps} FPS)")
+                logger.info(f"   Actual frames written: {actual_frames_written}")
+                
+                frame_diff_pct = abs(expected_frames - actual_frames_written) / expected_frames * 100
+                
+                if frame_diff_pct > 5:
+                    logger.warning(f"⚠️ Frame count mismatch: {frame_diff_pct:.1f}% difference")
+                    logger.warning(f"   This indicates video writer timing issues")
+                else:
+                    logger.info(f"✅ Frame count acceptable: {frame_diff_pct:.1f}% difference")
+                
+                # No normalization needed - timeline-driven writing ensures sync
                 normalized_video_file = video_file
-                
-                if audio_exists and audio_duration > 0 and video_duration > 0:
-                    duration_diff = abs(audio_duration - video_duration)
-                    duration_ratio = audio_duration / video_duration
-                    
-                    # Only normalize if difference is significant (>2s or >5% ratio)
-                    if duration_diff > 2.0 or abs(duration_ratio - 1.0) > 0.05:
-                        logger.info(f"🔧 Duration mismatch: Video={video_duration:.2f}s, Audio={audio_duration:.2f}s")
-                        logger.info(f"🎬 Normalizing video to match audio duration...")
-                        
-                        # Create normalized video with timestamp stretching
-                        normalized_fd, normalized_video_file = tempfile.mkstemp(
-                            suffix='.mp4',
-                            prefix=f'normalized_{meeting_id}_'
-                        )
-                        os.close(normalized_fd)
-                        
-                        # Calculate correct setpts factor (CORRECTED FORMULA)
-                        # To stretch video from video_duration to audio_duration:
-                        # setpts = (audio_duration / video_duration) * PTS
-                        setpts_factor = audio_duration / video_duration
-                        
-                        logger.info(f"🔢 Stretch factor: {setpts_factor:.3f}x (makes video slower)")
-                        
-                        # Use fps filter to duplicate frames for smooth playback
-                        # This generates intermediate frames via interpolation
-                        normalize_cmd = [
-                            'ffmpeg', '-y',
-                            '-i', video_file,
-                            '-vf', f'setpts={setpts_factor}*PTS,fps=20',
-                            '-c:v', 'libx264',
-                            '-preset', 'ultrafast',  # Fast encoding for production
-                            '-crf', '23',
-                            '-pix_fmt', 'yuv420p',
-                            '-an',  # No audio in normalized video
-                            normalized_video_file
-                        ]
-                        
-                        logger.info(f"🔧 Running: ffmpeg -vf 'setpts={setpts_factor}*PTS,fps=20'")
-                        
-                        result = subprocess.run(
-                            normalize_cmd,
-                            capture_output=True,
-                            timeout=600  # 10 minutes max
-                        )
-                        
-                        if result.returncode != 0:
-                            stderr = result.stderr.decode('utf-8', errors='ignore')
-                            logger.warning(f"⚠️ Normalization failed: {stderr[-500:]}")
-                            logger.warning(f"⚠️ Falling back to original video")
-                            normalized_video_file = video_file  # Fallback to original
-                        else:
-                            normalized_size = os.path.getsize(normalized_video_file)
-                            logger.info(f"✅ Video normalized: {normalized_size:,} bytes")
-                            
-                            # Verify normalized duration
-                            try:
-                                probe_cmd = [
-                                    'ffprobe', '-v', 'error', '-show_entries',
-                                    'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1',
-                                    normalized_video_file
-                                ]
-                                result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
-                                normalized_duration = float(result.stdout.strip())
-                                logger.info(f"✅ Normalized duration: {normalized_duration:.2f}s (target: {audio_duration:.2f}s)")
-                            except:
-                                pass
-                    else:
-                        logger.info(f"✅ Duration difference acceptable: {duration_diff:.2f}s (ratio: {duration_ratio:.3f})")
-                
-                # Step 3: Merge normalized video with audio
+
+                # Step 2: Merge video with audio (no normalization needed)
                 if audio_exists:
                     merge_cmd = [
                         'ffmpeg', '-y',
-                        '-i', normalized_video_file,
+                        '-i', normalized_video_file,  # Already correct from timeline-driven writer
                         '-i', audio_file,
                         '-c:v', 'copy',  # Copy video stream (no re-encode)
                         '-c:a', 'aac',
                         '-b:a', '192k',
+                        '-shortest',  # Safety: use shortest stream
                         merged_file
                     ]
-                    logger.info("🔀 Merging normalized video + audio...")
+                    logger.info("🔀 Merging video + audio (timeline-synced)...")
                 else:
                     merge_cmd = [
                         'ffmpeg', '-y',
@@ -2563,7 +2674,7 @@ class FixedGoogleMeetRecorder:
                         pass
                 
                 output_file = merged_file
-                
+
             except Exception as merge_error:
                 logger.error(f"❌ Merge failed: {merge_error}")
                 if os.path.exists(video_file):
