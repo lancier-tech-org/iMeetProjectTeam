@@ -1259,7 +1259,7 @@ class StreamingRecordingWithChunks:
             logger.warning(f"⚠️ Frame count low - video writer may have issues")
         else:
             logger.info(f"✅ Frame count acceptable")
-            
+
         # Close video stdin
         if self.ffmpeg_video_pipe:
             try:
@@ -2605,25 +2605,9 @@ class FixedGoogleMeetRecorder:
                     except Exception as e:
                         logger.warning(f"⚠️ Audio duration detection failed: {e}")
                 
-                # ✅ NEW: Validate frame count instead of post-processing
-                expected_frames = int(duration * self.target_fps)
-                actual_frames_written = recording_info.get("bot_instance").stream_recorder.frames_written
-                
-                logger.info(f"📊 Frame count validation:")
-                logger.info(f"   Timeline duration: {duration:.2f}s")
-                logger.info(f"   Expected frames: {expected_frames} ({self.target_fps} FPS)")
-                logger.info(f"   Actual frames written: {actual_frames_written}")
-                
-                frame_diff_pct = abs(expected_frames - actual_frames_written) / expected_frames * 100
-                
-                if frame_diff_pct > 5:
-                    logger.warning(f"⚠️ Frame count mismatch: {frame_diff_pct:.1f}% difference")
-                    logger.warning(f"   This indicates video writer timing issues")
-                else:
-                    logger.info(f"✅ Frame count acceptable: {frame_diff_pct:.1f}% difference")
-                
                 # No normalization needed - timeline-driven writing ensures sync
                 normalized_video_file = video_file
+                logger.info("✅ Using timeline-synced video (no normalization needed)")
 
                 # Step 2: Merge video with audio (no normalization needed)
                 if audio_exists:
@@ -2698,6 +2682,30 @@ class FixedGoogleMeetRecorder:
             except Exception as e:
                 logger.warning(f"⚠️ Duration extraction failed: {e}")
                 duration = 0
+
+            # ==================== VALIDATE FRAME COUNT ====================
+            try:
+                actual_frames_written = recording_info.get("bot_instance").stream_recorder.frames_written
+                timeline_duration = recording_info.get("bot_instance").stream_recorder.timeline.timeline_pts
+                expected_frames = int(timeline_duration * self.target_fps)
+                
+                logger.info(f"📊 Frame count validation:")
+                logger.info(f"   Timeline duration: {timeline_duration:.2f}s")
+                logger.info(f"   Video file duration: {duration:.2f}s")
+                logger.info(f"   Expected frames: {expected_frames} ({self.target_fps} FPS)")
+                logger.info(f"   Actual frames written: {actual_frames_written}")
+                
+                if expected_frames > 0:
+                    frame_diff_pct = abs(expected_frames - actual_frames_written) / expected_frames * 100
+                    
+                    if frame_diff_pct > 5:
+                        logger.warning(f"⚠️ Frame count mismatch: {frame_diff_pct:.1f}% difference")
+                        logger.warning(f"   This indicates video writer timing issues")
+                    else:
+                        logger.info(f"✅ Frame count acceptable: {frame_diff_pct:.1f}% difference")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Frame validation error: {e}")
 
             # Verify file exists with retry logic
             logger.info(f"🔍 Checking output file: {output_file}")
