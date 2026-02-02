@@ -107,7 +107,7 @@ const AttendanceConfig = {
   DETECTION_INTERVAL: 20,
   GRACE_PERIOD_DURATION: 2,
   CAMERA_VERIFICATION_TIMEOUT: 5,
-  CAMERA_PROMPT_DELAY: 3000, // 3 seconds delay before showing camera prompt
+  CAMERA_PROMPT_DELAY: 3000,
 };
 
 // ==================== MAIN COMPONENT ====================
@@ -271,7 +271,6 @@ const AttendanceTracker = ({
     if (!message) return;
     setToastMessage(message);
     setToastSeverity(severity);
-    // Use filled variant for high severity/warnings to stand out
     setToastVariant(severity === 'error' || severity === 'warning' ? 'filled' : 'standard');
     setToastOpen(true);
   }, []);
@@ -284,7 +283,6 @@ const AttendanceTracker = ({
   // ==================== DISPLAY NOTIFICATION SYSTEM ====================
   const showViolationPopup = useCallback(
     (message, type = "warning", force = false) => {
-      // Host check - ignore non-critical messages
       if (
         currentTrackingMode !== "participant" &&
         type !== "info" &&
@@ -293,7 +291,6 @@ const AttendanceTracker = ({
         return;
       }
 
-      // ✅ TERMINATION CHECK: Only Modal for Removal/Blocking
       const isTermination = 
         type === "error" && 
         (message.toLowerCase().includes("terminated") || 
@@ -304,20 +301,17 @@ const AttendanceTracker = ({
         setTerminationMessage(message);
         setShowTerminationPopup(true);
       } else {
-        // ✅ EVERYTHING ELSE -> TOAST
         if (type === "success" && !force) {
            if (!showSuccessPopup) return;
            setShowSuccessPopup(false);
         }
         
-        // Map notification types to toast severity
         let toastType = type;
         if(type === "violation") toastType = "warning";
 
         triggerToast(message, toastType);
       }
 
-      // Call onViolation callback
       if (onViolation) {
         onViolation({ message, type, timestamp: Date.now() });
       }
@@ -325,18 +319,37 @@ const AttendanceTracker = ({
     [currentTrackingMode, onViolation, showSuccessPopup, triggerToast]
   );
 
-  // ==================== API CALL FUNCTION ====================
+  // ============================================================
+  // ✅ FIXED: API CALL FUNCTION WITH EXPLICIT POST METHOD
+  // ============================================================
   const apiCall = useCallback(
     async (endpoint, method = "GET", data = null) => {
-      const url = `/api/attendance${endpoint}`;
+      // ✅ FIXED: Ensure endpoint formatting is correct
+      const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+      
+      // ✅ FIXED: Build URL without double slashes
+      const baseUrl = '/api/attendance';
+      let url = `${baseUrl}${cleanEndpoint}`;
+      
+      // ✅ FIXED: Remove any double slashes (except in protocol)
+      url = url.replace(/([^:]\/)\/+/g, "$1");
+      
+      // ✅ FIXED: Ensure method is uppercase
+      const httpMethod = method.toUpperCase();
+      
+      console.log(`[API CALL] ${httpMethod} ${url}`, data ? JSON.stringify(data).substring(0, 100) + '...' : 'no data');
+      
       const options = {
-        method,
+        method: httpMethod, // ✅ FIXED: Explicit uppercase method
         headers: {
           "Content-Type": "application/json",
+          "Accept": "application/json",
         },
+        credentials: 'same-origin', // ✅ FIXED: Include credentials for same-origin requests
       };
 
-      if (data) {
+      // ✅ FIXED: Only add body for methods that support it
+      if (data && ["POST", "PUT", "PATCH"].includes(httpMethod)) {
         options.body = JSON.stringify({
           ...data,
           current_tracking_mode: currentTrackingMode,
@@ -345,12 +358,53 @@ const AttendanceTracker = ({
         });
       }
 
-      const response = await fetch(url, options);
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      try {
+        console.log(`[API REQUEST] Sending ${httpMethod} to ${url}`);
+        console.log(`[API REQUEST] Options:`, {
+          method: options.method,
+          headers: options.headers,
+          hasBody: !!options.body,
+        });
+        
+        const response = await fetch(url, options);
+        
+        console.log(`[API RESPONSE] Status: ${response.status}, OK: ${response.ok}, URL: ${response.url}`);
+        
+        // ✅ FIXED: Check if we were redirected (which might change method to GET)
+        if (response.url !== url && !response.url.endsWith(cleanEndpoint)) {
+          console.warn(`[API WARNING] Request was redirected from ${url} to ${response.url}`);
+        }
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`[API ERROR] ${httpMethod} ${url} - ${response.status}: ${errorText.substring(0, 200)}`);
+          
+          // ✅ FIXED: Better error message for 405
+          if (response.status === 405) {
+            throw new Error(`HTTP 405: Method ${httpMethod} not allowed. Server may be redirecting POST to GET. Check nginx/server config.`);
+          }
+          
+          throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
+        
+        const jsonResponse = await response.json();
+        console.log(`[API SUCCESS] ${httpMethod} ${url} - Response received`);
+        return jsonResponse;
+        
+      } catch (error) {
+        console.error(`[API EXCEPTION] ${httpMethod} ${url} - ${error.message}`);
+        
+        // ✅ FIXED: Add helpful debugging info
+        if (error.message.includes('405')) {
+          console.error(`[API DEBUG] 405 Error Troubleshooting:`);
+          console.error(`  1. Check if endpoint ${url} accepts ${httpMethod} requests`);
+          console.error(`  2. Check nginx/proxy configuration for redirects`);
+          console.error(`  3. Ensure trailing slash matches backend URL pattern`);
+          console.error(`  4. Check CORS configuration`);
+        }
+        
+        throw error;
       }
-      return await response.json();
     },
     [currentTrackingMode, sessionStartTime]
   );
@@ -370,7 +424,6 @@ const AttendanceTracker = ({
       setIsTracking(false);
       setIsTerminating(true);
 
-      // Close camera prompt if open
       setShowCameraEnablePrompt(false);
 
       try {
@@ -423,7 +476,6 @@ const AttendanceTracker = ({
         console.error("Termination cleanup error:", cleanupError);
       }
 
-      // ✅ SHOW TERMINATION MODAL (The only allowed popup)
       showViolationPopup(message, "error");
 
       setTerminationCountdown(3);
@@ -705,7 +757,6 @@ const AttendanceTracker = ({
         session_start_time: sessionStartTime,
       };
 
-      // Backend handles BOTH behavior (20s check) and identity (1s check)
       const response = await apiCall("/detect/", "POST", analysisState);
 
       if (mountedRef.current && !isSessionTerminated) {
@@ -758,11 +809,9 @@ const AttendanceTracker = ({
       // 1. IDENTITY VERIFICATION
       // ============================================================
       
-      // Sync state (Backend source: 508)
       if (response.identity_warning_count !== undefined) {
         setAuthWarningCount(response.identity_warning_count);
         
-        // Update visual status based on backend counts
         if (response.identity_warning_count > 0) {
            setFaceAuthStatus("unauthorized");
         } else if (response.identity_verified) {
@@ -770,14 +819,10 @@ const AttendanceTracker = ({
         }
       }
 
-      // ✅ CHECK 1: Identity Toast (Backend Source: 213, 220)
-      // The backend ONLY sends 'identity_popup' when 5s threshold is reached.
       if (response.identity_popup && response.identity_popup.trim() !== "") {
          triggerToast(response.identity_popup, "error");
       }
 
-      // ✅ CHECK 2: Identity Removal (Backend Source: 198)
-      // Strict check for identity_is_removed flag
       if (response.identity_is_removed === true || (response.status === "removed_from_meeting" && response.removal_type === "identity_verification")) {
          setIsAuthBlocked(true);
          handleSessionTermination(
@@ -791,15 +836,13 @@ const AttendanceTracker = ({
       // 2. BEHAVIORAL ANALYSIS 
       // ============================================================
 
-      // ✅ CHECK 3: Behavior Toast (Backend Source: 551, 570)
-      // The backend ONLY sends 'popup' when the 20-sec cooldown is met.
       if (response.popup && response.popup.trim() !== "") {
         let popupType = "warning";
         
         if (response.popup.includes("Detection")) {
-             popupType = "error"; // Red for detections (penalty phase)
+             popupType = "error";
         } else if (response.popup.includes("Warning")) {
-             popupType = "warning"; // Orange for warnings
+             popupType = "warning";
         } else if (response.popup.includes("Inactivity")) {
              popupType = "info";
         }
@@ -807,8 +850,6 @@ const AttendanceTracker = ({
         triggerToast(response.popup, popupType);
       }
 
-      // ✅ CHECK 4: Continuous Removal (Backend Source: 584)
-      // Strict check for continuous removal flag
       if (response.status === "participant_removed" || response.removal_type === "continuous_violations") {
         handleSessionTermination(
           "continuous_violations",
@@ -817,7 +858,6 @@ const AttendanceTracker = ({
         return;
       }
 
-      // Grace Period Check
       if (response.grace_period_active) {
         const gracePeriodTimeRemaining = (response.grace_period_expires_in || 0) * 1000;
         setGracePeriodActive(true);
@@ -837,7 +877,6 @@ const AttendanceTracker = ({
         gracePeriodRef.current.until = 0;
       }
 
-      // Update Attendance Data
       if (response.attendance_percentage !== undefined) {
         setAttendanceData((prev) => ({
           ...prev,
@@ -847,12 +886,10 @@ const AttendanceTracker = ({
         }));
       }
 
-      // Update Violation List
       if (response.violations && Array.isArray(response.violations)) {
         setCurrentViolations(response.violations);
       }
 
-      // Update Warning Counts
       if (response.warning_count !== undefined) {
         setWarningCount(response.warning_count);
       }
@@ -861,7 +898,6 @@ const AttendanceTracker = ({
         setWarningsExhausted(response.warning_phase_complete);
       }
 
-      // Call Parent Callback
       if (onStatusChange) {
         onStatusChange({
           status: response.status,
@@ -1384,7 +1420,6 @@ const AttendanceTracker = ({
           intervalRef.current = null;
         }
 
-        // Close camera prompt if it was open
         setShowCameraEnablePrompt(false);
         setCameraPromptDismissed(false);
         if (cameraPromptTimerRef.current) {
@@ -1464,26 +1499,36 @@ const AttendanceTracker = ({
     [currentTrackingMode, attendanceData.attendancePercentage]
   );
 
-  // ==================== START TRACKING ====================
+  // ============================================================
+  // ✅ FIXED: START TRACKING WITH BETTER ERROR HANDLING
+  // ============================================================
   const startTracking = useCallback(async () => {
     if (!meetingId || !userId || !mountedRef.current) {
+      console.warn("[START TRACKING] Missing meetingId or userId");
       return false;
     }
 
     if (isSessionTerminated || isSessionPermanentlyEnded) {
+      console.warn("[START TRACKING] Session already terminated");
       return false;
     }
 
+    console.log(`[START TRACKING] Starting for meeting: ${meetingId}, user: ${userId}`);
+
     try {
+      // Initialize camera if needed
       if (!videoReady && !isOnBreak) {
+        console.log("[START TRACKING] Initializing camera...");
         const cameraReady = await initializeCamera();
         if (!cameraReady || !mountedRef.current || isSessionTerminated) {
           showViolationPopup("Camera initialization failed", "error");
           return false;
         }
+        console.log("[START TRACKING] Camera initialized successfully");
       }
 
-      const response = await apiCall("/start/", "POST", {
+      // ✅ FIXED: Prepare the request data explicitly
+      const requestData = {
         meeting_id: meetingId,
         user_id: userId,
         user_name: userName,
@@ -1492,14 +1537,24 @@ const AttendanceTracker = ({
         is_host: isHost,
         is_cohost: isCoHost,
         should_detect_violations: shouldDetectViolations,
-      });
+      };
+
+      console.log("[START TRACKING] Sending POST request to /start/");
+      console.log("[START TRACKING] Request data:", JSON.stringify(requestData).substring(0, 200));
+
+      // ✅ FIXED: Make the API call with explicit POST
+      const response = await apiCall("/start/", "POST", requestData);
+
+      console.log("[START TRACKING] Response received:", response);
 
       if (!mountedRef.current || isSessionTerminated) {
         return false;
       }
 
+      // Update state on success
       setSessionActive(true);
       setIsTracking(true);
+      
       if (currentTrackingMode === "participant") {
         setWarningCount(0);
         setWarningsExhausted(false);
@@ -1507,11 +1562,13 @@ const AttendanceTracker = ({
         setIsAuthBlocked(false);
       }
 
+      // Clear any existing interval
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
 
+      // Start the detection interval
       intervalRef.current = setInterval(() => {
         if (mountedRef.current && !isSessionTerminated) {
           captureAndAnalyze();
@@ -1523,6 +1580,7 @@ const AttendanceTracker = ({
         }
       }, 3000);
 
+      // Initial capture
       if (!isOnBreak) {
         setTimeout(() => {
           if (mountedRef.current && !isOnBreak && !isSessionTerminated) {
@@ -1531,6 +1589,7 @@ const AttendanceTracker = ({
         }, 500);
       }
 
+      // Show success message
       if (showSuccessPopup) {
         const message =
           currentTrackingMode === "participant"
@@ -1540,9 +1599,28 @@ const AttendanceTracker = ({
       }
 
       return true;
+      
     } catch (error) {
-      console.error("Failed to start:", error);
-      showViolationPopup(`Failed to start: ${error.message}`, "error");
+      console.error("[START TRACKING] Failed:", error);
+      
+      // ✅ FIXED: Better error messages for specific HTTP errors
+      let errorMessage = error.message;
+      
+      if (error.message.includes("405")) {
+        errorMessage = "Server configuration error (HTTP 405 - Method Not Allowed). The server is not accepting POST requests. Please contact support or check nginx configuration.";
+        console.error("[START TRACKING] HTTP 405 Error Details:");
+        console.error("  - This usually means nginx is redirecting POST to GET");
+        console.error("  - Check if the URL has a trailing slash mismatch");
+        console.error("  - Verify nginx proxy_pass configuration");
+      } else if (error.message.includes("404")) {
+        errorMessage = "API endpoint not found (HTTP 404). Please verify server configuration.";
+      } else if (error.message.includes("500")) {
+        errorMessage = "Server error (HTTP 500). Please try again later.";
+      } else if (error.message.includes("Failed to fetch") || error.message.includes("NetworkError")) {
+        errorMessage = "Network error. Please check your internet connection.";
+      }
+      
+      showViolationPopup(`Failed to start: ${errorMessage}`, "error");
       return false;
     }
   }, [
@@ -1612,13 +1690,11 @@ const AttendanceTracker = ({
 
   // ==================== CAMERA ENABLE PROMPT EFFECT ====================
   useEffect(() => {
-    // Clear any existing timer
     if (cameraPromptTimerRef.current) {
       clearTimeout(cameraPromptTimerRef.current);
       cameraPromptTimerRef.current = null;
     }
 
-    // Close prompt if conditions no longer met
     if (
       isOnBreak ||
       isSessionTerminated ||
@@ -1632,7 +1708,6 @@ const AttendanceTracker = ({
       return;
     }
 
-    // Show prompt if camera is disabled (not during break)
     if (
       !propCameraEnabled &&
       currentTrackingMode === "participant" &&
@@ -1689,7 +1764,6 @@ const AttendanceTracker = ({
           showViolationPopup("Tracking paused - camera disabled", "warning");
         }
       } else {
-        // Close the camera prompt when camera is enabled
         setShowCameraEnablePrompt(false);
         setCameraPromptDismissed(false);
         
@@ -2032,7 +2106,6 @@ const AttendanceTracker = ({
           setCameraPromptDismissed(true);
         }}
       >
-
         <DialogTitle sx={{ textAlign: 'center', pb: 1, pt: 3 }}>
           <Box sx={{ 
             display: 'flex', 
@@ -2041,21 +2114,21 @@ const AttendanceTracker = ({
             mb: 2
           }}>
               <IconButton
-    aria-label="close"
-    onClick={() => {
-      setShowCameraEnablePrompt(false);
-      setCameraPromptDismissed(true);
-    }}
-    sx={{
-      position: 'absolute',
-      right: 8,
-      top: 8,
-      color: '#888',
-      '&:hover': { color: '#555' }
-    }}
-  >
-    <Close />
-  </IconButton>
+                aria-label="close"
+                onClick={() => {
+                  setShowCameraEnablePrompt(false);
+                  setCameraPromptDismissed(true);
+                }}
+                sx={{
+                  position: 'absolute',
+                  right: 8,
+                  top: 8,
+                  color: '#888',
+                  '&:hover': { color: '#555' }
+                }}
+              >
+                <Close />
+              </IconButton>
             <Box sx={{
               width: 64,
               height: 64,
