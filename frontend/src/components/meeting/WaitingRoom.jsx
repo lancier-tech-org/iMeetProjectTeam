@@ -435,6 +435,8 @@ const WaitingRoom = ({
   onJoin, 
   isHost = false, 
   meetingData = null,
+  hostName = null,
+  hostEmail = null,
   inWaitingRoom = false,
   onAllowUser = null,
   errors = [],
@@ -451,7 +453,9 @@ const WaitingRoom = ({
   
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const isTablet = useMediaQuery(theme.breakpoints.down('md'));
-  
+  // Add this right after the WaitingRoom function starts (around line 370)
+console.log('🔍 DEBUG meetingData:', meetingData);
+console.log('🔍 DEBUG meetingData keys:', meetingData ? Object.keys(meetingData) : 'null');
 // ==================== CAMERA ACCESS WITH AUTO-MANAGEMENT ====================
 const {
   stream: cameraStream,
@@ -499,17 +503,50 @@ const [audioOutputEnabled, setAudioOutputEnabled] = useState(true);
     bandwidth: 'unknown'
   });
   
-  // Meeting data
-  const meeting = meetingData || {
-    title: meetingId === 'instant' ? 'Instant Meeting' : 'Professional Video Meeting',
-    host_name: user?.full_name || user?.name || 'Meeting Host',
-    scheduled_time: new Date(),
-    participants_count: 0,
-    participants: []
-  };
+  // Meeting data - Extract host name from various possible field names
+const getHostName = () => {
+  // Priority 1: Direct prop
+  if (hostName) return hostName;
+  
+  // Priority 2: From meetingData (check all possible field names)
+  if (meetingData) {
+    return meetingData.host_name || 
+           meetingData.Host_Name || 
+           meetingData.hostName || 
+           meetingData.host || 
+           meetingData.Host ||
+           meetingData.created_by_name ||
+           meetingData.Created_By_Name ||
+           meetingData.creator_name ||
+           meetingData.organizer_name ||
+           meetingData.Organizer_Name ||
+           null;
+  }
+  
+  return 'Meeting Host';
+};
+
+const getHostEmail = () => {
+  if (!meetingData) return '';
+  return meetingData.host_email || 
+         meetingData.Host_Email || 
+         meetingData.hostEmail || 
+         meetingData.created_by_email ||
+         meetingData.organizer_email ||
+         '';
+};
+
+const meeting = meetingData || {
+  title: meetingId === 'instant' ? 'Instant Meeting' : 'Professional Video Meeting',
+  host_name: isHost ? (user?.full_name || user?.name || 'Host') : 'Meeting Host',
+  host_email: isHost ? (user?.email || '') : '',
+  scheduled_time: new Date(),
+  participants_count: 0,
+  participants: []
+};
 
   // ✅ FIXED: Correct API endpoint matching backend
-  const FACE_AUTH_API_URL = 'https://api.lancieretech.com/api/user/verify-face';
+  const FACE_AUTH_API_URL = 'https://192.168.48.201:8111/api/user/verify-face';
 
   // ==================== MEDIA FUNCTIONS - FIXED ====================
 
@@ -1482,21 +1519,40 @@ useEffect(() => {
               </Typography>
               
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-                <Avatar sx={{ width: 32, height: 32, bgcolor: '#1A73E8', fontSize: '0.875rem' }}>
-                  {meeting.host_name?.charAt(0)?.toUpperCase() || 'MH'}
-                </Avatar>
-                <Box>
-                  <Typography variant="caption" sx={{ color: '#5F6368', display: 'block', lineHeight: 1.2 }}>
-                    Hosted by
-                  </Typography>
-                  <Typography variant="body2" sx={{ color: '#202124', fontWeight: 500, lineHeight: 1.2 }}>
-                    {meeting.host_name}
-                  </Typography>
-                  <Typography variant="caption" sx={{ color: '#5F6368', display: 'block', lineHeight: 1.2 }}>
-                    {user?.email || 'host@example.com'}
-                  </Typography>
-                </Box>
-              </Box>
+  <Avatar sx={{ width: 32, height: 32, bgcolor: isHost ? '#34A853' : '#1A73E8', fontSize: '0.875rem' }}>
+    {isHost 
+      ? (user?.full_name?.charAt(0)?.toUpperCase() || user?.name?.charAt(0)?.toUpperCase() || 'H')
+      : (meeting.host_name?.charAt(0)?.toUpperCase() || 'MH')
+    }
+  </Avatar>
+  <Box>
+    {isHost ? (
+      <>
+        <Typography variant="caption" sx={{ color: '#34A853', display: 'block', lineHeight: 1.2, fontWeight: 500 }}>
+          You are hosting
+        </Typography>
+        <Typography variant="body2" sx={{ color: '#202124', fontWeight: 500, lineHeight: 1.2 }}>
+          {user?.full_name || user?.name || 'Host'}
+        </Typography>
+        <Typography variant="caption" sx={{ color: '#5F6368', display: 'block', lineHeight: 1.2 }}>
+          {user?.email || ''}
+        </Typography>
+      </>
+    ) : (
+  <>
+    <Typography variant="caption" sx={{ color: '#5F6368', display: 'block', lineHeight: 1.2 }}>
+      Hosted by
+    </Typography>
+    <Typography variant="body2" sx={{ color: '#202124', fontWeight: 500, lineHeight: 1.2 }}>
+      {getHostName()}
+    </Typography>
+    <Typography variant="caption" sx={{ color: '#5F6368', display: 'block', lineHeight: 1.2 }}>
+      {getHostEmail()}
+    </Typography>
+  </>
+)}
+  </Box>
+</Box>
 
               {isHost && (
                 <>

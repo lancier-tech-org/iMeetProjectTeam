@@ -362,7 +362,9 @@ const MeetingPage = () => {
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false);
   const [screenShareError, setScreenShareError] = useState(null);
   const [isProcessingScreenShare, setIsProcessingScreenShare] = useState(false);
+  // const [meetingEnded, setMeetingEnded] = useState(false);
   const [meetingEnded, setMeetingEnded] = useState(false);
+const [fetchedMeetingDetails, setFetchedMeetingDetails] = useState(null);
 
   const actualMeetingId = actualMeeting?.id || realMeetingIdState || meetingId;
 
@@ -469,16 +471,29 @@ const MeetingPage = () => {
         console.log('🎯 Host status determined from meeting data:', true);
       } else {
         // Fallback: fetch meeting details to check host status
+       // Fallback: fetch meeting details to check host status
         const checkHostStatus = async () => {
           try {
             const response = await fetch(`${API_BASE_URL}/api/meetings/get/${meetingId}`);
             const meetingDetails = await response.json();
             const userIsHost = meetingDetails.Host_ID === user.id;
             setIsHost(userIsHost);
+            
+            // ✅ Save meeting details including host info
+            setFetchedMeetingDetails({
+              id: meetingId,
+              title: meetingDetails.Meeting_Name || meetingDetails.title || 'Video Meeting',
+              host_name: meetingDetails.Host_Name || meetingDetails.host_name || meetingDetails.Created_By_Name || '',
+              host_email: meetingDetails.Host_Email || meetingDetails.host_email || '',
+              host_id: meetingDetails.Host_ID || meetingDetails.host_id,
+              ...meetingDetails
+            });
+            
             console.log('🎯 Host status determined from API:', {
               userIsHost,
               meetingHostId: meetingDetails.Host_ID,
-              userId: user.id
+              userId: user.id,
+              hostName: meetingDetails.Host_Name || meetingDetails.host_name
             });
           } catch (error) {
             console.warn('⚠️ Could not determine host status:', error);
@@ -1289,7 +1304,7 @@ const MeetingPage = () => {
           meetingId={meetingId}
           onJoin={handleJoinFromWaitingRoom}
           isHost={isHost}
-          meetingData={actualMeeting || meeting || {
+          meetingData={actualMeeting || meeting || fetchedMeetingDetails || {
             id: actualMeetingId,
             title: meetingId === 'instant' ? 'Instant Meeting' : 'Video Meeting'
           }}
