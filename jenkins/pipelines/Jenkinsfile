@@ -1,10 +1,11 @@
 // =============================================================================
-// iMeetPro CI/CD Pipeline - FIXED Version
+// iMeetPro CI/CD Pipeline - SELF-HEALING Version
 // =============================================================================
-// FIXES APPLIED:
-//   - Added kubectl apply BEFORE set image (handles missing deployments)
-//   - Added K8s resources setup stage (namespace, configmaps, secrets)
-//   - Pipeline works for BOTH fresh clusters AND updates
+// SELF-HEALING FEATURES ADDED:
+//   - REBUILD_COUNT parameter for retry tracking
+//   - Pre-flight check stage to verify retry limits
+//   - Post-failure trigger to AI_Logs_Analyser
+//   - Automatic retry for transient errors (timeouts, network issues)
 // =============================================================================
 
 pipeline {
@@ -33,6 +34,9 @@ pipeline {
         DOCKER_BUILDKIT = '1'
         COMPOSE_DOCKER_CLI_BUILD = '1'
         BUILDKIT_PROGRESS = 'plain'
+        
+        // Self-healing configuration
+        MAX_RETRIES = '3'
     }
 
     options {
@@ -43,6 +47,18 @@ pipeline {
     }
 
     parameters {
+        // =================================================================
+        // SELF-HEALING PARAMETER (NEW)
+        // =================================================================
+        string(
+            name: 'REBUILD_COUNT',
+            defaultValue: '0',
+            description: 'Retry counter for self-healing (do not modify manually)'
+        )
+        
+        // =================================================================
+        // EXISTING PARAMETERS
+        // =================================================================
         choice(
             name: 'ENVIRONMENT',
             choices: ['dev', 'staging', 'prod'],
@@ -87,6 +103,63 @@ pipeline {
 
     stages {
         // =====================================================================
+        // Stage 0: Pre-flight Check (NEW - SELF-HEALING)
+        // =====================================================================
+        stage('Pre-flight Check') {
+            steps {
+                script {
+                    def retryCount = params.REBUILD_COUNT.toInteger()
+                    def maxRetries = env.MAX_RETRIES.toInteger()
+                    
+                    echo "============================================"
+                    echo "      🚀 iMeetPro CI/CD Pipeline"
+                    echo "============================================"
+                    echo "Build Number:    #${BUILD_NUMBER}"
+                    echo "Environment:     ${params.ENVIRONMENT}"
+                    echo "Retry Attempt:   ${retryCount}/${maxRetries}"
+                    echo "============================================"
+                    
+                    // Check if max retries exceeded
+                    if (retryCount >= maxRetries) {
+                        echo ""
+                        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                        echo "  ❌ MAX RETRY ATTEMPTS REACHED (${retryCount}/${maxRetries})"
+                        echo "  Manual intervention required!"
+                        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                        echo ""
+                        
+                        // Send alert email
+                        emailext(
+                            subject: "🚨 ALERT: iMeetPro #${BUILD_NUMBER} - Max Retries Exceeded",
+                            body: """
+                                <h2>🚨 Self-Healing Failed - Manual Intervention Required</h2>
+                                <p><b>Job:</b> ${JOB_NAME}</p>
+                                <p><b>Build:</b> #${BUILD_NUMBER}</p>
+                                <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
+                                <p><b>Retry Attempts:</b> ${retryCount}/${maxRetries}</p>
+                                <hr>
+                                <p>The self-healing system has exhausted all retry attempts.</p>
+                                <p>Please investigate the root cause manually.</p>
+                                <p>🔗 <a href="${BUILD_URL}">View Build</a></p>
+                            """,
+                            mimeType: 'text/html',
+                            to: 'lancieretech@googlegroups.com'
+                        )
+                        
+                        error("Max rebuild attempts reached (${retryCount}/${maxRetries}). Manual intervention required!")
+                    }
+                    
+                    if (retryCount > 0) {
+                        echo ""
+                        echo "🔄 This is AUTO-RETRY attempt #${retryCount}"
+                        echo "   (Triggered by self-healing system)"
+                        echo ""
+                    }
+                }
+            }
+        }
+
+        // =====================================================================
         // Stage 1: Checkout
         // =====================================================================
         stage('Checkout') {
@@ -107,7 +180,10 @@ pipeline {
                     ])
                     
                     env.NAMESPACE = params.ENVIRONMENT == 'prod' ? 'imeetpro' : 'imeetpro-dev'
-                    currentBuild.description = "Env: ${params.ENVIRONMENT}, Tag: ${IMAGE_TAG}"
+                    
+                    def retryInfo = params.REBUILD_COUNT.toInteger() > 0 ? " (Retry #${params.REBUILD_COUNT})" : ""
+                    currentBuild.description = "Env: ${params.ENVIRONMENT}, Tag: ${IMAGE_TAG}${retryInfo}"
+                    
                     echo "📍 Target Namespace: ${env.NAMESPACE}"
                 }
             }
@@ -135,7 +211,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 3: Setup K8s Resources (NEW - CRITICAL FIX)
+        // Stage 3: Setup K8s Resources
         // =====================================================================
         stage('Setup K8s Resources') {
             steps {
@@ -370,7 +446,7 @@ pipeline {
         }
 
         // =====================================================================
-        // Stage 9: Deploy to EKS (FIXED - kubectl apply BEFORE set image)
+        // Stage 9: Deploy to EKS
         // =====================================================================
         stage('Deploy to EKS') {
             parallel {
@@ -500,37 +576,99 @@ pipeline {
         }
     }
 
+    // =========================================================================
+    // POST ACTIONS - SELF-HEALING TRIGGER (MODIFIED)
+    // =========================================================================
     post {
         success {
-            echo "✅ Pipeline completed in ${currentBuild.durationString.replace(' and counting', '')}!"
-            emailext(
-                subject: "✅ SUCCESS: iMeetPro #${BUILD_NUMBER} (${currentBuild.durationString.replace(' and counting', '')})",
-                body: """
-                    <h2>✅ iMeetPro CI/CD - SUCCESS</h2>
-                    <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
-                    <p><b>Build Tag:</b> ${IMAGE_TAG}</p>
-                    <p><b>Duration:</b> ${currentBuild.durationString.replace(' and counting', '')}</p>
-                    <hr>
-                    <p>🎯 <a href="https://www.lancieretech.com">Frontend</a> | <a href="https://api.lancieretech.com">Backend API</a></p>
-                """,
-                mimeType: 'text/html',
-                to: 'lancieretech@googlegroups.com'
-            )
+            script {
+                def retryCount = params.REBUILD_COUNT.toInteger()
+                def retryInfo = retryCount > 0 ? " (Succeeded on retry #${retryCount})" : ""
+                
+                echo "✅ Pipeline completed in ${currentBuild.durationString.replace(' and counting', '')}!${retryInfo}"
+                
+                emailext(
+                    subject: "✅ SUCCESS: iMeetPro #${BUILD_NUMBER}${retryInfo}",
+                    body: """
+                        <h2>✅ iMeetPro CI/CD - SUCCESS</h2>
+                        <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
+                        <p><b>Build Tag:</b> ${IMAGE_TAG}</p>
+                        <p><b>Duration:</b> ${currentBuild.durationString.replace(' and counting', '')}</p>
+                        ${retryCount > 0 ? "<p><b>🔄 Self-Healing:</b> Succeeded on retry attempt #${retryCount}</p>" : ""}
+                        <hr>
+                        <p>🎯 <a href="https://www.lancieretech.com">Frontend</a> | <a href="https://api.lancieretech.com">Backend API</a></p>
+                    """,
+                    mimeType: 'text/html',
+                    to: 'lancieretech@googlegroups.com'
+                )
+            }
         }
         
         failure {
-            echo "❌ Pipeline failed!"
-            emailext(
-                subject: "❌ FAILURE: iMeetPro #${BUILD_NUMBER}",
-                body: """
-                    <h2>❌ iMeetPro CI/CD - FAILURE</h2>
-                    <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
-                    <p><b>Build Tag:</b> ${IMAGE_TAG}</p>
-                    <p>🔗 <a href="${env.BUILD_URL}">Jenkins Build</a></p>
-                """,
-                mimeType: 'text/html',
-                to: 'lancieretech@googlegroups.com'
-            )
+            script {
+                def retryCount = params.REBUILD_COUNT.toInteger()
+                def maxRetries = env.MAX_RETRIES.toInteger()
+                
+                echo "❌ Pipeline failed!"
+                
+                // =============================================================
+                // SELF-HEALING: Trigger AI_Logs_Analyser on failure
+                // =============================================================
+                if (retryCount < maxRetries) {
+                    echo ""
+                    echo "============================================"
+                    echo "  🤖 SELF-HEALING: Triggering AI Analyzer"
+                    echo "============================================"
+                    echo "Current Retry Count: ${retryCount}"
+                    echo "Max Retries: ${maxRetries}"
+                    echo ""
+                    
+                    try {
+                        build job: 'AI_Logs_Analyser',
+                              parameters: [
+                                  string(name: 'FAILED_JOB_NAME', value: env.JOB_NAME),
+                                  string(name: 'FAILED_BUILD_NUMBER', value: env.BUILD_NUMBER),
+                                  string(name: 'REBUILD_COUNT', value: "${retryCount}")
+                              ],
+                              wait: false,
+                              propagate: false
+                        
+                        echo "✅ AI_Logs_Analyser triggered successfully!"
+                        echo "   The analyzer will decide whether to retry."
+                        
+                    } catch (Exception e) {
+                        echo "⚠️ Failed to trigger AI_Logs_Analyser: ${e.message}"
+                        echo "   Manual intervention required."
+                    }
+                    
+                } else {
+                    echo ""
+                    echo "============================================"
+                    echo "  ❌ MAX RETRIES EXCEEDED - NO AUTO-RETRY"
+                    echo "============================================"
+                    echo "Retry attempts: ${retryCount}/${maxRetries}"
+                    echo "Manual intervention required!"
+                    echo ""
+                }
+                
+                // Send failure email (only for first failure, not retries)
+                if (retryCount == 0) {
+                    emailext(
+                        subject: "❌ FAILURE: iMeetPro #${BUILD_NUMBER} - Self-Healing Activated",
+                        body: """
+                            <h2>❌ iMeetPro CI/CD - FAILURE</h2>
+                            <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
+                            <p><b>Build Tag:</b> ${IMAGE_TAG}</p>
+                            <p>🔗 <a href="${env.BUILD_URL}">Jenkins Build</a></p>
+                            <hr>
+                            <p>🤖 <b>Self-Healing Status:</b> AI Analyzer has been triggered to diagnose the issue.</p>
+                            <p>If the error is transient (timeout, network), automatic retry will occur.</p>
+                        """,
+                        mimeType: 'text/html',
+                        to: 'lancieretech@googlegroups.com'
+                    )
+                }
+            }
         }
         
         always {
