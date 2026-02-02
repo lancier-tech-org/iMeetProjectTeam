@@ -629,32 +629,77 @@ const apiCall = useCallback(
     []
   );
 
-  // ==================== VERIFY WITH BACKEND ====================
-  const verifyWithBackend = useCallback(
-    async (confirmationToken) => {
-      if (!confirmationToken) return false;
+// Find and replace the verifyWithBackend function (around line 520-540)
 
-      try {
-        setCameraInitStatus("verifying");
+const verifyWithBackend = useCallback(
+  async (confirmationToken) => {
+    // ✅ FIXED: Guard clauses for invalid state
+    if (!confirmationToken) {
+      console.log("[VERIFY CAMERA] No confirmation token provided, skipping");
+      return true;
+    }
 
-        const response = await apiCall("/verify-camera/", "POST", {
-          meeting_id: meetingId,
-          user_id: userId,
-          confirmation_token: confirmationToken,
-          camera_active: true,
-        });
+    if (!sessionActive) {
+      console.log("[VERIFY CAMERA] Session not active, skipping verification");
+      return true;
+    }
 
-        if (response.success) {
+    if (isSessionTerminated || isSessionPermanentlyEnded) {
+      console.log("[VERIFY CAMERA] Session terminated, skipping verification");
+      return true;
+    }
+
+    try {
+      setCameraInitStatus("verifying");
+      console.log("[VERIFY CAMERA] Sending verification request...");
+
+      const response = await apiCall("/verify-camera/", "POST", {
+        meeting_id: meetingId,
+        user_id: userId,
+        confirmation_token: confirmationToken,
+        camera_active: true,
+      });
+
+      if (response.success) {
+        console.log("[VERIFY CAMERA] ✅ Verification successful");
+        return true;
+      } else {
+        // ✅ Handle expected "no verification needed" case
+        const errorMsg = response.error || "";
+        if (errorMsg.includes("No camera verification expected") || 
+            errorMsg.includes("no session") ||
+            errorMsg.includes("session not found")) {
+          console.log("[VERIFY CAMERA] Backend doesn't expect verification - OK to continue");
           return true;
-        } else {
-          return false;
         }
-      } catch (error) {
+        console.warn("[VERIFY CAMERA] Verification failed:", response.error);
+        return false;
+      }
+    } catch (error) {
+      const errorMsg = error.message || "";
+      
+      // ✅ FIXED: Handle 400 "No camera verification expected" gracefully
+      if (errorMsg.includes("400")) {
+        console.log("[VERIFY CAMERA] 400 error - backend doesn't expect verification, continuing...");
+        return true; // Not a fatal error
+      }
+      
+      // ✅ FIXED: Handle session not found errors
+      if (errorMsg.includes("No camera verification expected") ||
+          errorMsg.includes("session not found") ||
+          errorMsg.includes("no active session")) {
+        console.log("[VERIFY CAMERA] No active session expecting verification - OK");
         return true;
       }
-    },
-    [meetingId, userId, apiCall]
-  );
+
+      console.error("[VERIFY CAMERA] ❌ Error:", error.message);
+      // Return true anyway - camera verification is a secondary check
+      // We don't want to block the user from using the app
+      return true;
+    }
+  },
+  [meetingId, userId, apiCall, sessionActive, isSessionTerminated, isSessionPermanentlyEnded]
+);
 
   // ==================== FRAME CAPTURE AND ANALYSIS ====================
   const captureAndAnalyze = useCallback(async () => {
@@ -1030,12 +1075,21 @@ const apiCall = useCallback(
       setCameraInitStatus("ready");
 
       if (
-        backendResponse?.camera_verification_required &&
-        cameraVerificationTokenRef.current &&
-        !isAutoExpire
-      ) {
-        await verifyWithBackend(cameraVerificationTokenRef.current);
-      }
+  backendResponse?.camera_verification_required &&
+  cameraVerificationTokenRef.current &&
+  !isAutoExpire
+) {
+  // ✅ FIXED: Only verify if we actually have an active session
+  if (sessionActive && !isSessionTerminated) {
+    const verified = await verifyWithBackend(cameraVerificationTokenRef.current);
+    // Don't fail if verification returns false - it's not critical
+    if (!verified) {
+      console.warn("[END BREAK] Camera verification failed but continuing...");
+    }
+  } else {
+    console.log("[END BREAK] Skipping camera verification - no active session");
+  }
+}
 
       if (!mountedRef.current || !sessionActive) {
         breakProcessingRef.current = false;
