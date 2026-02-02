@@ -319,95 +319,59 @@ const AttendanceTracker = ({
     [currentTrackingMode, onViolation, showSuccessPopup, triggerToast]
   );
 
-  // ============================================================
-  // ✅ FIXED: API CALL FUNCTION WITH EXPLICIT POST METHOD
-  // ============================================================
-  const apiCall = useCallback(
-    async (endpoint, method = "GET", data = null) => {
-      // ✅ FIXED: Ensure endpoint formatting is correct
-      const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-      
-      // ✅ FIXED: Build URL without double slashes
-      const baseUrl = '/api/attendance';
-      let url = `${baseUrl}${cleanEndpoint}`;
-      
-      // ✅ FIXED: Remove any double slashes (except in protocol)
-      url = url.replace(/([^:]\/)\/+/g, "$1");
-      
-      // ✅ FIXED: Ensure method is uppercase
-      const httpMethod = method.toUpperCase();
-      
-      console.log(`[API CALL] ${httpMethod} ${url}`, data ? JSON.stringify(data).substring(0, 100) + '...' : 'no data');
-      
-      const options = {
-        method: httpMethod, // ✅ FIXED: Explicit uppercase method
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-        },
-        credentials: 'same-origin', // ✅ FIXED: Include credentials for same-origin requests
-      };
+// Find this line (around line 234-258) and replace the entire apiCall function:
 
-      // ✅ FIXED: Only add body for methods that support it
-      if (data && ["POST", "PUT", "PATCH"].includes(httpMethod)) {
-        options.body = JSON.stringify({
-          ...data,
-          current_tracking_mode: currentTrackingMode,
-          role_history: roleHistoryRef.current,
-          session_start_time: sessionStartTime,
-        });
-      }
+const apiCall = useCallback(
+  async (endpoint, method = "GET", data = null) => {
+    // ✅ Use the correct API server domain
+    const API_BASE = 'https://api.lancieretech.com';
+    
+    const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    const url = `${API_BASE}/api/attendance${cleanEndpoint}`.replace(/([^:]\/)\/+/g, "$1");
+    const httpMethod = method.toUpperCase();
+    
+    console.log(`[API CALL] ${httpMethod} ${url}`);
+    
+    const options = {
+      method: httpMethod,
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      credentials: 'include',
+    };
 
-      try {
-        console.log(`[API REQUEST] Sending ${httpMethod} to ${url}`);
-        console.log(`[API REQUEST] Options:`, {
-          method: options.method,
-          headers: options.headers,
-          hasBody: !!options.body,
-        });
-        
-        const response = await fetch(url, options);
-        
-        console.log(`[API RESPONSE] Status: ${response.status}, OK: ${response.ok}, URL: ${response.url}`);
-        
-        // ✅ FIXED: Check if we were redirected (which might change method to GET)
-        if (response.url !== url && !response.url.endsWith(cleanEndpoint)) {
-          console.warn(`[API WARNING] Request was redirected from ${url} to ${response.url}`);
-        }
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`[API ERROR] ${httpMethod} ${url} - ${response.status}: ${errorText.substring(0, 200)}`);
-          
-          // ✅ FIXED: Better error message for 405
-          if (response.status === 405) {
-            throw new Error(`HTTP 405: Method ${httpMethod} not allowed. Server may be redirecting POST to GET. Check nginx/server config.`);
-          }
-          
-          throw new Error(`HTTP ${response.status}: ${errorText}`);
-        }
-        
-        const jsonResponse = await response.json();
-        console.log(`[API SUCCESS] ${httpMethod} ${url} - Response received`);
-        return jsonResponse;
-        
-      } catch (error) {
-        console.error(`[API EXCEPTION] ${httpMethod} ${url} - ${error.message}`);
-        
-        // ✅ FIXED: Add helpful debugging info
-        if (error.message.includes('405')) {
-          console.error(`[API DEBUG] 405 Error Troubleshooting:`);
-          console.error(`  1. Check if endpoint ${url} accepts ${httpMethod} requests`);
-          console.error(`  2. Check nginx/proxy configuration for redirects`);
-          console.error(`  3. Ensure trailing slash matches backend URL pattern`);
-          console.error(`  4. Check CORS configuration`);
-        }
-        
-        throw error;
+    if (data && ["POST", "PUT", "PATCH"].includes(httpMethod)) {
+      options.body = JSON.stringify({
+        ...data,
+        current_tracking_mode: currentTrackingMode,
+        role_history: roleHistoryRef.current,
+        session_start_time: sessionStartTime,
+      });
+    }
+
+    try {
+      const response = await fetch(url, options);
+      
+      // Detect HTML response (nginx misconfiguration)
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('text/html')) {
+        throw new Error('Server returned HTML instead of JSON - check nginx config');
       }
-    },
-    [currentTrackingMode, sessionStartTime]
-  );
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 100)}`);
+      }
+      
+      return await response.json();
+    } catch (error) {
+      console.error(`[API ERROR] ${httpMethod} ${url}:`, error.message);
+      throw error;
+    }
+  },
+  [currentTrackingMode, sessionStartTime]
+);
 
   // ==================== SESSION TERMINATION HANDLER ====================
   const handleSessionTermination = useCallback(
