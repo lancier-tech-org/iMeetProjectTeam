@@ -3,7 +3,7 @@
 # =============================================================================
 # Prerequisites:
 # 1. GPU nodes with nvidia.com/gpu=true label
-# 2. NVIDIA Device Plugin installed:
+# 2. NVIDIA Dev1ce Plugin installed:
 #    kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.14.1/nvidia-device-plugin.yml
 # =============================================================================
 
@@ -15,7 +15,7 @@ metadata:
   labels:
     app: gpu-worker
 spec:
-  replicas: 2
+  replicas: 1
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -63,10 +63,12 @@ spec:
             requests:
               memory: "4Gi"
               cpu: "2000m"
+              ephemeral-storage: "25Gi"
               nvidia.com/gpu: "1"
             limits:
               memory: "8Gi"
               cpu: "4000m"
+              ephemeral-storage: "40Gi"
               nvidia.com/gpu: "1"
           volumeMounts:
             - name: tmp
