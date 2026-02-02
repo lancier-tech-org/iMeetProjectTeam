@@ -602,24 +602,75 @@ const [forceStopTargetParticipant, setForceStopTargetParticipant] = useState(nul
   // ENHANCED SCREEN SHARE DATA
   // ==========================================================================
   const enhancedScreenShareData = useMemo(() => {
-    if (livekitScreenSharingParticipant || livekitLocalIsScreenSharing) {
-      const screenStream =
-        getScreenShareStream?.() ||
-        createEnhancedStreamMapping.get("screen_share_active");
+   if (livekitScreenSharingParticipant || livekitLocalIsScreenSharing) {
+  const screenStream =
+    getScreenShareStream?.() ||
+    createEnhancedStreamMapping.get("screen_share_active");
 
-      if (screenStream) {
-        return {
-          stream: screenStream,
-          sharer: livekitScreenSharingParticipant || {
-            name: currentUser?.name || currentUser?.full_name || "You",
-            user_id: currentUser?.id,
-            connection_id: currentUser?.id,
-            participant_id: `local_${currentUser?.id}`,
-            isLocal: true,
-          },
-        };
+  if (screenStream) {
+    // ✅ FIXED: Handle remote screen sharer from livekitScreenSharingParticipant
+    if (livekitScreenSharingParticipant && !livekitScreenSharingParticipant.isLocal) {
+      // This is a REMOTE participant sharing - look up their actual name
+      let sharerUserId = livekitScreenSharingParticipant.userId || 
+                         livekitScreenSharingParticipant.user_id;
+      
+      // Extract from identity if needed
+      if (!sharerUserId && livekitScreenSharingParticipant.identity?.includes("user_")) {
+        sharerUserId = livekitScreenSharingParticipant.identity.split("_")[1];
       }
+      
+      // Look up in liveParticipants for accurate name
+      let sharerDisplayName = livekitScreenSharingParticipant.name;
+      
+      if (sharerUserId) {
+        const matchingParticipant = liveParticipants?.find((p) => {
+          const pUserId = (p.User_ID || p.user_id || p.ID)?.toString();
+          return pUserId === sharerUserId?.toString();
+        });
+        
+        if (matchingParticipant) {
+          sharerDisplayName = matchingParticipant.Full_Name || 
+                              matchingParticipant.full_name || 
+                              matchingParticipant.name ||
+                              matchingParticipant.displayName ||
+                              sharerDisplayName;
+        }
+      }
+
+      console.log("📺 LiveKit screen sharer (remote):", {
+        userId: sharerUserId,
+        identity: livekitScreenSharingParticipant.identity,
+        originalName: livekitScreenSharingParticipant.name,
+        resolvedName: sharerDisplayName,
+      });
+
+      return {
+        stream: screenStream,
+        sharer: {
+          ...livekitScreenSharingParticipant,
+          name: sharerDisplayName || livekitScreenSharingParticipant.name,
+          full_name: sharerDisplayName || livekitScreenSharingParticipant.name,
+          displayName: sharerDisplayName || livekitScreenSharingParticipant.name,
+          user_id: sharerUserId || livekitScreenSharingParticipant.user_id,
+        },
+      };
     }
+    
+    // This is LOCAL user sharing
+    return {
+      stream: screenStream,
+      sharer: livekitScreenSharingParticipant || {
+        name: currentUser?.name || currentUser?.full_name || "You",
+        full_name: currentUser?.full_name || currentUser?.name || "You",
+        displayName: currentUser?.full_name || currentUser?.name || "You",
+        user_id: currentUser?.id,
+        connection_id: currentUser?.id,
+        participant_id: `local_${currentUser?.id}`,
+        isLocal: true,
+      },
+    };
+  }
+}
 
     if (remoteParticipants?.size > 0) {
       for (const [participantSid, participant] of remoteParticipants) {
@@ -669,6 +720,7 @@ const [forceStopTargetParticipant, setForceStopTargetParticipant] = useState(nul
     currentUser,
     localParticipant,
     remoteParticipants,
+    liveParticipants,
   ]);
 
   // ==========================================================================
@@ -2152,6 +2204,7 @@ const handleToggleScreenShare = useMemo(
           enhancedScreenShareData.sharer.identity;
 
         // ✅ If someone else is sharing
+        // ✅ If someone else is sharing
         if (sharerUserId !== currentUserId) {
           // ✅ PROTECTION: Only hosts/co-hosts can stop other people's screen shares
           if (!hasHostPrivileges) {
@@ -2162,12 +2215,143 @@ const handleToggleScreenShare = useMemo(
             return;
           }
 
-          // ✅ NEW: Show confirmation dialog before force stopping
-          console.log(`🛡️ Host/Co-host initiating force stop for ${enhancedScreenShareData.sharer.name}`);
+          // ✅ FIXED: Look up the actual participant name from liveParticipants or allParticipants
+         const getParticipantNameById = (userId) => {
+  console.log("🔍 Looking up participant name for userId:", userId);
+  
+  // Try liveParticipants first - check multiple ID fields
+  const fromLive = liveParticipants.find((p) => {
+    const pUserId = p.User_ID?.toString();
+    const pUserIdLower = p.user_id?.toString();
+    const pId = p.ID?.toString();
+    const targetId = userId?.toString();
+    
+    return pUserId === targetId || pUserIdLower === targetId || pId === targetId;
+  });
+  
+  if (fromLive) {
+    const name = fromLive.Full_Name || fromLive.full_name || fromLive.name || fromLive.displayName;
+    if (name && !name.startsWith('User ') && !name.includes('user_')) {
+      console.log("✅ Found name from liveParticipants:", name);
+      return name;
+    }
+  }
+  
+  // Try allParticipants
+  const fromAll = allParticipants.find((p) => {
+    const pUserId = p.user_id?.toString();
+    const pUserIdUpper = p.User_ID?.toString();
+    const pId = p.id?.toString();
+    const targetId = userId?.toString();
+    
+    return pUserId === targetId || pUserIdUpper === targetId || pId === targetId;
+  });
+  
+  if (fromAll) {
+    const name = fromAll.full_name || fromAll.Full_Name || fromAll.name || fromAll.displayName;
+    if (name && !name.startsWith('User ') && !name.includes('user_')) {
+      console.log("✅ Found name from allParticipants:", name);
+      return name;
+    }
+  }
+  
+  // Try remoteParticipants from LiveKit
+ if (remoteParticipants?.size > 0) {
+  for (const [participantSid, participant] of remoteParticipants) {
+    if (typeof participant.getTrackPublication === "function") {
+      const screenSharePub = participant.getTrackPublication(
+        Track.Source.ScreenShare
+      );
+      if (screenSharePub?.track?.mediaStreamTrack) {
+        const screenStream = new MediaStream([
+          screenSharePub.track.mediaStreamTrack,
+        ]);
+        let oduserId = participant.identity;
+        if (participant.identity?.includes("user_")) {
+          userId = participant.identity.split("_")[1];
+        }
+
+        // ✅ FIXED: Look up the actual display name from liveParticipants
+        let sharerDisplayName = null;
+        
+        // Try to find in liveParticipants first (database has accurate names)
+        const matchingLiveParticipant = liveParticipants?.find((p) => {
+          const pUserId = (p.User_ID || p.user_id || p.ID)?.toString();
+          return pUserId === userId?.toString();
+        });
+        
+        if (matchingLiveParticipant) {
+          sharerDisplayName = matchingLiveParticipant.Full_Name || 
+                              matchingLiveParticipant.full_name || 
+                              matchingLiveParticipant.name ||
+                              matchingLiveParticipant.displayName;
+        }
+        
+        // Fallback to LiveKit participant name if it's a real name
+        if (!sharerDisplayName || sharerDisplayName?.includes('user_') || sharerDisplayName?.startsWith('User ')) {
+          if (participant.name && 
+              !participant.name.includes('user_') && 
+              !participant.name.startsWith('User ')) {
+            sharerDisplayName = participant.name;
+          }
+        }
+        
+        // Final fallback
+        if (!sharerDisplayName) {
+          sharerDisplayName = participant.identity || "Remote User";
+        }
+
+        console.log("📺 Screen sharer identified:", {
+          participantSid,
+          identity: participant.identity,
+          userId,
+          liveKitName: participant.name,
+          resolvedName: sharerDisplayName,
+        });
+
+        return {
+          stream: screenStream,
+          sharer: {
+            name: sharerDisplayName,
+            full_name: sharerDisplayName,
+            displayName: sharerDisplayName,
+            user_id: userId,
+            connection_id: participantSid,
+            participant_id: participantSid,
+            identity: participant.identity,
+            isLocal: false,
+          },
+        };
+      }
+    }
+  }
+}
+  
+  // Fallback to sharer data from enhancedScreenShareData
+  const sharerName = enhancedScreenShareData.sharer?.name || 
+                     enhancedScreenShareData.sharer?.full_name || 
+                     enhancedScreenShareData.sharer?.displayName;
+  
+  if (sharerName && 
+      !sharerName.startsWith('User ') && 
+      !sharerName.includes('user_') &&
+      sharerName !== 'Unknown' &&
+      sharerName !== 'Participant') {
+    console.log("✅ Using name from enhancedScreenShareData:", sharerName);
+    return sharerName;
+  }
+  
+  console.warn("⚠️ Could not find proper name for userId:", userId);
+  return "Participant";
+};
+
+          const resolvedParticipantName = getParticipantNameById(sharerUserId);
+
+          console.log(`🛡️ Host/Co-host initiating force stop for ${resolvedParticipantName}`);
           
           // Store the participant data for the confirmation dialog
           setForceStopTargetParticipant({
-            name: enhancedScreenShareData.sharer.name || "Participant",
+            name: resolvedParticipantName,
             userId: sharerUserId,
             identity: sharerIdentity,
             data: enhancedScreenShareData.sharer,
@@ -2362,6 +2546,9 @@ const handleToggleScreenShare = useMemo(
     coHostPrivilegesActive,
     currentUser?.id,
     enhancedScreenShareData,
+    liveParticipants,   // ✅ ADDED
+    allParticipants,    // ✅ ADDED
+    remoteParticipants,
   ]
 );
 

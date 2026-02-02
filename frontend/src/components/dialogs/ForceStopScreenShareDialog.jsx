@@ -27,6 +27,12 @@ const ForceStopScreenShareDialog = ({
   participantName,
   participantData,
 }) => {
+  const displayName = participantName || 
+                      participantData?.name ||
+                      participantData?.full_name ||
+                      participantData?.Full_Name ||
+                      participantData?.displayName ||
+                      'this participant';
   const handleConfirm = () => {
     onConfirm();
     onClose();
@@ -84,7 +90,7 @@ const ForceStopScreenShareDialog = ({
       {/* Dialog Content */}
       <DialogContent sx={{ pt: 3, pb: 2 }}>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
-          <Alert
+    <Alert
             severity="warning"
             icon={<WarningIcon />}
             sx={{
@@ -96,7 +102,7 @@ const ForceStopScreenShareDialog = ({
               },
             }}
           >
-            You are about to stop screen sharing for this participant
+            You are about to stop screen sharing for <strong>{displayName}</strong>
           </Alert>
 
           <Box
@@ -127,7 +133,7 @@ const ForceStopScreenShareDialog = ({
                 Participant
               </Typography>
               <Typography variant="body1" sx={{ color: 'white', fontWeight: 500 }}>
-                {participantName || 'Unknown User'}
+{displayName}
               </Typography>
             </Box>
           </Box>
