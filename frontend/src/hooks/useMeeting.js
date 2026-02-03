@@ -1151,8 +1151,8 @@ const recordParticipantJoin = async (userData) => {
     }
   };
 
-  // Enhanced upcoming meetings loading with better error handling
   // Enhanced upcoming meetings loading - fetches BOTH Schedule and Calendar meetings
+// MERGED VERSION: Supports View/Edit/Delete AND Quick Stats
 const loadUpcomingMeetings = async () => {
   if (!user?.id) {
     console.log('Cannot load meetings: missing user data');
@@ -1165,85 +1165,91 @@ const loadUpcomingMeetings = async () => {
     setLoading(true);
     setError(null);
     
-    // ==================== METHOD 1: Use Quick Stats Endpoint (Recommended) ====================
-    // This endpoint already fetches BOTH Schedule and Calendar meetings from the backend
-    try {
-      const response = await axios.get(`${API_BASE_URL}/api/dashboard/quick-stats`, {
-        params: { user_id: user.id }
-      });
-      
-      console.log('📊 Quick Stats Response:', response.data);
-      
-      if (response.data?.success && response.data?.upcoming_meetings) {
-        const upcomingFromBackend = response.data.upcoming_meetings.map(meeting => ({
-          ID: meeting.meeting_id,
-          Meeting_ID: meeting.meeting_id,
-          Meeting_Name: meeting.title || 'Untitled Meeting',
-          Title: meeting.title || 'Untitled Meeting',
-          Started_At: meeting.start_time,
-          start_time: meeting.start_time,
-          Meeting_Type: meeting.meeting_type, // 'ScheduleMeeting' or 'CalendarMeeting'
-          meeting_type: meeting.meeting_type,
-          time_until: meeting.time_until,
-          duration_minutes: meeting.duration_minutes,
-          user_role: meeting.user_role,
-          Status: 'scheduled',
-          source: meeting.meeting_type === 'CalendarMeeting' ? 'calendar' : 'schedule'
-        }));
-        
-        console.log(`✅ Found ${upcomingFromBackend.length} upcoming meetings from quick-stats:`, 
-          upcomingFromBackend.map(m => ({ 
-            id: m.ID, 
-            title: m.Meeting_Name, 
-            type: m.Meeting_Type 
-          }))
-        );
-        
-        // If we got meetings from quick-stats, use them
-        if (upcomingFromBackend.length > 0) {
-          setUpcomingMeetings(upcomingFromBackend);
-          return;
-        }
-      }
-    } catch (quickStatsError) {
-      console.warn('⚠️ Quick stats endpoint failed, trying fallback method:', quickStatsError.message);
-    }
-    
-    // ==================== METHOD 2: Fallback - Fetch from multiple sources ====================
     const now = new Date();
     let allUpcomingMeetings = [];
     
-    // Fetch scheduled meetings
+    // ==================== STEP 1: Fetch Scheduled Meetings (PRIMARY) ====================
     try {
       const scheduledResponse = await meetingsAPI.getUserScheduledMeetings(user.id, user.email);
-      console.log('📅 Scheduled meetings response:', scheduledResponse);
+      console.log('📅 Scheduled meetings API response:', scheduledResponse);
       
-      if (scheduledResponse?.meetings && Array.isArray(scheduledResponse.meetings)) {
+      if (scheduledResponse && scheduledResponse.meetings && Array.isArray(scheduledResponse.meetings)) {
+        console.log(`Processing ${scheduledResponse.meetings.length} scheduled meetings from API`);
+        
         const scheduledMeetings = scheduledResponse.meetings
           .filter(meeting => {
             if (!meeting) return false;
+            const meetingId = meeting.id || meeting.ID || meeting.Meeting_ID;
+            if (!meetingId) return false;
+            
             const startTime = new Date(meeting.startTime || meeting.start_time || meeting.Started_At);
             const status = (meeting.Status || meeting.status || '').toLowerCase();
-            return startTime > now && (status === 'scheduled' || status === 'active' || !status);
+            const isFuture = startTime > now;
+            const isValidStatus = status === 'scheduled' || status === 'active' || !status;
+            
+            return isFuture && isValidStatus;
           })
-          .map(meeting => ({
-            ...meeting,
-            ID: meeting.id || meeting.ID || meeting.Meeting_ID,
-            Meeting_ID: meeting.id || meeting.Meeting_ID || meeting.ID,
-            Meeting_Name: meeting.title || meeting.Meeting_Name || 'Scheduled Meeting',
-            Started_At: meeting.startTime || meeting.start_time || meeting.Started_At,
-            Meeting_Type: 'ScheduleMeeting',
-            source: 'schedule'
-          }));
+          .map(meeting => {
+            // ⚠️ CRITICAL: Preserve ALL original fields AND add normalized fields
+            const meetingId = meeting.id || meeting.ID || meeting.Meeting_ID;
+            const meetingName = meeting.title || meeting.Meeting_Name || 'Scheduled Meeting';
+            const startTime = meeting.startTime || meeting.start_time || meeting.Started_At;
+            const endTime = meeting.endTime || meeting.end_time || meeting.Ended_At;
+            const hostId = meeting.Host_ID || meeting.host_id || meeting.hostId;
+            const meetingLink = meeting.Meeting_Link || meeting.meeting_link || meeting.link;
+            
+            return {
+              // ===== SPREAD ALL ORIGINAL FIELDS FIRST =====
+              ...meeting,
+              
+              // ===== NORMALIZED FIELDS (Both formats for compatibility) =====
+              id: meetingId,
+              ID: meetingId,
+              Meeting_ID: meetingId,
+              
+              title: meetingName,
+              Meeting_Name: meetingName,
+              Title: meetingName,
+              
+              startTime: startTime,
+              start_time: startTime,
+              Started_At: startTime,
+              endTime: endTime,
+              end_time: endTime,
+              Ended_At: endTime,
+              
+              Host_ID: hostId,
+              host_id: hostId,
+              hostId: hostId,
+              
+              Status: meeting.status || meeting.Status || 'scheduled',
+              status: meeting.status || meeting.Status || 'scheduled',
+              
+              Meeting_Type: meeting.Meeting_Type || 'ScheduleMeeting',
+              meeting_type: meeting.Meeting_Type || 'ScheduleMeeting',
+              
+              Meeting_Link: meetingLink,
+              meeting_link: meetingLink,
+              link: meetingLink,
+              
+              // ===== QUICK STATS FIELDS =====
+              source: 'schedule',
+              user_role: hostId === user.id ? 'host' : 'participant',
+              is_host: hostId === user.id,
+              time_until: Math.max(0, Math.floor((new Date(startTime) - now) / 1000 / 60)),
+              duration_minutes: meeting.duration_minutes || 
+                (endTime && startTime ? Math.floor((new Date(endTime) - new Date(startTime)) / 1000 / 60) : null)
+            };
+          });
         
-        allUpcomingMeetings = [...allUpcomingMeetings, ...scheduledMeetings];
-        console.log(`📅 Found ${scheduledMeetings.length} scheduled meetings`);
+        console.log(`📅 Found ${scheduledMeetings.length} valid scheduled meetings`);
+        allUpcomingMeetings = [...scheduledMeetings];
       }
     } catch (scheduleError) {
       console.warn('⚠️ Failed to fetch scheduled meetings:', scheduleError);
     }
     
-    // Fetch calendar meetings from meetings list
+    // ==================== STEP 2: Fetch Calendar Meetings ====================
     try {
       const allMeetingsResponse = await axios.get(`${API_BASE_URL}/api/meetings/list`);
       const allMeetingsData = allMeetingsResponse.data || [];
@@ -1252,52 +1258,166 @@ const loadUpcomingMeetings = async () => {
         const calendarMeetings = allMeetingsData
           .filter(meeting => {
             if (!meeting) return false;
-            
-            // Check if it's a Calendar meeting
             const isCalendar = meeting.Meeting_Type === 'CalendarMeeting';
-            
-            // Check if user is host or in guest list
             const isUserMeeting = meeting.Host_ID === user.id || 
                                   meeting.Organizer === user.email ||
                                   (meeting.GuestEmails && meeting.GuestEmails.includes(user.email));
             
-            // Check if future and scheduled
             const startTime = new Date(meeting.Started_At || meeting.startTime || meeting.start_time);
             const status = (meeting.Status || '').toLowerCase();
             const isFuture = startTime > now;
             const isScheduled = status === 'scheduled' || status === 'active' || !status;
             
-            // Check not already in list
+            const meetingId = meeting.ID || meeting.Meeting_ID;
             const alreadyExists = allUpcomingMeetings.some(m => 
-              (m.ID === meeting.ID) || 
-              (m.Meeting_ID === meeting.ID) ||
-              (m.ID === meeting.Meeting_ID)
+              (m.ID == meetingId) || (m.Meeting_ID == meetingId) || (m.id == meetingId)
             );
             
             return isCalendar && isUserMeeting && isFuture && isScheduled && !alreadyExists;
           })
-          .map(meeting => ({
-            ...meeting,
-            ID: meeting.ID || meeting.Meeting_ID,
-            Meeting_ID: meeting.Meeting_ID || meeting.ID,
-            Meeting_Name: meeting.Title || meeting.Meeting_Name || 'Calendar Meeting',
-            Title: meeting.Title || meeting.Meeting_Name,
-            Started_At: meeting.Started_At || meeting.startTime,
-            Meeting_Type: 'CalendarMeeting',
-            source: 'calendar'
-          }));
+          .map(meeting => {
+            const meetingId = meeting.ID || meeting.Meeting_ID;
+            const meetingName = meeting.Title || meeting.Meeting_Name || 'Calendar Meeting';
+            const startTime = meeting.Started_At || meeting.startTime;
+            const endTime = meeting.Ended_At || meeting.endTime;
+            const hostId = meeting.Host_ID || meeting.host_id;
+            const meetingLink = meeting.Meeting_Link || meeting.meeting_link;
+            
+            return {
+              ...meeting,
+              id: meetingId,
+              ID: meetingId,
+              Meeting_ID: meetingId,
+              title: meetingName,
+              Meeting_Name: meetingName,
+              Title: meetingName,
+              startTime: startTime,
+              start_time: startTime,
+              Started_At: startTime,
+              endTime: endTime,
+              end_time: endTime,
+              Ended_At: endTime,
+              Host_ID: hostId,
+              host_id: hostId,
+              hostId: hostId,
+              Status: meeting.Status || 'scheduled',
+              status: meeting.Status || 'scheduled',
+              Meeting_Type: 'CalendarMeeting',
+              meeting_type: 'CalendarMeeting',
+              Meeting_Link: meetingLink,
+              meeting_link: meetingLink,
+              link: meetingLink,
+              source: 'calendar',
+              user_role: hostId === user.id ? 'host' : 'participant',
+              is_host: hostId === user.id,
+              time_until: Math.max(0, Math.floor((new Date(startTime) - now) / 1000 / 60)),
+              duration_minutes: endTime && startTime ? 
+                Math.floor((new Date(endTime) - new Date(startTime)) / 1000 / 60) : null
+            };
+          });
         
-        allUpcomingMeetings = [...allUpcomingMeetings, ...calendarMeetings];
-        console.log(`📆 Found ${calendarMeetings.length} calendar meetings`);
+        if (calendarMeetings.length > 0) {
+          console.log(`📆 Found ${calendarMeetings.length} calendar meetings`);
+          allUpcomingMeetings = [...allUpcomingMeetings, ...calendarMeetings];
+        }
       }
     } catch (calendarError) {
       console.warn('⚠️ Failed to fetch calendar meetings:', calendarError);
     }
     
-    // Remove duplicates and sort
+    // ==================== STEP 3: Enhance with Quick Stats (Non-Critical) ====================
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/dashboard/quick-stats`, {
+        params: { user_id: user.id }
+      });
+      
+      if (response.data?.success && response.data?.upcoming_meetings?.length > 0) {
+        response.data.upcoming_meetings.forEach(qsMeeting => {
+          const qsId = qsMeeting.meeting_id;
+          const existingIndex = allUpcomingMeetings.findIndex(m => 
+            m.ID == qsId || m.Meeting_ID == qsId || m.id == qsId
+          );
+          
+          if (existingIndex >= 0) {
+            // Enhance existing meeting
+            allUpcomingMeetings[existingIndex] = {
+              ...allUpcomingMeetings[existingIndex],
+              time_until: qsMeeting.time_until,
+              duration_minutes: qsMeeting.duration_minutes || allUpcomingMeetings[existingIndex].duration_minutes,
+              user_role: qsMeeting.user_role || allUpcomingMeetings[existingIndex].user_role
+            };
+          } else {
+            // Add new meeting from quick stats
+            const meetingName = qsMeeting.title || 'Untitled Meeting';
+            const startTime = qsMeeting.start_time;
+            const hostId = qsMeeting.host_id;
+            
+            allUpcomingMeetings.push({
+              id: qsId,
+              ID: qsId,
+              Meeting_ID: qsId,
+              title: meetingName,
+              Meeting_Name: meetingName,
+              Title: meetingName,
+              startTime: startTime,
+              start_time: startTime,
+              Started_At: startTime,
+              Host_ID: hostId,
+              host_id: hostId,
+              Status: 'scheduled',
+              status: 'scheduled',
+              Meeting_Type: qsMeeting.meeting_type || 'ScheduleMeeting',
+              meeting_type: qsMeeting.meeting_type || 'ScheduleMeeting',
+              source: 'quick_stats',
+              time_until: qsMeeting.time_until,
+              duration_minutes: qsMeeting.duration_minutes,
+              user_role: qsMeeting.user_role,
+              is_host: qsMeeting.user_role === 'host'
+            });
+          }
+        });
+        console.log('✅ Enhanced with quick stats data');
+      }
+    } catch (quickStatsError) {
+      console.warn('⚠️ Quick stats failed (non-critical):', quickStatsError.message);
+    }
+    
+    // ==================== STEP 4: Fallback if Nothing Found ====================
+    if (allUpcomingMeetings.length === 0) {
+      try {
+        const fallbackResponse = await axios.get(`${API_BASE_URL}/api/meetings/user-schedule-meetings`, {
+          params: { user_id: user.id, user_email: user.email }
+        });
+        
+        if (fallbackResponse.data?.meetings) {
+          allUpcomingMeetings = fallbackResponse.data.meetings
+            .filter(m => m && new Date(m.startTime || m.Started_At) > now)
+            .map(meeting => {
+              const meetingId = meeting.id || meeting.ID || meeting.Meeting_ID;
+              const hostId = meeting.Host_ID || meeting.host_id;
+              return {
+                ...meeting,
+                id: meetingId,
+                ID: meetingId,
+                Meeting_ID: meetingId,
+                Meeting_Name: meeting.title || meeting.Meeting_Name,
+                Started_At: meeting.startTime || meeting.Started_At,
+                Host_ID: hostId,
+                source: 'fallback',
+                is_host: hostId === user.id,
+                user_role: hostId === user.id ? 'host' : 'participant'
+              };
+            });
+        }
+      } catch (fallbackError) {
+        console.error('Fallback failed:', fallbackError);
+      }
+    }
+    
+    // ==================== STEP 5: Deduplicate and Sort ====================
     const uniqueIds = new Set();
     const uniqueMeetings = allUpcomingMeetings.filter(meeting => {
-      const id = meeting.ID || meeting.Meeting_ID;
+      const id = String(meeting.ID || meeting.Meeting_ID || meeting.id);
       if (id && !uniqueIds.has(id)) {
         uniqueIds.add(id);
         return true;
@@ -1306,16 +1426,12 @@ const loadUpcomingMeetings = async () => {
     });
     
     const sortedMeetings = uniqueMeetings.sort((a, b) => {
-      const dateA = new Date(a.Started_At || a.start_time || Date.now());
-      const dateB = new Date(b.Started_At || b.start_time || Date.now());
+      const dateA = new Date(a.Started_At || a.start_time || a.startTime || Date.now());
+      const dateB = new Date(b.Started_At || b.start_time || b.startTime || Date.now());
       return dateA - dateB;
     });
     
-    console.log(`✅ Total upcoming meetings: ${sortedMeetings.length}`);
-    console.log('📊 Breakdown:', {
-      schedule: sortedMeetings.filter(m => m.source === 'schedule').length,
-      calendar: sortedMeetings.filter(m => m.source === 'calendar').length
-    });
+    console.log(`✅ Total: ${sortedMeetings.length} meetings (Schedule: ${sortedMeetings.filter(m => m.source === 'schedule').length}, Calendar: ${sortedMeetings.filter(m => m.source === 'calendar').length})`);
     
     setUpcomingMeetings(sortedMeetings.slice(0, 20));
     
