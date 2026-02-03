@@ -597,7 +597,15 @@ const DashboardLayout = ({ children, badges = {} }) => {
       onMobileMenuToggle={handleDrawerToggle}
       mobileMenuOpen={mobileOpen}
     >
-      <Box sx={{ display: "flex", minHeight: `calc(100vh - ${HEADER_HEIGHT}px)` }}>
+      {/* ✅ FIXED: Added overflow hidden to parent flex container */}
+      <Box 
+        sx={{ 
+          display: "flex", 
+          minHeight: `calc(100vh - ${HEADER_HEIGHT}px)`,
+          overflow: "hidden",
+          width: "100%",
+        }}
+      >
         {/* Desktop Drawer */}
         {!isMobile && (
           <Drawer
@@ -643,16 +651,20 @@ const DashboardLayout = ({ children, badges = {} }) => {
           </Drawer>
         )}
 
-        {/* Main Content - Removed top padding */}
+        {/* ✅ FIXED: Main Content with proper width handling */}
         <Box
           component="main"
           sx={{
             flexGrow: 1,
-            p: 0, // Removed all padding
-            pt: 0, // Ensure no top padding
+            flexShrink: 1,
+            minWidth: 0, // ✅ Critical: allows flex item to shrink below content size
+            p: 0,
+            pt: 0,
             bgcolor: "#F8FAFC",
             minHeight: `calc(100vh - ${HEADER_HEIGHT}px)`,
-            width: { xs: "100%", md: `calc(100% - ${drawerWidth}px)` },
+            width: "100%", // ✅ Let flexbox handle the width instead of calc
+            overflow: "hidden", // ✅ Prevent content overflow
+            overflowY: "auto", // ✅ Allow vertical scrolling
           }}
         >
           {children}

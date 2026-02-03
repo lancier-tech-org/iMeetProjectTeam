@@ -1,5 +1,5 @@
-// src/components/dashboard/Dashboard.jsx - CLEAN LIGHT THEME VERSION
-import React, { useState, useEffect,useCallback } from "react";
+// src/components/dashboard/Dashboard.jsx - CLEAN LIGHT THEME VERSION WITH WIDTH FIXES
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Box,
   Grid,
@@ -72,6 +72,7 @@ import { useNotifications } from "../../hooks/useNotifications";
 import MeetingOptions from "./MeetingOptions";
 import MeetingHistory from "./MeetingHistory";
 import { analyticsAPI } from '../../services/api';
+
 // Professional Real-time Sun Component
 const RealtimeSun = ({ size = 64 }) => {
   const [sunData, setSunData] = useState({
@@ -190,6 +191,7 @@ const RealtimeSun = ({ size = 64 }) => {
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
+        flexShrink: 0, // ✅ Prevent sun from shrinking
         animation: "wave 1s ease-in-out infinite",
         animationDelay: "2s",
         transformOrigin: "center",
@@ -419,6 +421,8 @@ const QuickStatCard = ({ icon, title, value, subtitle, color, trend }) => {
           backgroundColor: "white",
           transition: "all 0.3s ease",
           cursor: "pointer",
+          minWidth: 0, // ✅ Allow card to shrink
+          overflow: "hidden", // ✅ Prevent content overflow
           "&:hover": {
             transform: "translateY(-4px)",
             boxShadow: `0 12px 24px ${color}20`,
@@ -431,17 +435,19 @@ const QuickStatCard = ({ icon, title, value, subtitle, color, trend }) => {
             sx={{
               width: 48,
               height: 48,
+              minWidth: 48, // ✅ Prevent icon box from shrinking
               borderRadius: 2,
               backgroundColor: `${color}15`,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               color: color,
+              flexShrink: 0, // ✅ Prevent shrinking
             }}
           >
             {icon}
           </Box>
-          <Box sx={{ flex: 1 }}>
+          <Box sx={{ flex: 1, minWidth: 0, overflow: "hidden" }}> {/* ✅ Added minWidth and overflow */}
             <Typography
               variant="caption"
               sx={{
@@ -450,17 +456,21 @@ const QuickStatCard = ({ icon, title, value, subtitle, color, trend }) => {
                 textTransform: "uppercase",
                 letterSpacing: "0.5px",
                 fontSize: "0.7rem",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
               }}
             >
               {title}
             </Typography>
-            <Stack direction="row" alignItems="baseline" spacing={1}>
+            <Stack direction="row" alignItems="baseline" spacing={1} sx={{ flexWrap: "wrap" }}>
               <Typography
                 variant="h4"
                 sx={{
                   fontWeight: 700,
                   color: "#1F2937",
                   lineHeight: 1.2,
+                  fontSize: { xs: "1.5rem", sm: "2.125rem" }, // ✅ Responsive font size
                 }}
               >
                 {value}
@@ -486,6 +496,10 @@ const QuickStatCard = ({ icon, title, value, subtitle, color, trend }) => {
               sx={{
                 color: "#9CA3AF",
                 fontSize: "0.75rem",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                display: "block",
               }}
             >
               {subtitle}
@@ -497,7 +511,6 @@ const QuickStatCard = ({ icon, title, value, subtitle, color, trend }) => {
   );
 };
 
-// Upcoming Meeting Card Component
 // Upcoming Meeting Card Component
 const UpcomingMeetingCard = ({ meeting, onJoin }) => {
   const getTimeUntil = (dateString) => {
@@ -540,6 +553,8 @@ const UpcomingMeetingCard = ({ meeting, onJoin }) => {
           ? "rgba(16, 185, 129, 0.05)"
           : "white",
         transition: "all 0.2s ease",
+        minWidth: 0, // ✅ Allow card to shrink
+        overflow: "hidden", // ✅ Prevent overflow
         "&:hover": {
           borderColor: "#2D7DD2",
           transform: "translateX(4px)",
@@ -551,6 +566,7 @@ const UpcomingMeetingCard = ({ meeting, onJoin }) => {
           sx={{
             width: 40,
             height: 40,
+            minWidth: 40, // ✅ Prevent shrinking
             borderRadius: 1.5,
             backgroundColor: isStartingSoon()
               ? "#10B98120"
@@ -565,6 +581,7 @@ const UpcomingMeetingCard = ({ meeting, onJoin }) => {
               : isCalendarMeeting
               ? "#8B5CF6"
               : "#2D7DD2",
+            flexShrink: 0, // ✅ Prevent shrinking
           }}
         >
           {isStartingSoon() ? (
@@ -575,8 +592,8 @@ const UpcomingMeetingCard = ({ meeting, onJoin }) => {
             <EventAvailable />
           )}
         </Box>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Stack direction="row" alignItems="center" spacing={0.5}>
+        <Box sx={{ flex: 1, minWidth: 0, overflow: "hidden" }}> {/* ✅ Added minWidth and overflow */}
+          <Stack direction="row" alignItems="center" spacing={0.5} sx={{ flexWrap: "wrap" }}>
             <Typography
               variant="subtitle2"
               sx={{
@@ -585,6 +602,7 @@ const UpcomingMeetingCard = ({ meeting, onJoin }) => {
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
+                maxWidth: "100%",
               }}
             >
               {meeting.title || "Untitled Meeting"}
@@ -598,19 +616,20 @@ const UpcomingMeetingCard = ({ meeting, onJoin }) => {
                   fontSize: "0.6rem",
                   backgroundColor: "#8B5CF620",
                   color: "#8B5CF6",
+                  flexShrink: 0,
                   "& .MuiChip-label": { px: 0.5 },
                 }}
               />
             )}
           </Stack>
-          <Stack direction="row" spacing={1} alignItems="center">
-            <AccessTime sx={{ fontSize: 14, color: "#9CA3AF" }} />
-            <Typography variant="caption" sx={{ color: "#6B7280" }}>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: "wrap" }}>
+            <AccessTime sx={{ fontSize: 14, color: "#9CA3AF", flexShrink: 0 }} />
+            <Typography variant="caption" sx={{ color: "#6B7280", whiteSpace: "nowrap" }}>
               {getTimeUntil(meeting.scheduled_time || meeting.start_time)}
             </Typography>
             {meeting.participants_count > 0 && (
               <>
-                <Groups sx={{ fontSize: 14, color: "#9CA3AF", ml: 1 }} />
+                <Groups sx={{ fontSize: 14, color: "#9CA3AF", ml: 1, flexShrink: 0 }} />
                 <Typography variant="caption" sx={{ color: "#6B7280" }}>
                   {meeting.participants_count}
                 </Typography>
@@ -628,6 +647,7 @@ const UpcomingMeetingCard = ({ meeting, onJoin }) => {
               textTransform: "none",
               fontWeight: 600,
               px: 2,
+              flexShrink: 0, // ✅ Prevent button from shrinking
               "&:hover": {
                 backgroundColor: "#059669",
               },
@@ -857,22 +877,22 @@ const Dashboard = () => {
     loading: meetingLoading,
     loadUpcomingMeetings,
   } = useMeeting();
-  const { getDashboardQuickStats,getUserStats, loading: analyticsLoading } = useAnalytics();
+  const { getDashboardQuickStats, getUserStats, loading: analyticsLoading } = useAnalytics();
   const { fetchNotifications } = useNotifications();
 
   // State
   const [helpDialogOpen, setHelpDialogOpen] = useState(false);
   const [userStats, setUserStats] = useState({
-  totalMeetings: 0,
-  totalMinutes: 0,
-  attendance: 0,
-  upcomingCount: 0,
-  meetingsThisWeek: 0,
-  hoursThisWeek: 0,
-  timeDisplay: '0m',
-  hosted: 0,
-  percentageChange: 0,
-});
+    totalMeetings: 0,
+    totalMinutes: 0,
+    attendance: 0,
+    upcomingCount: 0,
+    meetingsThisWeek: 0,
+    hoursThisWeek: 0,
+    timeDisplay: '0m',
+    hosted: 0,
+    percentageChange: 0,
+  });
 
   useEffect(() => {
     fetchNotifications();
@@ -886,106 +906,106 @@ const Dashboard = () => {
     }
   }, []);
 
-// ✅ FIXED: Load user stats with fallback to upcomingMeetings
-const loadUserStats = useCallback(async () => {
-  // Double-check user is available
-  if (!user?.id) {
-    console.log("📊 Dashboard: No user ID, skipping stats load");
-    return;
-  }
+  // ✅ FIXED: Load user stats with fallback to upcomingMeetings
+  const loadUserStats = useCallback(async () => {
+    // Double-check user is available
+    if (!user?.id) {
+      console.log("📊 Dashboard: No user ID, skipping stats load");
+      return;
+    }
 
-  try {
-    console.log("📊 Dashboard: Loading quick stats for user:", user.id);
-    
-    const response = await getDashboardQuickStats();
-    
-    console.log("📊 Dashboard: Quick stats received:", response);
-
-    // Only update if we got valid response
-    if (response && typeof response === 'object') {
-      // ✅ FIXED: Extract from nested quick_stats structure
-      const quickStats = response.quick_stats || response;
+    try {
+      console.log("📊 Dashboard: Loading quick stats for user:", user.id);
       
-      // Extract values from nested structure
-      const meetingsThisWeek = quickStats.this_week?.meetings_attended ?? 
-                               quickStats.meetingsThisWeek ?? 0;
-      const hoursThisWeek = quickStats.hours?.total_hours ?? 
-                           quickStats.hoursThisWeek ?? 0;
-      const timeDisplay = quickStats.hours?.display ?? 
-                         quickStats.timeDisplay ?? 
-                         `${hoursThisWeek}h`;
-      let upcomingCount = quickStats.upcoming?.count ?? 
-                          quickStats.upcomingCount ?? 0;
-      const hosted = quickStats.hosted?.count ?? 
-                    quickStats.hosted ?? 0;
-      const percentageChange = quickStats.this_week?.percentage_change ?? 
-                              quickStats.percentageChange ?? 0;
-      const totalMinutes = quickStats.hours?.total_minutes ?? 
-                          quickStats.totalMinutes ?? 0;
+      const response = await getDashboardQuickStats();
+      
+      console.log("📊 Dashboard: Quick stats received:", response);
 
-      // ✅ CRITICAL FIX: If backend returns 0 but upcomingMeetings has data, use that
-      if (upcomingCount === 0 && upcomingMeetings?.length > 0) {
-        console.log("📊 Dashboard: Backend returned 0, using upcomingMeetings count:", upcomingMeetings.length);
-        upcomingCount = upcomingMeetings.length;
+      // Only update if we got valid response
+      if (response && typeof response === 'object') {
+        // ✅ FIXED: Extract from nested quick_stats structure
+        const quickStats = response.quick_stats || response;
+        
+        // Extract values from nested structure
+        const meetingsThisWeek = quickStats.this_week?.meetings_attended ?? 
+                                 quickStats.meetingsThisWeek ?? 0;
+        const hoursThisWeek = quickStats.hours?.total_hours ?? 
+                             quickStats.hoursThisWeek ?? 0;
+        const timeDisplay = quickStats.hours?.display ?? 
+                           quickStats.timeDisplay ?? 
+                           `${hoursThisWeek}h`;
+        let upcomingCount = quickStats.upcoming?.count ?? 
+                            quickStats.upcomingCount ?? 0;
+        const hosted = quickStats.hosted?.count ?? 
+                      quickStats.hosted ?? 0;
+        const percentageChange = quickStats.this_week?.percentage_change ?? 
+                                quickStats.percentageChange ?? 0;
+        const totalMinutes = quickStats.hours?.total_minutes ?? 
+                            quickStats.totalMinutes ?? 0;
+
+        // ✅ CRITICAL FIX: If backend returns 0 but upcomingMeetings has data, use that
+        if (upcomingCount === 0 && upcomingMeetings?.length > 0) {
+          console.log("📊 Dashboard: Backend returned 0, using upcomingMeetings count:", upcomingMeetings.length);
+          upcomingCount = upcomingMeetings.length;
+        }
+
+        console.log("📊 Dashboard: Final mapped stats:", {
+          meetingsThisWeek,
+          hoursThisWeek,
+          timeDisplay,
+          upcomingCount,
+          hosted,
+          percentageChange
+        });
+
+        setUserStats({
+          meetingsThisWeek,
+          hoursThisWeek,
+          timeDisplay,
+          upcomingCount,
+          hosted,
+          percentageChange,
+          totalMeetings: meetingsThisWeek,
+          totalMinutes,
+          attendance: 0,
+        });
       }
-
-      console.log("📊 Dashboard: Final mapped stats:", {
-        meetingsThisWeek,
-        hoursThisWeek,
-        timeDisplay,
-        upcomingCount,
-        hosted,
-        percentageChange
-      });
-
+    } catch (error) {
+      console.error("❌ Dashboard: Failed to load user stats:", error);
+      
+      // ✅ FALLBACK: If API fails, use upcomingMeetings data
       setUserStats({
-        meetingsThisWeek,
-        hoursThisWeek,
-        timeDisplay,
-        upcomingCount,
-        hosted,
-        percentageChange,
-        totalMeetings: meetingsThisWeek,
-        totalMinutes,
+        totalMeetings: 0,
+        totalMinutes: 0,
         attendance: 0,
+        upcomingCount: upcomingMeetings?.length || 0,
+        meetingsThisWeek: 0,
+        hoursThisWeek: 0,
+        timeDisplay: '0m',
+        hosted: 0,
+        percentageChange: 0,
       });
     }
-  } catch (error) {
-    console.error("❌ Dashboard: Failed to load user stats:", error);
-    
-    // ✅ FALLBACK: If API fails, use upcomingMeetings data
-    setUserStats({
-      totalMeetings: 0,
-      totalMinutes: 0,
-      attendance: 0,
-      upcomingCount: upcomingMeetings?.length || 0,
-      meetingsThisWeek: 0,
-      hoursThisWeek: 0,
-      timeDisplay: '0m',
-      hosted: 0,
-      percentageChange: 0,
-    });
-  }
-}, [user?.id, getDashboardQuickStats, upcomingMeetings]);
+  }, [user?.id, getDashboardQuickStats, upcomingMeetings]);
 
-// ✅ FIXED: Trigger stats load when user becomes available
-useEffect(() => {
-  if (user?.id) {
-    console.log("📊 Dashboard: User detected, triggering stats load for:", user.id);
-    loadUserStats();
-  }
-}, [user?.id, loadUserStats]);
+  // ✅ FIXED: Trigger stats load when user becomes available
+  useEffect(() => {
+    if (user?.id) {
+      console.log("📊 Dashboard: User detected, triggering stats load for:", user.id);
+      loadUserStats();
+    }
+  }, [user?.id, loadUserStats]);
 
-// ✅ NEW: Update stats when upcomingMeetings changes
-useEffect(() => {
-  if (upcomingMeetings?.length > 0 && userStats.upcomingCount === 0) {
-    console.log("📊 Dashboard: Upcoming meetings loaded, updating count:", upcomingMeetings.length);
-    setUserStats(prev => ({
-      ...prev,
-      upcomingCount: upcomingMeetings.length
-    }));
-  }
-}, [upcomingMeetings, userStats.upcomingCount]);
+  // ✅ NEW: Update stats when upcomingMeetings changes
+  useEffect(() => {
+    if (upcomingMeetings?.length > 0 && userStats.upcomingCount === 0) {
+      console.log("📊 Dashboard: Upcoming meetings loaded, updating count:", upcomingMeetings.length);
+      setUserStats(prev => ({
+        ...prev,
+        upcomingCount: upcomingMeetings.length
+      }));
+    }
+  }, [upcomingMeetings, userStats.upcomingCount]);
 
   const handleJoinMeeting = async (meetingId) => {
     try {
@@ -1007,8 +1027,6 @@ useEffect(() => {
     return user?.full_name?.split(" ")[0] || "User";
   };
 
-  // Use real upcoming meetings data only
-  // Use real upcoming meetings data only (Schedule + Calendar meetings)
   // Use real upcoming meetings data only (Schedule + Calendar meetings)
   const displayUpcomingMeetings =
     upcomingMeetings?.length > 0
@@ -1041,27 +1059,44 @@ useEffect(() => {
           "linear-gradient(135deg, #F0F9F9 0%, #EBF4FC 50%, #F5F7FA 100%)",
         pt: 3,
         pb: 6,
+        overflow: "hidden", // ✅ Prevent horizontal overflow
+        width: "100%",
       }}
     >
-      <Container maxWidth="xl">
+      {/* ✅ FIXED: Added overflow hidden to Container */}
+      <Container 
+        maxWidth="xl" 
+        sx={{ 
+          overflow: "hidden",
+          px: { xs: 2, sm: 3 }, // ✅ Responsive padding
+        }}
+      >
         {/* Header Section */}
         <Fade in timeout={800}>
           <Box mb={4}>
             <Stack
-              direction="row"
+              direction={{ xs: "column", sm: "row" }} // ✅ Responsive direction
               justifyContent="space-between"
-              alignItems="flex-start"
+              alignItems={{ xs: "flex-start", sm: "flex-start" }}
+              spacing={2}
             >
-              <Box>
+              <Box sx={{ minWidth: 0, flex: 1, overflow: "hidden" }}> {/* ✅ Added minWidth and overflow */}
                 <Box
-                  sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}
+                  sx={{ 
+                    display: "flex", 
+                    alignItems: "center", 
+                    gap: 1, 
+                    mb: 1,
+                    flexWrap: "wrap", // ✅ Allow wrapping on small screens
+                  }}
                 >
                   <Typography
                     variant="h4"
                     sx={{
                       fontWeight: 600,
                       color: "#1F2937",
-                      fontSize: { xs: "1.75rem", md: "2.125rem" },
+                      fontSize: { xs: "1.5rem", sm: "1.75rem", md: "2.125rem" }, // ✅ Responsive font
+                      whiteSpace: "nowrap",
                     }}
                   >
                     {getGreeting()},{" "}
@@ -1077,7 +1112,7 @@ useEffect(() => {
                   variant="body1"
                   sx={{
                     color: "#6B7280",
-                    fontSize: "1rem",
+                    fontSize: { xs: "0.875rem", md: "1rem" }, // ✅ Responsive font
                     maxWidth: "600px",
                   }}
                 >
@@ -1094,6 +1129,7 @@ useEffect(() => {
                     backgroundColor: "white",
                     border: "1px solid #E5E7EB",
                     color: "#6B7280",
+                    flexShrink: 0, // ✅ Prevent shrinking
                     "&:hover": {
                       backgroundColor: "#F3F4F6",
                     },
@@ -1125,6 +1161,7 @@ useEffect(() => {
                   background:
                     "linear-gradient(180deg, #1A8A8A 0%, #2D7DD2 100%)",
                   borderRadius: "2px",
+                  flexShrink: 0,
                 },
               }}
             >
@@ -1141,15 +1178,15 @@ useEffect(() => {
                   trend={userStats.percentageChange !== 0 ? `${userStats.percentageChange > 0 ? '+' : ''}${userStats.percentageChange}%` : null}
                 />
               </Grid>
-             <Grid item xs={6} sm={6} md={3}>
-  <QuickStatCard
-    icon={<Timer sx={{ fontSize: 24 }} />}
-    title="Time"
-    value={userStats.timeDisplay}
-    subtitle="Total this week"
-    color="#2D7DD2"
-  />
-</Grid>
+              <Grid item xs={6} sm={6} md={3}>
+                <QuickStatCard
+                  icon={<Timer sx={{ fontSize: 24 }} />}
+                  title="Time"
+                  value={userStats.timeDisplay}
+                  subtitle="Total this week"
+                  color="#2D7DD2"
+                />
+              </Grid>
               <Grid item xs={6} sm={6} md={3}>
                 <QuickStatCard
                   icon={<Upcoming sx={{ fontSize: 24 }} />}
@@ -1185,7 +1222,7 @@ useEffect(() => {
                   overflow: "hidden",
                 }}
               >
-                <Box sx={{ p: 4 }}>
+                <Box sx={{ p: { xs: 2, sm: 3, md: 4 } }}> {/* ✅ Responsive padding */}
                   <Typography
                     variant="h6"
                     sx={{
@@ -1202,6 +1239,7 @@ useEffect(() => {
                         background:
                           "linear-gradient(180deg, #1A8A8A 0%, #2D7DD2 100%)",
                         borderRadius: "2px",
+                        flexShrink: 0,
                       },
                     }}
                   >
@@ -1227,7 +1265,7 @@ useEffect(() => {
                   height: "100%",
                 }}
               >
-                <Box sx={{ p: 3 }}>
+                <Box sx={{ p: { xs: 2, sm: 3 } }}> {/* ✅ Responsive padding */}
                   <Stack
                     direction="row"
                     justifyContent="space-between"
@@ -1242,6 +1280,7 @@ useEffect(() => {
                         display: "flex",
                         alignItems: "center",
                         gap: 1,
+                        fontSize: { xs: "1rem", sm: "1.25rem" }, // ✅ Responsive font
                         "&::before": {
                           content: '""',
                           width: "4px",
@@ -1249,6 +1288,7 @@ useEffect(() => {
                           background:
                             "linear-gradient(180deg, #1A8A8A 0%, #2D7DD2 100%)",
                           borderRadius: "2px",
+                          flexShrink: 0,
                         },
                       }}
                     >
@@ -1276,7 +1316,6 @@ useEffect(() => {
                       <Typography variant="body2">
                         No upcoming meetings
                       </Typography>
-                    
                     </Box>
                   )}
                 </Box>

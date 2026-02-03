@@ -116,6 +116,8 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
           minHeight: "100vh",
           bgcolor: "background.default",
           position: "relative",
+          overflow: "hidden", // ✅ Prevent horizontal overflow
+          width: "100%",
         }}
       >
         <AppBar
@@ -127,6 +129,7 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
             borderBottom: "1px solid rgba(255, 255, 255, 0.1)",
             boxShadow: "0 2px 12px rgba(26, 138, 138, 0.3)",
             height: HEADER_HEIGHT,
+            width: "100%", // ✅ Ensure full width
           }}
         >
           <Toolbar
@@ -137,6 +140,7 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
+              width: "100%", // ✅ Ensure full width
             }}
           >
             {/* Left Side - Logo Section centered in sidebar width */}
@@ -148,6 +152,7 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
                 width: { xs: "auto", md: SIDEBAR_WIDTH },
                 minWidth: { xs: "auto", md: SIDEBAR_WIDTH },
                 height: "100%",
+                flexShrink: 0, // ✅ Prevent logo area from shrinking
               }}
             >
               {/* Mobile Hamburger Menu Button */}
@@ -192,8 +197,9 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
                   src='/public/assests/images/IMeetPro.png'
                   alt="IMeetPro Logo"
                   sx={{
-                    height: { xs: 180, sm: 200, md: 120 },
+                    height: { xs: 60, sm: 80, md: 120 }, // ✅ Adjusted responsive heights
                     width: "auto",
+                    maxWidth: { xs: 120, sm: 160, md: 200 }, // ✅ Added max-width constraint
                     objectFit: "contain",
                     filter: "drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2))",
                   }}
@@ -228,13 +234,17 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
               </Box>
             </Box>
 
+            {/* Spacer to push right side content */}
+            <Box sx={{ flexGrow: 1 }} />
+
             {/* Right Side - Action Buttons */}
             <Box
               sx={{
                 display: "flex",
                 alignItems: "center",
-                gap: { xs: 1.5, sm: 2.5 },
-                pr: { xs: 2, sm: 3, md: 4 },
+                gap: { xs: 1, sm: 2, md: 2.5 }, // ✅ Responsive gap
+                pr: { xs: 1, sm: 2, md: 4 }, // ✅ Responsive padding
+                flexShrink: 0, // ✅ Prevent right side from shrinking
               }}
             >
               {/* Notifications */}
@@ -326,6 +336,7 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
             sx: {
               mt: 1.5,
               minWidth: 280,
+              maxWidth: "90vw", // ✅ Prevent menu from exceeding viewport
               borderRadius: 2,
               overflow: 'visible',
               boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)',
@@ -365,6 +376,7 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
                 sx={{
                   width: 56,
                   height: 56,
+                  flexShrink: 0, // ✅ Prevent avatar from shrinking
                   border: '2px solid',
                   borderColor: '#2D7DD2',
                   bgcolor: profilePicture ? 'transparent' : '#2D7DD2',
@@ -376,7 +388,7 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
               >
                 {!profilePicture && getUserInitial()}
               </Avatar>
-              <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Box sx={{ flex: 1, minWidth: 0, overflow: "hidden" }}> {/* ✅ Added minWidth and overflow */}
                 <Typography
                   variant="subtitle1"
                   sx={{ 
@@ -385,6 +397,9 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
                     lineHeight: 1.3,
                     mb: 0.5,
                     letterSpacing: '0.01em',
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
                   }}
                 >
                   {user?.full_name || user?.name || 'User'}
@@ -523,6 +538,8 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
             mt: `${HEADER_HEIGHT}px`,
             minHeight: `calc(100vh - ${HEADER_HEIGHT}px)`,
             bgcolor: "background.default",
+            overflow: "hidden", // ✅ Prevent content overflow
+            width: "100%",
           }}
         >
           {children}
@@ -532,4 +549,4 @@ const MainLayout = ({ children, onMobileMenuToggle, mobileMenuOpen }) => {
   );
 };
 
-export default MainLayout;
+export default MainLayout;  
