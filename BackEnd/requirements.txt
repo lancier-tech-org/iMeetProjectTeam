@@ -250,3 +250,4 @@ soupsieve==2.7
 # Face Recognition (for production)
 onnxruntime==1.18.0
 insightface==0.7.3
+django-ses
