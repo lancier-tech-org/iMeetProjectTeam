@@ -1132,8 +1132,9 @@ def get_mediapipe_results_per_request(rgb_frame):
         logger.error(traceback.format_exc())
         return None, None, None, None
 
-attendance_sessions = {}
-attendance_sessions = {}
+
+from .session_store import AttendanceSessionsDict
+attendance_sessions = AttendanceSessionsDict()
 
 def release_face_model_gpu():
     """Release face model GPU memory after detection"""

@@ -1,9 +1,68 @@
+# # =============================================================================
+# # iMeetPro Backend ConfigMap - Production (FINAL)
+# # =============================================================================
+# # Updated: 2026-02-01
+# # Changes: DB_HOST updated to AWS RDS
+# # =============================================================================
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: backend-config
+#   namespace: imeetpro
+# data:
+#   # Django Settings
+#   DEBUG: "False"
+#   DJANGO_SETTINGS_MODULE: "SampleDB.settings"
+#   ALLOWED_HOSTS: "*"
+#   LOG_TO_CONSOLE_ONLY: "true"
+  
+#   # MySQL Database (AWS RDS - Production)
+#   DB_HOST: "imeetpro-prod-mysql.c7ae8ge8ixhl.ap-south-1.rds.amazonaws.com"
+#   DB_NAME: "imeetpro"
+#   DB_PORT: "3306"
+  
+#   # MongoDB Configuration
+#   MONGODB_HOST: "mongodb.databases.svc.cluster.local"
+#   MONGODB_PORT: "27017"
+#   MONGODB_DATABASE: "connectlydb"
+#   MONGO_URI: "mongodb://mongodb.databases.svc.cluster.local:27017/connectlydb"
+  
+#   # Redis Configuration - All services use same Redis
+#   REDIS_HOST: "redis.databases.svc.cluster.local"
+#   REDIS_PORT: "6379"
+#   REDIS_URL: "redis://redis.databases.svc.cluster.local:6379"
+#   DEFAULT_REDIS_HOST: "redis.databases.svc.cluster.local"
+#   CACHE_CHAT_HOST: "redis.databases.svc.cluster.local"
+#   CACHE_HAND_RAISE_HOST: "redis.databases.svc.cluster.local"
+#   CACHE_REACTIONS_HOST: "redis.databases.svc.cluster.local"
+#   WHITEBOARD_REDIS_HOST: "redis.databases.svc.cluster.local"
+#   RECORDING_REDIS_HOST: "redis.databases.svc.cluster.local"
+  
+#   # Celery Configuration
+#   CELERY_BROKER_URL: "redis://redis.databases.svc.cluster.local:6379/0"
+#   CELERY_RESULT_BACKEND: "redis://redis.databases.svc.cluster.local:6379/1"
+  
+#   # AWS Configuration
+#   AWS_S3_REGION_NAME: "ap-south-1"
+#   AWS_STORAGE_BUCKET_NAME: "imeetpro-prod-recordings"
+  
+#   # LiveKit Configuration
+#   LIVEKIT_URL: "wss://imeetpro-izcww638.livekit.cloud"
+#   LIVEKIT_WSS_URL: "wss://imeetpro-izcww638.livekit.cloud"
+#   LIVEKIT_TTL: "86400"
+
+
+
+
 # =============================================================================
-# iMeetPro Backend ConfigMap - Production (FINAL)
+# iMeetPro Backend ConfigMap - Production (FIXED)
+# File: kubernetes/apps/backend/configmap.yaml
 # =============================================================================
-# Updated: 2026-02-01
-# Changes: DB_HOST updated to AWS RDS
+# FIXED:
+#   - Added ATTENDANCE_REDIS_DB for session storage
+#   - Added separate Redis DB configurations
 # =============================================================================
+
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -27,11 +86,25 @@ data:
   MONGODB_DATABASE: "connectlydb"
   MONGO_URI: "mongodb://mongodb.databases.svc.cluster.local:27017/connectlydb"
   
-  # Redis Configuration - All services use same Redis
+  # Redis Configuration
   REDIS_HOST: "redis.databases.svc.cluster.local"
   REDIS_PORT: "6379"
   REDIS_URL: "redis://redis.databases.svc.cluster.local:6379"
   DEFAULT_REDIS_HOST: "redis.databases.svc.cluster.local"
+  
+  # FIXED: Separate Redis databases for different purposes
+  # DB 0: Default cache
+  # DB 1: Celery results
+  # DB 2: Attendance sessions (FIXED - for session persistence)
+  # DB 3: Chat history
+  # DB 4: Reactions/hand-raise
+  CACHE_REDIS_DB: "0"
+  CELERY_REDIS_DB: "1"
+  ATTENDANCE_REDIS_DB: "2"
+  CHAT_REDIS_DB: "3"
+  REACTIONS_REDIS_DB: "4"
+  
+  # Cache hosts
   CACHE_CHAT_HOST: "redis.databases.svc.cluster.local"
   CACHE_HAND_RAISE_HOST: "redis.databases.svc.cluster.local"
   CACHE_REACTIONS_HOST: "redis.databases.svc.cluster.local"
@@ -50,3 +123,8 @@ data:
   LIVEKIT_URL: "wss://imeetpro-izcww638.livekit.cloud"
   LIVEKIT_WSS_URL: "wss://imeetpro-izcww638.livekit.cloud"
   LIVEKIT_TTL: "86400"
+  
+  # FIXED: Attendance Configuration
+  ATTENDANCE_SESSION_TTL: "86400"
+  ATTENDANCE_BREAK_DURATION: "300"
+  ATTENDANCE_FRAME_INTERVAL: "5000"
