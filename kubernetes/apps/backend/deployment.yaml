@@ -1,323 +1,12 @@
-# # =============================================================================
-# # iMeetPro Backend Deployment - Production (FINAL UPDATED)
-# # =============================================================================
-# # Updated: 2026-02-01
-# # Changes:
-# #   - Memory limits increased: 2Gi → 4Gi (for face model loading)
-# #   - Memory requests increased: 512Mi → 2Gi
-# #   - Added AWS credentials env vars (for S3 uploads)
-# #   - Added MONGO_URI env var
-# # =============================================================================
-
-# apiVersion: apps/v1
-# kind: Deployment
-# metadata:
-#   name: backend
-#   namespace: imeetpro
-#   labels:
-#     app: backend
-#     version: v1
-# spec:
-#   replicas: 2
-#   selector:
-#     matchLabels:
-#       app: backend
-#   strategy:
-#     type: RollingUpdate
-#     rollingUpdate:
-#       maxSurge: 1
-#       maxUnavailable: 0
-#   template:
-#     metadata:
-#       labels:
-#         app: backend
-#     spec:
-#       # Security context for non-root user
-#       securityContext:
-#         runAsUser: 1000
-#         runAsGroup: 1000
-#         fsGroup: 1000
-      
-#       containers:
-#         - name: backend
-#           image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/backend:BUILD_NUMBER
-#           imagePullPolicy: Always
-          
-#           ports:
-#             - containerPort: 8000
-#               protocol: TCP
-          
-#           # ============================================
-#           # COMMAND: Gunicorn with gthread workers
-#           # ============================================
-#           command:
-#             - "gunicorn"
-#           args:
-#             - "SampleDB.wsgi:application"
-#             - "--bind"
-#             - "0.0.0.0:8000"
-#             - "--workers"
-#             - "2"
-#             - "--worker-class"
-#             - "gthread"
-#             - "--threads"
-#             - "4"
-#             - "--timeout"
-#             - "600"
-#             - "--graceful-timeout"
-#             - "30"
-#             - "--keep-alive"
-#             - "5"
-#             - "--max-requests"
-#             - "1000"
-#             - "--max-requests-jitter"
-#             - "100"
-#             - "--log-level"
-#             - "info"
-#             - "--access-logfile"
-#             - "-"
-#             - "--error-logfile"
-#             - "-"
-          
-#           # ============================================
-#           # ENVIRONMENT VARIABLES
-#           # ============================================
-#           env:
-#             # Python/Django settings
-#             - name: PYTHONUNBUFFERED
-#               value: "1"
-#             - name: PYTHONDONTWRITEBYTECODE
-#               value: "1"
-#             - name: DJANGO_SETTINGS_MODULE
-#               value: "SampleDB.settings"
-            
-#             # Temp directories for ML models
-#             - name: HOME
-#               value: "/tmp"
-#             - name: MPLCONFIGDIR
-#               value: "/tmp/.matplotlib"
-#             - name: INSIGHTFACE_HOME
-#               value: "/tmp/.insightface"
-#             - name: TRANSFORMERS_CACHE
-#               value: "/tmp/.transformers"
-#             - name: HF_HOME
-#               value: "/tmp/.huggingface"
-#             - name: XDG_CACHE_HOME
-#               value: "/tmp/.cache"
-#             - name: NUMBA_CACHE_DIR
-#               value: "/tmp/.numba"
-            
-#             # Redis Configuration - K8s compatible
-#             - name: DEFAULT_REDIS_HOST
-#               value: "redis.databases.svc.cluster.local"
-#             - name: REDIS_PORT
-#               value: "6379"
-#             - name: REDIS_DB
-#               value: "0"
-            
-#             # Database - from ConfigMap/Secret
-#             - name: DB_HOST
-#               valueFrom:
-#                 configMapKeyRef:
-#                   name: backend-config
-#                   key: DB_HOST
-#                   optional: true
-#             - name: DB_PORT
-#               valueFrom:
-#                 configMapKeyRef:
-#                   name: backend-config
-#                   key: DB_PORT
-#                   optional: true
-#             - name: DB_NAME
-#               valueFrom:
-#                 configMapKeyRef:
-#                   name: backend-config
-#                   key: DB_NAME
-#                   optional: true
-#             - name: DB_USER
-#               valueFrom:
-#                 secretKeyRef:
-#                   name: backend-secrets
-#                   key: DB_USER
-#                   optional: true
-#             - name: DB_PASSWORD
-#               valueFrom:
-#                 secretKeyRef:
-#                   name: backend-secrets
-#                   key: DB_PASSWORD
-#                   optional: true
-            
-#             # MongoDB Configuration - from ConfigMap
-#             - name: MONGO_URI
-#               valueFrom:
-#                 configMapKeyRef:
-#                   name: backend-config
-#                   key: MONGO_URI
-#                   optional: true
-            
-#             # AWS Credentials - from Secret (for S3 uploads)
-#             - name: AWS_ACCESS_KEY_ID
-#               valueFrom:
-#                 secretKeyRef:
-#                   name: backend-secrets
-#                   key: AWS_ACCESS_KEY_ID
-#                   optional: true
-#             - name: AWS_SECRET_ACCESS_KEY
-#               valueFrom:
-#                 secretKeyRef:
-#                   name: backend-secrets
-#                   key: AWS_SECRET_ACCESS_KEY
-#                   optional: true
-#             - name: AWS_S3_BUCKET
-#               valueFrom:
-#                 secretKeyRef:
-#                   name: backend-secrets
-#                   key: AWS_S3_BUCKET
-#                   optional: true
-#             - name: AWS_REGION
-#               valueFrom:
-#                 secretKeyRef:
-#                   name: backend-secrets
-#                   key: AWS_REGION
-#                   optional: true
-            
-#             # LiveKit Configuration
-#             - name: LIVEKIT_URL
-#               valueFrom:
-#                 configMapKeyRef:
-#                   name: backend-config
-#                   key: LIVEKIT_URL
-#                   optional: true
-#             - name: LIVEKIT_API_KEY
-#               valueFrom:
-#                 secretKeyRef:
-#                   name: backend-secrets
-#                   key: LIVEKIT_API_KEY
-#                   optional: true
-#             - name: LIVEKIT_API_SECRET
-#               valueFrom:
-#                 secretKeyRef:
-#                   name: backend-secrets
-#                   key: LIVEKIT_API_SECRET
-#                   optional: true
-#             # ADD THIS BLOCK - Groq API Key for transcription
-#             - name: GROQ_API_KEY
-#               valueFrom:
-#                 secretKeyRef:
-#                   name: backend-secrets
-#                   key: GROQ_API_KEY
-#                   optional: true
-#             # Disable background schedulers during startup
-#             - name: DISABLE_SCHEDULER
-#               value: "true"
-#             - name: DISABLE_CRON
-#               value: "true"
-          
-#           # ============================================
-#           # PROBES - TCP based (NOT HTTP)
-#           # ML models block HTTP during first request
-#           # ============================================
-          
-#           # Startup Probe: Wait for app to be ready (up to 10 minutes)
-#           startupProbe:
-#             tcpSocket:
-#               port: 8000
-#             initialDelaySeconds: 30
-#             periodSeconds: 10
-#             timeoutSeconds: 5
-#             failureThreshold: 60
-#             successThreshold: 1
-          
-#           # Liveness Probe: Check if app is alive
-#           livenessProbe:
-#             tcpSocket:
-#               port: 8000
-#             initialDelaySeconds: 10
-#             periodSeconds: 30
-#             timeoutSeconds: 5
-#             failureThreshold: 3
-#             successThreshold: 1
-          
-#           # Readiness Probe: Check if app can accept traffic
-#           readinessProbe:
-#             tcpSocket:
-#               port: 8000
-#             initialDelaySeconds: 5
-#             periodSeconds: 10
-#             timeoutSeconds: 5
-#             failureThreshold: 3
-#             successThreshold: 1
-          
-#           # ============================================
-#           # RESOURCES - UPDATED for ML model loading
-#           # ============================================
-#           resources:
-#             requests:
-#               memory: "2Gi"
-#               cpu: "250m"
-#             limits:
-#               memory: "4Gi"
-#               cpu: "1000m"
-          
-#           # ============================================
-#           # VOLUME MOUNTS
-#           # ============================================
-#           volumeMounts:
-#             - name: tmp-volume
-#               mountPath: /tmp
-#             - name: app-logs
-#               mountPath: /app/logs
-      
-#       # ============================================
-#       # VOLUMES
-#       # ============================================
-#       volumes:
-#         - name: tmp-volume
-#           emptyDir:
-#             sizeLimit: 2Gi
-#         - name: app-logs
-#           emptyDir:
-#             sizeLimit: 500Mi
-      
-#       # ============================================
-#       # POD SETTINGS
-#       # ============================================
-#       restartPolicy: Always
-#       terminationGracePeriodSeconds: 60
-
-# ---
-# # ============================================
-# # SERVICE
-# # ============================================
-# apiVersion: v1
-# kind: Service
-# metadata:
-#   name: backend
-#   namespace: imeetpro
-#   labels:
-#     app: backend
-# spec:
-#   type: ClusterIP
-#   selector:
-#     app: backend
-#   ports:
-#     - name: http
-#       port: 8000
-#       targetPort: 8000
-#       protocol: TCP
-
-
-
-
 # =============================================================================
-# iMeetPro Backend Deployment - Production (FIXED)
-# File: kubernetes/apps/backend/deployment.yaml
+# iMeetPro Backend Deployment - Production (FINAL UPDATED)
 # =============================================================================
-# FIXED:
-#   - HTTP health probes instead of TCP
-#   - Session affinity for consistent routing
-#   - Init container to wait for Redis
-#   - Increased resources for ML stability
+# Updated: 2026-02-01
+# Changes:
+#   - Memory limits increased: 2Gi → 4Gi (for face model loading)
+#   - Memory requests increased: 512Mi → 2Gi
+#   - Added AWS credentials env vars (for S3 uploads)
+#   - Added MONGO_URI env var
 # =============================================================================
 
 apiVersion: apps/v1
@@ -348,12 +37,6 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
-      
-      # FIXED: Wait for Redis before starting backend
-      initContainers:
-        - name: wait-for-redis
-          image: busybox:1.35
-          command: ['sh', '-c', 'until nc -z redis.databases.svc.cluster.local 6379; do echo waiting for redis; sleep 2; done']
       
       containers:
         - name: backend
@@ -408,16 +91,6 @@ spec:
             - name: DJANGO_SETTINGS_MODULE
               value: "SampleDB.settings"
             
-            # FIXED: Pod identity for debugging
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: POD_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.podIP
-            
             # Temp directories for ML models
             - name: HOME
               value: "/tmp"
@@ -434,21 +107,13 @@ spec:
             - name: NUMBA_CACHE_DIR
               value: "/tmp/.numba"
             
-            # Redis Configuration
+            # Redis Configuration - K8s compatible
             - name: DEFAULT_REDIS_HOST
-              value: "redis.databases.svc.cluster.local"
-            - name: REDIS_HOST
               value: "redis.databases.svc.cluster.local"
             - name: REDIS_PORT
               value: "6379"
             - name: REDIS_DB
               value: "0"
-            - name: REDIS_URL
-              value: "redis://redis.databases.svc.cluster.local:6379/0"
-            
-            # FIXED: Attendance session Redis DB
-            - name: ATTENDANCE_REDIS_DB
-              value: "2"
             
             # Database - from ConfigMap/Secret
             - name: DB_HOST
@@ -482,7 +147,7 @@ spec:
                   key: DB_PASSWORD
                   optional: true
             
-            # MongoDB Configuration
+            # MongoDB Configuration - from ConfigMap
             - name: MONGO_URI
               valueFrom:
                 configMapKeyRef:
@@ -490,7 +155,7 @@ spec:
                   key: MONGO_URI
                   optional: true
             
-            # AWS Credentials
+            # AWS Credentials - from Secret (for S3 uploads)
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
@@ -535,15 +200,13 @@ spec:
                   name: backend-secrets
                   key: LIVEKIT_API_SECRET
                   optional: true
-            
-            # Groq API Key
+            # ADD THIS BLOCK - Groq API Key for transcription
             - name: GROQ_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: backend-secrets
                   key: GROQ_API_KEY
                   optional: true
-            
             # Disable background schedulers during startup
             - name: DISABLE_SCHEDULER
               value: "true"
@@ -551,52 +214,50 @@ spec:
               value: "true"
           
           # ============================================
-          # PROBES - FIXED: HTTP probes for accurate health
+          # PROBES - TCP based (NOT HTTP)
+          # ML models block HTTP during first request
           # ============================================
           
-          # Startup Probe: Wait for app to be ready (up to 15 minutes)
+          # Startup Probe: Wait for app to be ready (up to 10 minutes)
           startupProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 8000
             initialDelaySeconds: 30
             periodSeconds: 10
-            timeoutSeconds: 10
-            failureThreshold: 90
+            timeoutSeconds: 5
+            failureThreshold: 60
             successThreshold: 1
           
           # Liveness Probe: Check if app is alive
           livenessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 8000
             initialDelaySeconds: 10
             periodSeconds: 30
-            timeoutSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
             successThreshold: 1
           
           # Readiness Probe: Check if app can accept traffic
           readinessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
             successThreshold: 1
           
           # ============================================
-          # RESOURCES - Increased for ML stability
+          # RESOURCES - UPDATED for ML model loading
           # ============================================
           resources:
             requests:
               memory: "2Gi"
-              cpu: "500m"
+              cpu: "250m"
             limits:
-              memory: "6Gi"
-              cpu: "2000m"
+              memory: "4Gi"
+              cpu: "1000m"
           
           # ============================================
           # VOLUME MOUNTS
@@ -613,7 +274,7 @@ spec:
       volumes:
         - name: tmp-volume
           emptyDir:
-            sizeLimit: 4Gi
+            sizeLimit: 2Gi
         - name: app-logs
           emptyDir:
             sizeLimit: 500Mi
@@ -626,7 +287,7 @@ spec:
 
 ---
 # ============================================
-# SERVICE - FIXED: Added session affinity
+# SERVICE
 # ============================================
 apiVersion: v1
 kind: Service
@@ -637,11 +298,6 @@ metadata:
     app: backend
 spec:
   type: ClusterIP
-  # FIXED: Session affinity ensures same user goes to same pod
-  sessionAffinity: ClientIP
-  sessionAffinityConfig:
-    clientIP:
-      timeoutSeconds: 3600
   selector:
     app: backend
   ports:
@@ -649,3 +305,7 @@ spec:
       port: 8000
       targetPort: 8000
       protocol: TCP
+
+
+
+
