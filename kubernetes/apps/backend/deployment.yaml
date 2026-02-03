@@ -200,7 +200,13 @@ spec:
                   name: backend-secrets
                   key: LIVEKIT_API_SECRET
                   optional: true
-            
+            # ADD THIS BLOCK - Groq API Key for transcription
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: GROQ_API_KEY
+                  optional: true
             # Disable background schedulers during startup
             - name: DISABLE_SCHEDULER
               value: "true"
