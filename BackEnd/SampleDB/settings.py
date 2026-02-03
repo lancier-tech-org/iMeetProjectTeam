@@ -262,14 +262,44 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
 
-# Email configuration
-EMAIL_HOST = os.getenv("EMAIL_HOST", "")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT", 587))
-EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
-EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
-EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "")
+# # Email configuration
+# EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+# EMAIL_PORT = int(os.getenv("EMAIL_PORT", 587))
+# EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
+# EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+# EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+# DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "")
 
+
+# ---------------------------------------------------------------------
+# 📧 Email Settings - AWS SES Primary, Gmail SMTP Fallback
+# ---------------------------------------------------------------------
+
+# Primary: AWS SES (noreply@lancieretech.com)
+EMAIL_BACKEND = 'django_ses.SESBackend'
+AWS_SES_REGION_NAME = os.getenv('AWS_REGION', 'ap-south-1')
+AWS_SES_REGION_ENDPOINT = f'email.{AWS_SES_REGION_NAME}.amazonaws.com'
+DEFAULT_FROM_EMAIL = 'noreply@lancieretech.com'
+
+# Fallback: Gmail SMTP (prathigudupuj@gmail.com)
+EMAIL_FALLBACK = {
+    'HOST': os.getenv('EMAIL_HOST', 'smtp.gmail.com'),
+    'PORT': int(os.getenv('EMAIL_PORT', '587')),
+    'USE_TLS': True,
+    'USER': os.getenv('EMAIL_HOST_USER', ''),
+    'PASSWORD': os.getenv('EMAIL_HOST_PASSWORD', ''),
+    'FROM_EMAIL': os.getenv('DEFAULT_FROM_EMAIL', ''),
+}
+
+ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', '')
+EMAIL_TIMEOUT = 10
+
+print(f"📧 Email Primary: AWS SES - {DEFAULT_FROM_EMAIL}")
+if EMAIL_FALLBACK['USER']:
+    print(f"📧 Email Fallback: Gmail SMTP - {EMAIL_FALLBACK['USER']}")
+else:
+    print("⚠️ Email Fallback: Not configured")
+    
 # ======== LOGGING CONFIGURATION - DYNAMIC LOG_DIR (K8s-safe) ========
 # ======== LOGGING CONFIGURATION - CONSOLE ONLY (K8s Safe) ========
 LOGGING = {

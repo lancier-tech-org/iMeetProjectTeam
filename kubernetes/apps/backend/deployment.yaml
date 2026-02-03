@@ -207,6 +207,53 @@ spec:
                   name: backend-secrets
                   key: GROQ_API_KEY
                   optional: true
+            
+            # ============================================
+            # EMAIL CONFIGURATION
+            # ============================================
+            - name: EMAIL_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: EMAIL_HOST
+                  optional: true
+            - name: EMAIL_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: EMAIL_PORT
+                  optional: true
+            - name: EMAIL_USE_TLS
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: EMAIL_USE_TLS
+                  optional: true
+            - name: EMAIL_HOST_USER
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: EMAIL_HOST_USER
+                  optional: true
+            - name: EMAIL_HOST_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: EMAIL_HOST_PASSWORD
+                  optional: true
+            - name: DEFAULT_FROM_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DEFAULT_FROM_EMAIL
+                  optional: true
+            - name: ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: ADMIN_EMAIL
+                  optional: true
+
             # Disable background schedulers during startup
             - name: DISABLE_SCHEDULER
               value: "true"
