@@ -545,7 +545,7 @@ const meeting = meetingData || {
   participants: []
 };
 
-  const FACE_AUTH_API_URL = 'https://api.lancieretech.comc/api/user/verify-face';
+  const FACE_AUTH_API_URL = 'https://api.lancieretech.com/api/user/verify-face';
 
   // ==================== MEDIA FUNCTIONS - FIXED ====================
 
