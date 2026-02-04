@@ -5033,15 +5033,15 @@ const useLiveKit = (meetingEndedProp = false) => {
       let audioStrategy = "none";
 
       try {
-        // ✅ CRITICAL: Request screen share WITH AUDIO
-        console.log("🔊 Requesting screen share with audio...");
+        // ✅ CRITICAL: Request screen share WITH AUDIO and 60 FPS
+        console.log("🔊 Requesting screen share with audio at 60 FPS...");
 
         screenStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
             mediaSource: "screen",
             width: { ideal: 1920, max: 1920 },
             height: { ideal: 1080, max: 1080 },
-            frameRate: { ideal: 60, max: 60 },
+            frameRate: { ideal: 60, max: 60 },  // ✅ 60 FPS capture
             cursor: "always",
           },
           audio: {
@@ -5068,26 +5068,29 @@ const useLiveKit = (meetingEndedProp = false) => {
 
         hasSystemAudio = !!systemAudioTrack;
 
-        console.log("🔊 Screen share captured:", {
-          hasVideo: !!videoTrack,
+        // Log actual captured settings
+        const settings = videoTrack.getSettings();
+        console.log("📊 Screen capture settings:", {
+          width: settings.width,
+          height: settings.height,
+          frameRate: settings.frameRate,
+          displaySurface: settings.displaySurface,
           hasAudio: hasSystemAudio,
-          videoLabel: videoTrack.label,
           audioLabel: systemAudioTrack?.label || "none",
-          audioState: systemAudioTrack?.readyState || "none",
-          audioEnabled: systemAudioTrack?.enabled,
         });
 
         // Detect sharing mode
         const sharingMode = detectSharingMode(videoTrack.label);
 
-        // ========== PUBLISH VIDEO TRACK ==========
+        // ========== PUBLISH VIDEO TRACK WITH 60 FPS ENCODING ==========
         const liveKitScreenTrack = new LocalVideoTrack(videoTrack, {
           name: "screen_share",
           source: Track.Source.ScreenShare,
         });
 
-        console.log("📺 Publishing screen share VIDEO track...");
+        console.log("📺 Publishing screen share VIDEO track at 60 FPS...");
 
+        // ✅ KEY FIX: Added videoEncoding with maxFramerate: 60
         const videoPublishPromise = activeRoom.localParticipant.publishTrack(
           liveKitScreenTrack,
           {
@@ -5095,9 +5098,14 @@ const useLiveKit = (meetingEndedProp = false) => {
             source: Track.Source.ScreenShare,
             simulcast: false,
             screenShareSimulcast: false,
-            videoCodec: "h264",
+            videoCodec: "vp8",  // ✅ Better for screen content (text, UI)
             priority: "high",
-            videoBitrate: 8000000,
+            videoBitrate: 12_000_000,  // ✅ 12 Mbps for smooth 1080p60
+            // ✅ KEY FIX: Explicit encoding settings for 60 FPS
+            videoEncoding: {
+              maxBitrate: 12_000_000,
+              maxFramerate: 60,
+            },
             stopVideoTrackOnMute: false,
             stopMicTrackOnMute: false,
           }
@@ -5110,7 +5118,7 @@ const useLiveKit = (meetingEndedProp = false) => {
 
         await videoPublishPromise;
         screenShareStateRef.current.videoTrackPublished = true;
-        console.log("✅ Screen share VIDEO track published");
+        console.log("✅ Screen share VIDEO track published at 60 FPS");
 
         await new Promise((resolve) => setTimeout(resolve, 200));
 
