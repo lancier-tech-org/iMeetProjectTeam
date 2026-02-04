@@ -699,7 +699,8 @@ class StreamingRecordingWithChunks:
 
             next_wake = time.perf_counter()
 
-            while self.is_recording and not self.stop_event.is_set():
+            # CRITICAL: Check both flags - thread must run until BOTH are false
+            while self.is_recording or not self.stop_event.is_set():
                 try:
                     # ✅ FIX: Skip audio writing when timeline is paused
                     if self.timeline.is_paused:
@@ -1270,17 +1271,30 @@ class StreamingRecordingWithChunks:
             except Exception as e:
                 logger.warning(f"Video close: {e}")
         
-        # Close audio FIFO
+        # Close audio FIFO with proper flushing
         if self.audio_fifo_writer:
             try:
-                self.audio_fifo_writer.flush()
-                time.sleep(0.5)
+                # CRITICAL: Multiple flushes to ensure all buffered data is written
+                for _ in range(3):
+                    self.audio_fifo_writer.flush()
+                    time.sleep(0.2)
+                
+                # Final sync
+                if hasattr(self.audio_fifo_writer, 'fileno'):
+                    try:
+                        os.fsync(self.audio_fifo_writer.fileno())
+                    except:
+                        pass
+                
+                time.sleep(1.0)  # Increased wait for FFmpeg to catch up
                 self.audio_fifo_writer.close()
-                logger.info("✅ Audio FIFO closed")
+                logger.info("✅ Audio FIFO flushed and closed")
             except Exception as e:
                 logger.warning(f"Audio close: {e}")
-        
-        time.sleep(2.0)
+
+        # CRITICAL: Wait longer for audio to flush through FIFO to FFmpeg
+        logger.info("⏳ Waiting for audio FIFO to drain completely...")
+        time.sleep(3.0)  # Give FFmpeg time to process FIFO buffer
         
         # Wait for VIDEO FFmpeg
         if self.ffmpeg_video_process:
@@ -2555,6 +2569,28 @@ class FixedGoogleMeetRecorder:
 
             video_file = bot_instance.stream_recorder.temp_video_path
             audio_file = bot_instance.stream_recorder.temp_audio_path
+
+            # ==================== VERIFY AUDIO SAMPLE COUNT ====================
+            try:
+                timeline_duration = bot_instance.stream_recorder.timeline.timeline_pts
+                audio_samples_written = bot_instance.stream_recorder.audio_samples_written
+                
+                # Expected samples = timeline_duration * sample_rate * channels
+                expected_audio_samples = int(timeline_duration * 48000 * 2)
+                
+                logger.info(f"📊 Audio sample verification:")
+                logger.info(f"   Timeline duration: {timeline_duration:.2f}s")
+                logger.info(f"   Expected samples: {expected_audio_samples}")
+                logger.info(f"   Actual samples written: {audio_samples_written}")
+                
+                if audio_samples_written < expected_audio_samples * 0.95:
+                    logger.error(f"❌ CRITICAL: Audio samples short by {expected_audio_samples - audio_samples_written}")
+                    logger.error(f"   This means audio stopped writing early!")
+                    logger.error(f"   Audio will be {(expected_audio_samples - audio_samples_written) / (48000 * 2):.2f}s too short")
+                else:
+                    logger.info(f"✅ Audio sample count acceptable")
+            except Exception as e:
+                logger.warning(f"⚠️ Audio verification error: {e}")
 
             # ==================== MERGE VIDEO + AUDIO ====================
             logger.info(f"🔀 Merging video + audio...")
