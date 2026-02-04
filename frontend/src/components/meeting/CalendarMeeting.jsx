@@ -991,103 +991,113 @@ function CalendarMeeting({
     try {
       const participantEmails = formData.participants.map((p) => p.email);
 
-      const selectedDate = new Date(formData.selectedDate);
-      const [startHours, startMinutes] = formData.startTime.split(":");
-      const [endHours, endMinutes] = formData.endTime.split(":");
+  const selectedDate = new Date(formData.selectedDate);
+  const [startHours, startMinutes] = formData.startTime.split(":");
+  const [endHours, endMinutes] = formData.endTime.split(":");
 
-      const userSelectedStart = new Date(
-        selectedDate.getFullYear(),
-        selectedDate.getMonth(),
-        selectedDate.getDate(),
-        parseInt(startHours),
-        parseInt(startMinutes),
-        0,
-        0
-      );
+  const userSelectedStart = new Date(
+    selectedDate.getFullYear(),
+    selectedDate.getMonth(),
+    selectedDate.getDate(),
+    parseInt(startHours),
+    parseInt(startMinutes),
+    0,
+    0
+  );
+     const userSelectedEnd = new Date(
+    selectedDate.getFullYear(),
+    selectedDate.getMonth(),
+    selectedDate.getDate(),
+    parseInt(endHours),
+    parseInt(endMinutes),
+    0,
+    0
+  );
 
-      const userSelectedEnd = new Date(
-        selectedDate.getFullYear(),
-        selectedDate.getMonth(),
-        selectedDate.getDate(),
-        parseInt(endHours),
-        parseInt(endMinutes),
-        0,
-        0
-      );
-
-      let istStartString, istEndString;
-
-      if (isEditing && existingMeeting) {
-        console.log("📝 EDIT MODE: Using original meeting times");
-        istStartString =
-          existingMeeting.start_time ||
-          existingMeeting.startTime ||
-          existingMeeting.Started_At;
-        istEndString =
-          existingMeeting.end_time ||
-          existingMeeting.endTime ||
-          existingMeeting.Ended_At;
-        console.log("  Using original:", { istStartString, istEndString });
-      } else {
+  // FIXED: Always use user-selected times for both CREATE and EDIT modes
+  let istStartString = userSelectedStart.toISOString();
+  let istEndString = userSelectedEnd.toISOString();
+console.log("📝 Time calculation:", {
+    isEditing: isEditing,
+    selectedDate: formData.selectedDate,
+    formStartTime: formData.startTime,
+    formEndTime: formData.endTime,
+    istStartString: istStartString,
+    istEndString: istEndString
+  });
+      // For debugging - show comparison with original times when editing
+  if (isEditing && existingMeeting) {
+    const originalStart = existingMeeting.start_time || existingMeeting.startTime || existingMeeting.Started_At;
+    const originalEnd = existingMeeting.end_time || existingMeeting.endTime || existingMeeting.Ended_At;
+    console.log("🔄 EDIT MODE - Time comparison:", {
+      originalStart: originalStart,
+      originalEnd: originalEnd,
+      newStart: istStartString,
+      newEnd: istEndString,
+      startChanged: istStartString !== originalStart,
+      endChanged: istEndString !== originalEnd
+    });
+  }else {
         console.log("✨ CREATE MODE: Converting local times to ISO");
         istStartString = userSelectedStart.toISOString();
         istEndString = userSelectedEnd.toISOString();
         console.log("  Converted to ISO:", { istStartString, istEndString });
       }
+const meetingData = {
+    title: formData.meetingTitle,
+    Meeting_Name: formData.meetingTitle,
+    Meeting_Type: "CalendarMeeting",
 
-      const meetingData = {
-        title: formData.meetingTitle,
-        Meeting_Name: formData.meetingTitle,
-        Meeting_Type: "CalendarMeeting",
+    // FIXED: Now sending user-selected times, not original times
+    start_time: istStartString,
+    end_time: istEndString,
+    startTime: istStartString,
+    endTime: istEndString,
+    Started_At: istStartString,
+    Ended_At: istEndString,
 
-        start_time: istStartString,
-        end_time: istEndString,
-        startTime: istStartString,
-        endTime: istEndString,
-        Started_At: istStartString,
-        Ended_At: istEndString,
+        duration: formData.meetingDuration,
+    duration_minutes: formData.meetingDuration,
+    meetingDuration: formData.meetingDuration,
+    location: formData.location,
 
-        duration_minutes: formData.meetingDuration,
-        location: formData.location,
+    guestEmails: participantEmails,
+    attendees: participantEmails,
+    participantEmails: participantEmails,
+    guest_emails: participantEmails,
 
-        guestEmails: participantEmails,
-        attendees: participantEmails,
-        participantEmails: participantEmails,
-        guest_emails: participantEmails,
+    Participants: formData.participants.map((p) => ({
+      email: p.email,
+      name: p.name || p.email.split("@")[0],
+    })),
 
-        Participants: formData.participants.map((p) => ({
-          email: p.email,
-          name: p.name || p.email.split("@")[0],
-        })),
+       provider: "internal",
 
-        provider: "internal",
+    Settings: {
+      createCalendarEvent: formData.meetingSettings.createCalendarEvent,
+      sendInvitations: formData.meetingSettings.sendInvitations,
+      setReminders: formData.meetingSettings.setReminders,
+      addMeetingLink: formData.meetingSettings.addMeetingLink,
+      recording: true,
+    },
+ CalendarSettings: {
+      addToHostCalendar: formData.calendarSettings.addToHostCalendar,
+      addToParticipantCalendars:
+        formData.calendarSettings.addToParticipantCalendars,
+      reminderTimes: formData.calendarSettings.reminderTimes,
+    },
 
-        Settings: {
-          createCalendarEvent: formData.meetingSettings.createCalendarEvent,
-          sendInvitations: formData.meetingSettings.sendInvitations,
-          setReminders: formData.meetingSettings.setReminders,
-          addMeetingLink: formData.meetingSettings.addMeetingLink,
-          recording: true,
-        },
 
-        CalendarSettings: {
-          addToHostCalendar: formData.calendarSettings.addToHostCalendar,
-          addToParticipantCalendars:
-            formData.calendarSettings.addToParticipantCalendars,
-          reminderTimes: formData.calendarSettings.reminderTimes,
-        },
+    Status: "scheduled",
+    Is_Recording_Enabled: true,
+    Waiting_Room_Enabled: false,
+    ReminderMinutes: formData.calendarSettings.reminderTimes,
+    reminderMinutes: formData.calendarSettings.reminderTimes,
+  };
 
-        Status: "scheduled",
-        Is_Recording_Enabled: true,
-        Waiting_Room_Enabled: false,
-        ReminderMinutes: formData.calendarSettings.reminderTimes,
-        reminderMinutes: formData.calendarSettings.reminderTimes,
-      };
-
-      console.log("📤 Meeting data prepared:", meetingData);
-      console.log("   start_time:", meetingData.start_time);
-      console.log("   end_time:", meetingData.end_time);
-
+  console.log("📤 Meeting data prepared:", meetingData);
+  console.log("   start_time:", meetingData.start_time);
+  console.log("   end_time:", meetingData.end_time);
       let result;
 
       if (isEditing && existingMeeting) {
