@@ -5027,21 +5027,19 @@ const useLiveKit = (meetingEndedProp = false) => {
       await stopScreenShareInternal();
       await new Promise((resolve) => setTimeout(resolve, 500));
 
-      // Request screen capture with audio settings
       let screenStream = null;
       let hasSystemAudio = false;
       let audioStrategy = "none";
 
       try {
-        // ✅ CRITICAL: Request screen share WITH AUDIO and 60 FPS
-        console.log("🔊 Requesting screen share with audio at 60 FPS...");
+        console.log("🖥️ Requesting screen share...");
 
         screenStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
             mediaSource: "screen",
             width: { ideal: 1920, max: 1920 },
             height: { ideal: 1080, max: 1080 },
-            frameRate: { ideal: 60, max: 60 },  // ✅ 60 FPS capture
+            frameRate: { ideal: 30, max: 60 },
             cursor: "always",
           },
           audio: {
@@ -5051,8 +5049,6 @@ const useLiveKit = (meetingEndedProp = false) => {
             suppressLocalAudioPlayback: false,
             sampleRate: 48000,
             channelCount: 2,
-            latency: 0.01,
-            volume: 1.0,
           },
           preferCurrentTab: false,
           systemAudio: "include",
@@ -5068,46 +5064,46 @@ const useLiveKit = (meetingEndedProp = false) => {
 
         hasSystemAudio = !!systemAudioTrack;
 
-        // Log actual captured settings
         const settings = videoTrack.getSettings();
         console.log("📊 Screen capture settings:", {
           width: settings.width,
           height: settings.height,
           frameRate: settings.frameRate,
-          displaySurface: settings.displaySurface,
           hasAudio: hasSystemAudio,
-          audioLabel: systemAudioTrack?.label || "none",
         });
 
-        // Detect sharing mode
         const sharingMode = detectSharingMode(videoTrack.label);
 
-        // ========== PUBLISH VIDEO TRACK WITH 60 FPS ENCODING ==========
+        // ========== PUBLISH VIDEO TRACK - FIXED FOR NO BLINKING ==========
         const liveKitScreenTrack = new LocalVideoTrack(videoTrack, {
           name: "screen_share",
           source: Track.Source.ScreenShare,
         });
 
-        console.log("📺 Publishing screen share VIDEO track at 60 FPS...");
+        console.log("📺 Publishing screen share VIDEO track...");
 
-        // ✅ KEY FIX: Added videoEncoding with maxFramerate: 60
         const videoPublishPromise = activeRoom.localParticipant.publishTrack(
           liveKitScreenTrack,
           {
             name: "screen_share",
             source: Track.Source.ScreenShare,
+            // ✅ FIX 1: Disable simulcast completely - prevents layer switching
             simulcast: false,
             screenShareSimulcast: false,
-            videoCodec: "vp8",  // ✅ Better for screen content (text, UI)
+            // ✅ FIX 2: Use H.264 for stability
+            videoCodec: "h264",
             priority: "high",
-            videoBitrate: 12_000_000,  // ✅ 12 Mbps for smooth 1080p60
-            // ✅ KEY FIX: Explicit encoding settings for 60 FPS
+            // ✅ FIX 3: Stable bitrate settings
+            videoBitrate: 4_000_000,
             videoEncoding: {
-              maxBitrate: 12_000_000,
-              maxFramerate: 60,
+              maxBitrate: 6_000_000,
+              maxFramerate: 30,
             },
+            // ✅ FIX 4: CRITICAL - Prevent track from being stopped on mute
             stopVideoTrackOnMute: false,
             stopMicTrackOnMute: false,
+            // ✅ FIX 5: Keep track always active
+            degradationPreference: "maintain-resolution",
           }
         );
 
@@ -5118,11 +5114,14 @@ const useLiveKit = (meetingEndedProp = false) => {
 
         await videoPublishPromise;
         screenShareStateRef.current.videoTrackPublished = true;
-        console.log("✅ Screen share VIDEO track published at 60 FPS");
+        console.log("✅ Screen share VIDEO track published");
 
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        // ✅ FIX 6: Store the track reference to prevent garbage collection
+        screenShareStateRef.current.videoTrack = liveKitScreenTrack;
 
-        // ========== PUBLISH AUDIO TRACK - CRITICAL ==========
+        await new Promise((resolve) => setTimeout(resolve, 300));
+
+        // ========== PUBLISH AUDIO TRACK ==========
         if (
           hasSystemAudio &&
           systemAudioTrack &&
@@ -5130,14 +5129,6 @@ const useLiveKit = (meetingEndedProp = false) => {
         ) {
           try {
             console.log("🔊 Publishing screen share AUDIO track...");
-            console.log("🔊 Audio track details BEFORE publish:", {
-              kind: systemAudioTrack.kind,
-              label: systemAudioTrack.label,
-              readyState: systemAudioTrack.readyState,
-              enabled: systemAudioTrack.enabled,
-              muted: systemAudioTrack.muted,
-              id: systemAudioTrack.id,
-            });
 
             const liveKitSystemAudioTrack = new LocalAudioTrack(
               systemAudioTrack,
@@ -5147,25 +5138,24 @@ const useLiveKit = (meetingEndedProp = false) => {
               }
             );
 
-            const audioPublishPromise =
-              activeRoom.localParticipant.publishTrack(
-                liveKitSystemAudioTrack,
-                {
-                  name: "system_audio",
-                  source: Track.Source.ScreenShareAudio,
-                  dtx: false,
-                  red: false,
-                  simulcast: false,
-                  priority: "high",
-                  audioCodec: "opus",
-                  bitrate: 128000,
-                  stereo: true,
-                  echoCancellation: false,
-                  noiseSuppression: false,
-                  autoGainControl: false,
-                  stopMicTrackOnMute: false,
-                }
-              );
+            const audioPublishPromise = activeRoom.localParticipant.publishTrack(
+              liveKitSystemAudioTrack,
+              {
+                name: "system_audio",
+                source: Track.Source.ScreenShareAudio,
+                dtx: false,  // ✅ FIX 7: Disable DTX - prevents audio track pausing
+                red: false,
+                simulcast: false,
+                priority: "high",
+                audioCodec: "opus",
+                bitrate: 128000,
+                stereo: true,
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false,
+                stopMicTrackOnMute: false,
+              }
+            );
 
             screenShareStateRef.current.publishingPromises.set(
               "audio",
@@ -5174,27 +5164,11 @@ const useLiveKit = (meetingEndedProp = false) => {
 
             await audioPublishPromise;
             screenShareStateRef.current.audioTrackPublished = true;
+            screenShareStateRef.current.audioTrack = liveKitSystemAudioTrack;
             audioStrategy = "system_audio";
 
-            console.log(
-              "✅✅✅ Screen share AUDIO track PUBLISHED successfully!"
-            );
+            console.log("✅ Screen share AUDIO track published");
 
-            // Verify audio track publication
-            const audioPublication =
-              activeRoom.localParticipant.getTrackPublication(
-                Track.Source.ScreenShareAudio
-              );
-
-            console.log("🔊 Audio publication verification:", {
-              hasPublication: !!audioPublication,
-              hasTrack: !!audioPublication?.track,
-              trackKind: audioPublication?.track?.kind,
-              isMuted: audioPublication?.track?.isMuted,
-              isEnabled: audioPublication?.isEnabled,
-            });
-
-            // Monitor system audio
             setTimeout(() => monitorSystemAudio(systemAudioTrack), 1000);
           } catch (audioError) {
             console.error("❌ System audio publishing failed:", audioError);
@@ -5202,41 +5176,24 @@ const useLiveKit = (meetingEndedProp = false) => {
             screenShareStateRef.current.audioTrackPublished = false;
           }
         } else if (!hasSystemAudio) {
-          console.warn("⚠️ No system audio track available");
           audioStrategy = "no_audio_fallback";
-
           if (window.showNotificationMessage) {
             window.showNotificationMessage(
-              "Screen sharing started WITHOUT audio. To include audio, select 'Chrome Tab' and check 'Share tab audio'",
+              "Screen sharing started WITHOUT audio.",
               "warning"
             );
           }
-        } else if (systemAudioTrack?.readyState !== "live") {
-          console.warn(
-            "⚠️ System audio track not live:",
-            systemAudioTrack?.readyState
-          );
-          audioStrategy = "audio_not_ready";
         }
 
         // Verify tracks are published
-        const videoPublication =
-          activeRoom.localParticipant.getTrackPublication(
-            Track.Source.ScreenShare
-          );
-        const audioPublication =
-          activeRoom.localParticipant.getTrackPublication(
-            Track.Source.ScreenShareAudio
-          );
-
-        console.log("🔍 Final publication status:", {
-          videoPublished: !!videoPublication?.track,
-          audioPublished: !!audioPublication?.track,
-          audioStrategy,
-        });
+        const videoPublication = activeRoom.localParticipant.getTrackPublication(
+          Track.Source.ScreenShare
+        );
 
         if (videoPublication?.track) {
           screenShareStreamRef.current = screenStream;
+          
+          // ✅ FIX 8: Set state ONCE and don't update repeatedly
           setIsScreenSharing(true);
           setLocalIsScreenSharing(true);
 
@@ -5259,30 +5216,16 @@ const useLiveKit = (meetingEndedProp = false) => {
               screenShareStartData,
               DataPacket_Kind.RELIABLE
             );
-
-            console.log(
-              "📢 Broadcasted screen share start event with audio:",
-              hasSystemAudio && audioStrategy === "system_audio"
-            );
           } catch (broadcastError) {
-            console.error(
-              "❌ Failed to broadcast screen share start:",
-              broadcastError
-            );
+            console.error("❌ Failed to broadcast:", broadcastError);
           }
 
           // Handle track ending
           videoTrack.onended = () => {
+            console.log("🛑 Screen share track ended by user");
             stopScreenShare();
           };
 
-          if (systemAudioTrack) {
-            systemAudioTrack.onended = () => {
-              console.log("🔊 System audio track ended");
-            };
-          }
-
-          // Provide feedback
           provideFeedback(sharingMode, audioStrategy, hasSystemAudio);
 
           return {
@@ -5293,11 +5236,6 @@ const useLiveKit = (meetingEndedProp = false) => {
             videoTrack: videoTrack.label,
             audioTrack: systemAudioTrack?.label || "none",
             approved: true,
-            userRole: isHostRef.current
-              ? "host"
-              : isCoHostRef.current
-              ? "co-host"
-              : "participant",
           };
         } else {
           throw new Error("Video track publishing verification failed");
@@ -5317,6 +5255,8 @@ const useLiveKit = (meetingEndedProp = false) => {
 
       screenShareStateRef.current.videoTrackPublished = false;
       screenShareStateRef.current.audioTrackPublished = false;
+      screenShareStateRef.current.videoTrack = null;
+      screenShareStateRef.current.audioTrack = null;
       setIsScreenSharing(false);
       setLocalIsScreenSharing(false);
 
@@ -5335,6 +5275,7 @@ const useLiveKit = (meetingEndedProp = false) => {
     screenSharePermissions,
     localParticipant,
   ]);
+
 
   const stopScreenShare = useCallback(async (participantIdentity = null) => {
     try {
