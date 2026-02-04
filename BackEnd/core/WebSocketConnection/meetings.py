@@ -3389,7 +3389,6 @@ def Get_Meeting(request, id):
 
     return JsonResponse({"Error": "Meeting not found"}, status=NOT_FOUND_STATUS)
 
-
 @require_http_methods(["PUT"])
 @csrf_exempt
 def Update_Meeting(request, id):
@@ -3764,26 +3763,25 @@ def Update_Meeting(request, id):
                     logging.info(f"UPDATE_MEETING: Processing CalendarMeeting update for {id}")
                     
                     try:
-                        # STEP 1: First check if record exists in calendar table
+                        # STEP 1: Check if record exists and get current values
                         cursor.execute("""
                             SELECT ID, email, guestEmails, provider, attendees, location, duration,
-                                   reminderMinutes, Settings_CreateCalendarEvent, Settings_SendInvitations,
-                                   Settings_SetReminders, Settings_AddMeetingLink, Settings_AddToHostCalendar,
-                                   Settings_AddToParticipantCalendars
+                                reminderMinutes, Settings_CreateCalendarEvent, Settings_SendInvitations,
+                                Settings_SetReminders, Settings_AddMeetingLink, Settings_AddToHostCalendar,
+                                Settings_AddToParticipantCalendars, startTime, endTime, title, meetingUrl
                             FROM tbl_CalendarMeetings
                             WHERE ID = %s
                         """, [id])
                         
                         calendar_row = cursor.fetchone()
                         
-                        # STEP 2: If record doesn't exist, return error (DO NOT CREATE)
                         if not calendar_row:
                             logging.error(f"UPDATE_MEETING: CalendarMeeting {id} not found in tbl_CalendarMeetings")
                             return JsonResponse({
-                                "Error": f"CalendarMeeting with ID {id} not found in calendar meetings table. Update operation requires existing record."
+                                "Error": f"CalendarMeeting with ID {id} not found."
                             }, status=404)
                         
-                        # STEP 3: Get existing data for fallback values
+                        # Map columns properly (index 0-17)
                         existing_calendar = {
                             'ID': calendar_row[0],
                             'email': calendar_row[1],
@@ -3798,111 +3796,227 @@ def Update_Meeting(request, id):
                             'Settings_SetReminders': calendar_row[10],
                             'Settings_AddMeetingLink': calendar_row[11],
                             'Settings_AddToHostCalendar': calendar_row[12],
-                            'Settings_AddToParticipantCalendars': calendar_row[13]
+                            'Settings_AddToParticipantCalendars': calendar_row[13],
+                            'startTime': calendar_row[14],
+                            'endTime': calendar_row[15],
+                            'title': calendar_row[16],
+                            'meetingUrl': calendar_row[17]
                         }
                         
-                        logging.info(f"UPDATE_MEETING: Found existing CalendarMeeting record with ID: {existing_calendar['ID']}")
+                        logging.info(f"UPDATE_MEETING: Existing record - startTime: {existing_calendar['startTime']}, endTime: {existing_calendar['endTime']}, duration: {existing_calendar['duration']}")
                         
-                        # STEP 4: Process email field (use existing if not provided)
-                        calendar_email = existing_calendar.get('email')
+                        # ============================================================
+                        # STEP 2: EXTRACT NEW TIME VALUES FROM REQUEST (PRIORITY ORDER)
+                        # ============================================================
+                        
+                        # Initialize as None - will use existing only if NO new value provided
+                        new_start_time = None
+                        new_end_time = None
+                        
+                        # Check ALL possible field names for startTime
+                        logging.info(f"UPDATE_MEETING: Checking request data for time fields...")
+                        logging.info(f"UPDATE_MEETING: data.get('startTime'): {data.get('startTime')}")
+                        logging.info(f"UPDATE_MEETING: data.get('start_time'): {data.get('start_time')}")
+                        logging.info(f"UPDATE_MEETING: data.get('Started_At'): {data.get('Started_At')}")
+                        logging.info(f"UPDATE_MEETING: data.get('endTime'): {data.get('endTime')}")
+                        logging.info(f"UPDATE_MEETING: data.get('end_time'): {data.get('end_time')}")
+                        logging.info(f"UPDATE_MEETING: data.get('Ended_At'): {data.get('Ended_At')}")
+                        
+                        # Get NEW start time from request
+                        if data.get('startTime') is not None and data.get('startTime') != '':
+                            new_start_time = parse_meeting_datetime(data.get('startTime'), meeting_timezone)
+                            logging.info(f"UPDATE_MEETING: NEW startTime from 'startTime': {new_start_time}")
+                        elif data.get('start_time') is not None and data.get('start_time') != '':
+                            new_start_time = parse_meeting_datetime(data.get('start_time'), meeting_timezone)
+                            logging.info(f"UPDATE_MEETING: NEW startTime from 'start_time': {new_start_time}")
+                        elif data.get('Started_At') is not None and data.get('Started_At') != '':
+                            new_start_time = parse_meeting_datetime(data.get('Started_At'), meeting_timezone)
+                            logging.info(f"UPDATE_MEETING: NEW startTime from 'Started_At': {new_start_time}")
+                        elif data.get('meetingStartTime') is not None and data.get('meetingStartTime') != '':
+                            new_start_time = parse_meeting_datetime(data.get('meetingStartTime'), meeting_timezone)
+                            logging.info(f"UPDATE_MEETING: NEW startTime from 'meetingStartTime': {new_start_time}")
+                        
+                        # Get NEW end time from request
+                        if data.get('endTime') is not None and data.get('endTime') != '':
+                            new_end_time = parse_meeting_datetime(data.get('endTime'), meeting_timezone)
+                            logging.info(f"UPDATE_MEETING: NEW endTime from 'endTime': {new_end_time}")
+                        elif data.get('end_time') is not None and data.get('end_time') != '':
+                            new_end_time = parse_meeting_datetime(data.get('end_time'), meeting_timezone)
+                            logging.info(f"UPDATE_MEETING: NEW endTime from 'end_time': {new_end_time}")
+                        elif data.get('Ended_At') is not None and data.get('Ended_At') != '':
+                            new_end_time = parse_meeting_datetime(data.get('Ended_At'), meeting_timezone)
+                            logging.info(f"UPDATE_MEETING: NEW endTime from 'Ended_At': {new_end_time}")
+                        elif data.get('meetingEndTime') is not None and data.get('meetingEndTime') != '':
+                            new_end_time = parse_meeting_datetime(data.get('meetingEndTime'), meeting_timezone)
+                            logging.info(f"UPDATE_MEETING: NEW endTime from 'meetingEndTime': {new_end_time}")
+                        
+                        # FINAL VALUES: Use new if provided, otherwise keep existing
+                        final_start_time = new_start_time if new_start_time is not None else existing_calendar['startTime']
+                        final_end_time = new_end_time if new_end_time is not None else existing_calendar['endTime']
+                        
+                        logging.info(f"UPDATE_MEETING: FINAL startTime: {final_start_time} (new: {new_start_time is not None})")
+                        logging.info(f"UPDATE_MEETING: FINAL endTime: {final_end_time} (new: {new_end_time is not None})")
+                        
+                        # ============================================================
+                        # STEP 3: HANDLE DURATION
+                        # ============================================================
+                        new_duration = None
+                        
+                        if data.get('duration') is not None:
+                            try:
+                                new_duration = int(data.get('duration'))
+                                logging.info(f"UPDATE_MEETING: NEW duration from 'duration': {new_duration}")
+                            except (ValueError, TypeError):
+                                pass
+                        elif data.get('duration_minutes') is not None:
+                            try:
+                                new_duration = int(data.get('duration_minutes'))
+                                logging.info(f"UPDATE_MEETING: NEW duration from 'duration_minutes': {new_duration}")
+                            except (ValueError, TypeError):
+                                pass
+                        elif data.get('Duration_Minutes') is not None:
+                            try:
+                                new_duration = int(data.get('Duration_Minutes'))
+                                logging.info(f"UPDATE_MEETING: NEW duration from 'Duration_Minutes': {new_duration}")
+                            except (ValueError, TypeError):
+                                pass
+                        elif data.get('meetingDuration') is not None:
+                            try:
+                                new_duration = int(data.get('meetingDuration'))
+                                logging.info(f"UPDATE_MEETING: NEW duration from 'meetingDuration': {new_duration}")
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        # If no explicit duration but we have new times, calculate it
+                        if new_duration is None and new_start_time is not None and new_end_time is not None:
+                            try:
+                                calculated = int((new_end_time - new_start_time).total_seconds() / 60)
+                                if calculated > 0:
+                                    new_duration = calculated
+                                    logging.info(f"UPDATE_MEETING: CALCULATED duration from new times: {new_duration}")
+                            except Exception as e:
+                                logging.warning(f"UPDATE_MEETING: Could not calculate duration: {e}")
+                        
+                        # Final duration value
+                        final_duration = new_duration if new_duration is not None else (existing_calendar['duration'] or 60)
+                        if final_duration <= 0:
+                            final_duration = 60
+                        
+                        logging.info(f"UPDATE_MEETING: FINAL duration: {final_duration} minutes")
+                        
+                        # ============================================================
+                        # STEP 4: HANDLE TITLE
+                        # ============================================================
+                        new_title = None
+                        if data.get('title') is not None and data.get('title') != '':
+                            new_title = data.get('title')
+                        elif data.get('Meeting_Name') is not None and data.get('Meeting_Name') != '':
+                            new_title = data.get('Meeting_Name')
+                        elif data.get('meetingTitle') is not None and data.get('meetingTitle') != '':
+                            new_title = data.get('meetingTitle')
+                        
+                        final_title = new_title if new_title is not None else (existing_calendar['title'] or meeting_name or 'Untitled Meeting')
+                        logging.info(f"UPDATE_MEETING: FINAL title: {final_title}")
+                        
+                        # ============================================================
+                        # STEP 5: HANDLE EMAIL FIELDS
+                        # ============================================================
+                        # Email
+                        new_email = None
                         if data.get('email') and str(data.get('email')).strip():
-                            calendar_email = str(data.get('email')).strip()
+                            new_email = str(data.get('email')).strip()
                         elif data.get('organizer') and str(data.get('organizer')).strip():
-                            calendar_email = str(data.get('organizer')).strip()
-                        elif data.get('Participants') and len(data.get('Participants')) > 0:
-                            first_participant = data.get('Participants')[0]
-                            if isinstance(first_participant, dict) and first_participant.get('email'):
-                                calendar_email = str(first_participant.get('email')).strip()
-                            elif isinstance(first_participant, str) and first_participant.strip():
-                                calendar_email = str(first_participant).strip()
+                            new_email = str(data.get('organizer')).strip()
                         
-                        # STEP 5: Process guest emails (use existing if not provided)
-                        guest_emails = existing_calendar.get('guestEmails')
+                        final_email = new_email if new_email is not None else existing_calendar['email']
+                        
+                        # Guest Emails
+                        new_guest_emails = None
                         if data.get('guestEmails') is not None:
                             guest_emails_raw = data.get('guestEmails')
                             if isinstance(guest_emails_raw, list):
-                                valid_emails = [str(email).strip() for email in guest_emails_raw if email and str(email).strip()]
-                                guest_emails = ",".join(valid_emails) if valid_emails else guest_emails
-                            elif isinstance(guest_emails_raw, str):
-                                guest_emails = guest_emails_raw.strip() if guest_emails_raw.strip() else guest_emails
+                                valid_emails = [str(e).strip() for e in guest_emails_raw if e and str(e).strip()]
+                                if valid_emails:
+                                    new_guest_emails = ",".join(valid_emails)
+                            elif isinstance(guest_emails_raw, str) and guest_emails_raw.strip():
+                                new_guest_emails = guest_emails_raw.strip()
                         elif data.get('participants') is not None:
                             participants_raw = data.get('participants')
                             if isinstance(participants_raw, list):
-                                valid_emails = [str(email).strip() for email in participants_raw if email and str(email).strip()]
-                                guest_emails = ",".join(valid_emails) if valid_emails else guest_emails
-                            elif isinstance(participants_raw, str):
-                                guest_emails = participants_raw.strip() if participants_raw.strip() else guest_emails
-                        elif data.get('Participants'):
-                            participants = data.get('Participants', [])
-                            if participants and isinstance(participants, list):
+                                valid_emails = [str(e).strip() for e in participants_raw if e and str(e).strip()]
+                                if valid_emails:
+                                    new_guest_emails = ",".join(valid_emails)
+                            elif isinstance(participants_raw, str) and participants_raw.strip():
+                                new_guest_emails = participants_raw.strip()
+                        elif data.get('Participants') is not None:
+                            participants = data.get('Participants')
+                            if isinstance(participants, list):
                                 participant_emails = []
-                                for participant in participants:
-                                    if isinstance(participant, dict) and participant.get('email'):
-                                        email = str(participant.get('email')).strip()
-                                        if email:
-                                            participant_emails.append(email)
-                                    elif isinstance(participant, str) and participant.strip():
-                                        participant_emails.append(str(participant).strip())
-                                guest_emails = ",".join(participant_emails) if participant_emails else guest_emails
+                                for p in participants:
+                                    if isinstance(p, dict) and p.get('email'):
+                                        participant_emails.append(str(p.get('email')).strip())
+                                    elif isinstance(p, str) and p.strip():
+                                        participant_emails.append(str(p).strip())
+                                if participant_emails:
+                                    new_guest_emails = ",".join(participant_emails)
                         
-                        # STEP 6: Process attendees (use existing if not provided)
-                        attendees = existing_calendar.get('attendees')
+                        final_guest_emails = new_guest_emails if new_guest_emails is not None else existing_calendar['guestEmails']
+                        
+                        # Attendees
+                        new_attendees = None
                         if data.get('attendees') is not None:
                             attendees_raw = data.get('attendees')
                             if isinstance(attendees_raw, list):
-                                valid_emails = [str(email).strip() for email in attendees_raw if email and str(email).strip()]
-                                attendees = ";".join(valid_emails) if valid_emails else attendees
-                            elif isinstance(attendees_raw, str):
-                                attendees = attendees_raw.strip() if attendees_raw.strip() else attendees
-                        elif guest_emails:
-                            emails = [email.strip() for email in str(guest_emails).split(',') if email.strip()]
-                            attendees = ";".join(emails) if emails else attendees
+                                valid_emails = [str(e).strip() for e in attendees_raw if e and str(e).strip()]
+                                if valid_emails:
+                                    new_attendees = ";".join(valid_emails)
+                            elif isinstance(attendees_raw, str) and attendees_raw.strip():
+                                new_attendees = attendees_raw.strip()
+                        elif final_guest_emails and new_guest_emails is not None:
+                            # Sync attendees with guest emails if guest emails were updated
+                            emails = [e.strip() for e in str(final_guest_emails).split(',') if e.strip()]
+                            if emails:
+                                new_attendees = ";".join(emails)
                         
-                        # STEP 7: Handle other fields with fallbacks
-                        provider = data.get('provider') or data.get('Provider') or existing_calendar.get('provider', 'internal')
-                        location = data.get('location') or data.get('Location') or existing_calendar.get('location')
+                        final_attendees = new_attendees if new_attendees is not None else existing_calendar['attendees']
                         
-                        # Handle duration - FIXED TYPE CONVERSION
-                        duration = existing_calendar.get('duration', 60)  # Default fallback
-                        try:
-                            if data.get('duration') is not None:
-                                duration = int(data.get('duration'))
-                            elif data.get('duration_minutes') is not None:
-                                duration = int(data.get('duration_minutes'))
-                            elif data.get('Duration_Minutes') is not None:
-                                duration = int(data.get('Duration_Minutes'))
-                            elif started_at and ended_at:
-                                duration = int((ended_at - started_at).total_seconds() / 60)
-                        except (ValueError, TypeError) as e:
-                            logging.warning(f"UPDATE_MEETING: Invalid duration value, using existing/default: {e}")
-                            duration = existing_calendar.get('duration', 60)
+                        # ============================================================
+                        # STEP 6: HANDLE OTHER FIELDS
+                        # ============================================================
+                        # Provider
+                        new_provider = data.get('provider') or data.get('Provider')
+                        final_provider = new_provider if new_provider else (existing_calendar['provider'] or 'internal')
                         
-                        # Ensure duration is valid integer
-                        if not isinstance(duration, int) or duration <= 0:
-                            duration = 60
+                        # Location
+                        new_location = data.get('location') or data.get('Location')
+                        final_location = new_location if new_location is not None else (existing_calendar['location'] or '')
                         
-                        # Handle reminder minutes with fallback - FIXED JSON HANDLING
-                        reminder_minutes = existing_calendar.get('reminderMinutes', '[15, 30]')
-                        try:
-                            if data.get('ReminderMinutes') is not None:
-                                reminder_minutes = json.dumps(data.get('ReminderMinutes'))
-                            elif data.get('reminderMinutes') is not None:
-                                reminder_minutes = json.dumps(data.get('reminderMinutes'))
-                            elif data.get('reminders', {}).get('reminderTimes') is not None:
-                                reminder_minutes = json.dumps(data.get('reminders', {}).get('reminderTimes'))
-                            elif data.get('CalendarSettings', {}).get('reminderTimes') is not None:
-                                reminder_minutes = json.dumps(data.get('CalendarSettings', {}).get('reminderTimes'))
-                        except (TypeError, ValueError) as e:
-                            logging.warning(f"UPDATE_MEETING: Invalid reminder minutes, using existing: {e}")
-                            reminder_minutes = existing_calendar.get('reminderMinutes', '[15, 30]')
+                        # Meeting URL
+                        final_meeting_url = meeting_link or existing_calendar['meetingUrl']
                         
-                        # Ensure reminder_minutes is valid JSON string
-                        if not isinstance(reminder_minutes, str):
-                            reminder_minutes = '[15, 30]'
+                        # Reminder Minutes
+                        new_reminder_minutes = None
+                        if data.get('ReminderMinutes') is not None:
+                            rm = data.get('ReminderMinutes')
+                            new_reminder_minutes = json.dumps(rm) if isinstance(rm, list) else rm
+                        elif data.get('reminderMinutes') is not None:
+                            rm = data.get('reminderMinutes')
+                            new_reminder_minutes = json.dumps(rm) if isinstance(rm, list) else rm
+                        elif data.get('reminders', {}).get('reminderTimes') is not None:
+                            rm = data.get('reminders', {}).get('reminderTimes')
+                            new_reminder_minutes = json.dumps(rm) if isinstance(rm, list) else rm
+                        elif data.get('CalendarSettings', {}).get('reminderTimes') is not None:
+                            rm = data.get('CalendarSettings', {}).get('reminderTimes')
+                            new_reminder_minutes = json.dumps(rm) if isinstance(rm, list) else rm
                         
-                        # STEP 8: Handle settings with fallbacks to existing values
-                        def safe_bool_convert(value, default=False):
-                            """Safely convert value to boolean"""
+                        final_reminder_minutes = new_reminder_minutes if new_reminder_minutes else (existing_calendar['reminderMinutes'] or '[15, 30]')
+                        if isinstance(final_reminder_minutes, list):
+                            final_reminder_minutes = json.dumps(final_reminder_minutes)
+                        
+                        # ============================================================
+                        # STEP 7: HANDLE SETTINGS
+                        # ============================================================
+                        def safe_bool(value, default=True):
                             if value is None:
                                 return default
                             if isinstance(value, bool):
@@ -3913,49 +4027,57 @@ def Update_Meeting(request, id):
                                 return value.lower() in ('true', '1', 'yes')
                             return default
                         
-                        settings_create_calendar_event = existing_calendar.get('Settings_CreateCalendarEvent', 1)
-                        settings_send_invitations = existing_calendar.get('Settings_SendInvitations', 1)
-                        settings_set_reminders = existing_calendar.get('Settings_SetReminders', 1)
-                        settings_add_meeting_link = existing_calendar.get('Settings_AddMeetingLink', 1)
-                        settings_add_to_host_calendar = existing_calendar.get('Settings_AddToHostCalendar', 1)
-                        settings_add_to_participant_calendars = existing_calendar.get('Settings_AddToParticipantCalendars', 1)
-                        
-                        # Update settings only if provided in request
                         settings = data.get('Settings', {})
                         calendar_settings = data.get('CalendarSettings', {})
                         
-                        if 'createCalendarEvent' in settings:
-                            settings_create_calendar_event = 1 if safe_bool_convert(settings['createCalendarEvent']) else 0
-                        elif 'Settings_CreateCalendarEvent' in data:
-                            settings_create_calendar_event = 1 if safe_bool_convert(data['Settings_CreateCalendarEvent']) else 0
+                        # Only update if explicitly provided, otherwise keep existing
+                        final_create_calendar = safe_bool(
+                            settings.get('createCalendarEvent') if 'createCalendarEvent' in settings 
+                            else data.get('Settings_CreateCalendarEvent'),
+                            safe_bool(existing_calendar['Settings_CreateCalendarEvent'], True)
+                        )
                         
-                        if 'sendInvitations' in settings:
-                            settings_send_invitations = 1 if safe_bool_convert(settings['sendInvitations']) else 0
-                        elif 'Settings_SendInvitations' in data:
-                            settings_send_invitations = 1 if safe_bool_convert(data['Settings_SendInvitations']) else 0
+                        final_send_invitations = safe_bool(
+                            settings.get('sendInvitations') if 'sendInvitations' in settings 
+                            else data.get('Settings_SendInvitations'),
+                            safe_bool(existing_calendar['Settings_SendInvitations'], True)
+                        )
                         
-                        if 'setReminders' in settings:
-                            settings_set_reminders = 1 if safe_bool_convert(settings['setReminders']) else 0
-                        elif 'Settings_SetReminders' in data:
-                            settings_set_reminders = 1 if safe_bool_convert(data['Settings_SetReminders']) else 0
+                        final_set_reminders = safe_bool(
+                            settings.get('setReminders') if 'setReminders' in settings 
+                            else data.get('Settings_SetReminders'),
+                            safe_bool(existing_calendar['Settings_SetReminders'], True)
+                        )
                         
-                        if 'addMeetingLink' in settings:
-                            settings_add_meeting_link = 1 if safe_bool_convert(settings['addMeetingLink']) else 0
-                        elif 'Settings_AddMeetingLink' in data:
-                            settings_add_meeting_link = 1 if safe_bool_convert(data['Settings_AddMeetingLink']) else 0
+                        final_add_meeting_link = safe_bool(
+                            settings.get('addMeetingLink') if 'addMeetingLink' in settings 
+                            else data.get('Settings_AddMeetingLink'),
+                            safe_bool(existing_calendar['Settings_AddMeetingLink'], True)
+                        )
                         
-                        if 'addToHostCalendar' in calendar_settings:
-                            settings_add_to_host_calendar = 1 if safe_bool_convert(calendar_settings['addToHostCalendar']) else 0
-                        elif 'Settings_AddToHostCalendar' in data:
-                            settings_add_to_host_calendar = 1 if safe_bool_convert(data['Settings_AddToHostCalendar']) else 0
+                        final_add_to_host = safe_bool(
+                            calendar_settings.get('addToHostCalendar') if 'addToHostCalendar' in calendar_settings 
+                            else data.get('Settings_AddToHostCalendar'),
+                            safe_bool(existing_calendar['Settings_AddToHostCalendar'], True)
+                        )
                         
-                        if 'addToParticipantCalendars' in calendar_settings:
-                            settings_add_to_participant_calendars = 1 if safe_bool_convert(calendar_settings['addToParticipantCalendars']) else 0
-                        elif 'Settings_AddToParticipantCalendars' in data:
-                            settings_add_to_participant_calendars = 1 if safe_bool_convert(data['Settings_AddToParticipantCalendars']) else 0
-
-                        # STEP 9: Perform the UPDATE (NOT INSERT)
-                        logging.info(f"UPDATE_MEETING: About to update CalendarMeeting ID {id}")
+                        final_add_to_participants = safe_bool(
+                            calendar_settings.get('addToParticipantCalendars') if 'addToParticipantCalendars' in calendar_settings 
+                            else data.get('Settings_AddToParticipantCalendars'),
+                            safe_bool(existing_calendar['Settings_AddToParticipantCalendars'], True)
+                        )
+                        
+                        # ============================================================
+                        # STEP 8: EXECUTE UPDATE QUERY
+                        # ============================================================
+                        logging.info(f"UPDATE_MEETING: ========== EXECUTING UPDATE ==========")
+                        logging.info(f"UPDATE_MEETING: ID: {id}")
+                        logging.info(f"UPDATE_MEETING: title: {final_title}")
+                        logging.info(f"UPDATE_MEETING: startTime: {final_start_time}")
+                        logging.info(f"UPDATE_MEETING: endTime: {final_end_time}")
+                        logging.info(f"UPDATE_MEETING: duration: {final_duration}")
+                        logging.info(f"UPDATE_MEETING: email: {final_email}")
+                        logging.info(f"UPDATE_MEETING: guestEmails: {final_guest_emails}")
                         
                         cursor.execute("""
                             UPDATE tbl_CalendarMeetings
@@ -3979,49 +4101,43 @@ def Update_Meeting(request, id):
                                 Settings_AddToParticipantCalendars = %s
                             WHERE ID = %s
                         """, [
-                            data.get('title') or data.get('Meeting_Name') or meeting_name,
-                            started_at,
-                            ended_at,
-                            duration,  # Now properly handled as integer
-                            calendar_email,
-                            guest_emails,
-                            provider,
-                            meeting_link,
-                            location,
-                            attendees,
-                            reminder_minutes,  # Now properly handled as JSON string
-                            settings_create_calendar_event,
-                            settings_send_invitations,
-                            settings_set_reminders,
-                            settings_add_meeting_link,
-                            settings_add_to_host_calendar,
-                            settings_add_to_participant_calendars,
-                            id  # WHERE ID = this exact ID
+                            final_title,
+                            final_start_time,
+                            final_end_time,
+                            final_duration,
+                            final_email,
+                            final_guest_emails,
+                            final_provider,
+                            final_meeting_url,
+                            final_location,
+                            final_attendees,
+                            final_reminder_minutes,
+                            1 if final_create_calendar else 0,
+                            1 if final_send_invitations else 0,
+                            1 if final_set_reminders else 0,
+                            1 if final_add_meeting_link else 0,
+                            1 if final_add_to_host else 0,
+                            1 if final_add_to_participants else 0,
+                            id
                         ])
                         
                         calendar_updated_rows = cursor.rowcount
-                        logging.info(f"UPDATE_MEETING: CalendarMeeting UPDATE affected {calendar_updated_rows} rows for ID {id}")
+                        logging.info(f"UPDATE_MEETING: UPDATE affected {calendar_updated_rows} rows")
                         
-                        # STEP 10: Verify the update worked
                         if calendar_updated_rows == 0:
-                            logging.error(f"UPDATE_MEETING: No rows updated for CalendarMeeting {id} - this should not happen")
+                            logging.error(f"UPDATE_MEETING: No rows updated for CalendarMeeting {id}")
                             return JsonResponse({
-                                "Error": f"Failed to update CalendarMeeting {id}. No rows were affected by the update operation."
+                                "Error": f"Failed to update CalendarMeeting {id}."
                             }, status=500)
-                        elif calendar_updated_rows > 1:
-                            logging.error(f"UPDATE_MEETING: Multiple rows ({calendar_updated_rows}) updated for CalendarMeeting {id} - this indicates duplicate records")
-                            return JsonResponse({
-                                "Error": f"Multiple records updated for CalendarMeeting {id}. Database may have duplicate records."
-                            }, status=500)
-                        else:
-                            logging.info(f"UPDATE_MEETING: Successfully updated exactly 1 CalendarMeeting record with ID {id}")
-                            
+                        
+                        logging.info(f"UPDATE_MEETING: ✅ Successfully updated CalendarMeeting {id}")
+                        
                     except Exception as calendar_error:
-                        logging.error(f"UPDATE_MEETING: Error in CalendarMeeting update section for {id}: {calendar_error}")
+                        logging.error(f"UPDATE_MEETING: Error updating CalendarMeeting {id}: {calendar_error}")
                         import traceback
-                        logging.error(f"UPDATE_MEETING: CalendarMeeting error traceback: {traceback.format_exc()}")
+                        logging.error(f"UPDATE_MEETING: Traceback: {traceback.format_exc()}")
                         return JsonResponse({
-                            "Error": f"Failed to update CalendarMeeting {id}: {str(calendar_error)}"
+                            "Error": f"Failed to update CalendarMeeting: {str(calendar_error)}"
                         }, status=500)
 
                 elif meeting_type == 'InstantMeeting':
@@ -4046,7 +4162,6 @@ def Update_Meeting(request, id):
         "Meeting_Type": meeting_type,
         "Updated_Fields": updated_fields
     }, status=200)
-
 
 # GET endpoint to retrieve meeting details for editing
 @require_http_methods(["GET"])
