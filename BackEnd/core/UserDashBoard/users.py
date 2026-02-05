@@ -121,6 +121,7 @@ profile_photos_collection = db["profile_photos"]
 # ============================================================================
 try:
     from .face_embeddings import (
+        validate_human_face,          # ✅ NEW: Face validation
         process_profile_photo_embedding,
         process_image_for_recognition,
         get_user_embeddings,
@@ -137,6 +138,7 @@ except ImportError as e:
     logging.warning(f"⚠ Face recognition module not available: {e}")
     FACE_RECOGNITION_ENABLED = False
     # Create dummy functions if import fails
+    def validate_human_face(*args, **kwargs): return {'valid': False, 'error': 'Face validation not available'}
     def process_profile_photo_embedding(*args, **kwargs): return None
     def process_image_for_recognition(*args, **kwargs): return None
     def get_user_embeddings(*args, **kwargs): return []
@@ -1353,10 +1355,29 @@ def Register_User(request):
                 # ============================================================
                 # STORE REGISTRATION PHOTO IN S3 (PERMANENT)
                 # ============================================================
+                # if data.get('profile_photo'):
+                #     logger.info(f"Storing registration photo for user {user_id}...")
+                #     photo_result = store_profile_photo_s3(user_id, data['profile_photo'])
+                # ============================================================
+                # ✅ VALIDATE HUMAN FACE BEFORE STORING (NEW)
+                # ============================================================
                 if data.get('profile_photo'):
+                    logger.info(f"Validating face in captured photo for user {user_id}...")
+                    
+                    face_validation = validate_human_face(data['profile_photo'])
+                    
+                    if not face_validation['valid']:
+                        logger.error(f"❌ Face validation failed for user {user_id}: {face_validation['error']}")
+                        raise Exception(face_validation['error'])
+                    
+                    logger.info(f"✅ Face validated: det_score={face_validation['det_score']:.2f}, faces={face_validation['face_count']}")
+                    
+                    # ============================================================
+                    # STORE REGISTRATION PHOTO IN S3 (PERMANENT)
+                    # ============================================================
                     logger.info(f"Storing registration photo for user {user_id}...")
                     photo_result = store_profile_photo_s3(user_id, data['profile_photo'])
-                    
+                   
                     if photo_result:
                         # Update profile_photo_id (PERMANENT registration photo)
                         cursor.execute(

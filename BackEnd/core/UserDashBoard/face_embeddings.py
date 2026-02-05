@@ -227,6 +227,149 @@ def base64_to_numpy(base64_string: str) -> Optional[np.ndarray]:
         return None
 
 
+def validate_human_face(photo_base64: str) -> dict:
+    """
+    Validate that the image contains exactly ONE human face.
+    Must be called BEFORE storing photo to S3.
+    
+    Args:
+        photo_base64: Base64 encoded image string
+        
+    Returns:
+        {
+            'valid': True/False,
+            'error': 'error message' or None,
+            'face_count': int,
+            'det_score': float  # detection confidence
+        }
+    """
+    try:
+        import numpy as np
+        import cv2
+        import base64
+        
+        # ============================================================
+        # STEP 1: Decode base64 to image
+        # ============================================================
+        if 'base64,' in photo_base64:
+            photo_base64 = photo_base64.split('base64,')[1]
+        
+        photo_bytes = base64.b64decode(photo_base64)
+        nparr = np.frombuffer(photo_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            return {
+                'valid': False,
+                'error': 'Invalid image data. Please capture again.',
+                'face_count': 0,
+                'det_score': 0.0
+            }
+        
+        # ============================================================
+        # STEP 2: Check minimum image size
+        # ============================================================
+        height, width = img.shape[:2]
+        if width < 100 or height < 100:
+            return {
+                'valid': False,
+                'error': 'Image too small. Please capture a clear photo.',
+                'face_count': 0,
+                'det_score': 0.0
+            }
+        
+        # ============================================================
+        # STEP 3: Detect faces using InsightFace
+        # ============================================================
+        # Use the same model that's already initialized in face_embeddings.py
+        # If your model variable name is different, change 'app' to your variable name
+        faces = app.get(img)
+        
+        face_count = len(faces) if faces else 0
+        
+        # ============================================================
+        # STEP 4: No face detected - REJECT
+        # ============================================================
+        if face_count == 0:
+            logging.warning("❌ No human face detected in captured image")
+            return {
+                'valid': False,
+                'error': 'No human face detected. Please position your face clearly in front of the camera and try again.',
+                'face_count': 0,
+                'det_score': 0.0
+            }
+        
+        # ============================================================
+        # STEP 5: Multiple faces detected - REJECT
+        # ============================================================
+        if face_count > 1:
+            logging.warning(f"❌ Multiple faces detected: {face_count}")
+            return {
+                'valid': False,
+                'error': f'Multiple faces detected ({face_count}). Please ensure only your face is visible in the camera.',
+                'face_count': face_count,
+                'det_score': 0.0
+            }
+        
+        # ============================================================
+        # STEP 6: Single face found - check quality
+        # ============================================================
+        face = faces[0]
+        det_score = float(face.det_score) if hasattr(face, 'det_score') else 0.0
+        
+        # Minimum confidence threshold (0.5 = 50% confident it's a real face)
+        MIN_DET_SCORE = 0.5
+        
+        if det_score < MIN_DET_SCORE:
+            logging.warning(f"❌ Low face detection confidence: {det_score:.2f}")
+            return {
+                'valid': False,
+                'error': 'Face not clearly visible. Please ensure good lighting and face the camera directly.',
+                'face_count': 1,
+                'det_score': det_score
+            }
+        
+        # ============================================================
+        # STEP 7: Check face bounding box size (not too small)
+        # ============================================================
+        bbox = face.bbox  # [x1, y1, x2, y2]
+        face_width = bbox[2] - bbox[0]
+        face_height = bbox[3] - bbox[1]
+        
+        # Face should be at least 10% of image size
+        min_face_ratio = 0.10
+        face_ratio = (face_width * face_height) / (width * height)
+        
+        if face_ratio < min_face_ratio:
+            logging.warning(f"❌ Face too small in image: {face_ratio:.2%}")
+            return {
+                'valid': False,
+                'error': 'Face is too small. Please move closer to the camera.',
+                'face_count': 1,
+                'det_score': det_score
+            }
+        
+        # ============================================================
+        # STEP 8: ALL CHECKS PASSED ✅
+        # ============================================================
+        logging.info(f"✅ Face validation passed: det_score={det_score:.2f}, face_ratio={face_ratio:.2%}")
+        
+        return {
+            'valid': True,
+            'error': None,
+            'face_count': 1,
+            'det_score': det_score
+        }
+        
+    except Exception as e:
+        logging.error(f"❌ Face validation error: {e}")
+        return {
+            'valid': False,
+            'error': 'Face validation failed. Please try again.',
+            'face_count': 0,
+            'det_score': 0.0
+        }
+
 def download_image_from_s3(s3_key: str) -> Optional[np.ndarray]:
     """
     Download image from S3 and convert to numpy array
