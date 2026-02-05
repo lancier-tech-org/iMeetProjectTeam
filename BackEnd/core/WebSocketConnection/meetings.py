@@ -138,7 +138,7 @@ LIVEKIT_CONFIG = {
     'api_url': os.getenv("LIVEKIT_URL", "").replace('wss://', 'https://').replace('ws://', 'http://'),
     'api_key': os.getenv("LIVEKIT_API_KEY"),
     'api_secret': os.getenv("LIVEKIT_API_SECRET"),
-    'ttl': int(os.getenv("LIVEKIT_TTL", 3600))
+    'ttl': int(os.getenv("LIVEKIT_TTL", 86400))  # ✅ 24 hours - prevents auto-kick
 }
 
 def get_meeting_with_occurrence_info(meeting_id: str, user_id: str) -> Dict:
@@ -320,7 +320,7 @@ class ProductionLiveKitService:
                 'sub': 'django_admin',
                 'iat': now,
                 'nbf': now,
-                'exp': now + 600,  # Extended from 300 to 600 seconds (10 minutes)
+                'exp': now + 3600,  
                 'video': {
                     'roomList': True,
                     'roomCreate': True,
@@ -356,7 +356,7 @@ class ProductionLiveKitService:
                 'sub': 'django_room_admin',
                 'iat': now,
                 'nbf': now,
-                'exp': now + 600,  # Extended from 300 to 600 seconds
+                'exp': now + 3600,  
                 'video': {
                     'room': room_name,
                     'roomList': True,
@@ -1059,15 +1059,15 @@ livekit_service = ProductionLiveKitService()
 # OPTIMIZED: Connection tracking for 50+ participants
 CONNECTION_QUEUE = {}
 CONNECTION_LIMITS = {
-    'MAX_CONCURRENT_JOINS': 100,  # ✅ Increased from 50 (no participant limit)
-    'MAX_PARTICIPANTS_PER_ROOM': None,  # ✅ UNLIMITED - was 100
+    'MAX_CONCURRENT_JOINS': None,  
+    'MAX_PARTICIPANTS_PER_ROOM': None,  
     'CONNECTION_TIMEOUT': 120,
     'CLEANUP_INTERVAL': 30,
     'GRACE_PERIOD': 300,
     'QUEUE_WAIT_TIME': 1,
     'MAX_RETRIES': 3,
     'RETRY_DELAY': 2,
-    'EMPTY_ROOM_CLEANUP_MINUTES': 5  # ✅ NEW: Auto-cleanup timeout
+    'EMPTY_ROOM_CLEANUP_MINUTES': 20  # ✅ NEW: Auto-cleanup timeout
 }
 
 def manage_connection_queue(room_name: str, user_id: str, action: str = 'join'):
@@ -1107,9 +1107,10 @@ def manage_connection_queue(room_name: str, user_id: str, action: str = 'join'):
             }
         
         current_connections = len(room_queue['active_connections'])
-        MAX_CONCURRENT = 100
-        
-        if current_connections >= MAX_CONCURRENT:
+        MAX_CONCURRENT = CONNECTION_LIMITS['MAX_CONCURRENT_JOINS']  # ✅ Use config (now None/unlimited)
+
+        # Only queue if there's actually a limit
+        if MAX_CONCURRENT and current_connections >= MAX_CONCURRENT:
             if user_id not in room_queue['waiting_queue']:
                 room_queue['waiting_queue'].append(user_id)
             
@@ -1476,20 +1477,17 @@ def join_meeting_with_queue(request):
 # MISSING HELPER FUNCTIONS - Add these after your ProductionLiveKitService class
 
 def ensure_room_exists(room_name: str, meeting_id: str) -> bool:
-    """Ensure LiveKit room exists"""
     try:
         if not LIVEKIT_ENABLED or not livekit_service:
             return False
         
-        # Check if room already exists
         existing_room = livekit_service.get_room(room_name)
         if existing_room:
             logging.info(f"✅ Room {room_name} already exists")
             return True
         
-        # Create new room
         room_config = {
-            'max_participants': 200,
+            # REMOVED: 'max_participants': 200,  # ✅ UNLIMITED
             'empty_timeout': 300,
             'departure_timeout': 60
         }
@@ -1765,7 +1763,7 @@ def generate_manual_livekit_token(room_name: str, participant_name: str,
             'sub': participant_name,  # Subject (participant identity)
             'iat': now,  # Issued at
             'nbf': now,  # Not before
-            'exp': now + 3600,  # Expires in 1 hour
+            'exp': now + 3600,  
             'video': {  # CRITICAL: Video grants section
                 'room': room_name,
                 'roomJoin': default_permissions['roomJoin'],
@@ -3217,7 +3215,7 @@ def Create_Instant_Meeting(request):
             livekit_room = livekit_service.create_room(
                 room_name=data['LiveKit_Room_Name'],
                 room_config={
-                    'max_participants': 200,
+                    # REMOVED: 'max_participants': 200,  # ✅ UNLIMITED
                     'empty_timeout': 300,
                     'departure_timeout': 30,
                     'enable_recording': bool(data['Is_Recording_Enabled'])
