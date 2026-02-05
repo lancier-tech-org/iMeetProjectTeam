@@ -2353,24 +2353,20 @@ class FixedGoogleMeetRecorder:
             redis_pod = redis_recording.get("pod_name", "unknown")
             
             if current_pod == redis_pod:
-                # Same pod, different worker - don't have bot instance but can't stop it
+                # Same pod, different worker - signal via Redis for correct worker to stop
                 logger.warning(f"⚠️ Recording found in Redis on SAME POD but not in local memory")
-                logger.warning(f"   This is a worker restart/different worker scenario - cannot stop")
+                logger.warning(f"   This is a different worker scenario - will signal via Redis")
                 logger.warning(f"   Pod: {current_pod}, Worker PID: {os.getpid()}")
+                logger.warning(f"   Correct worker will pick up stop signal within 3 seconds")
                 
-                return {
-                    "status": "error",
-                    "message": "Recording is on this pod but in different worker process. Wait for recording to finish or restart the pod.",
-                    "meeting_id": meeting_id,
-                    "note": "Worker restart detected - recording bot is still running but not accessible"
-                }
+                recording_info = redis_recording
+                has_bot = False
             else:
                 # Actually different pod - we have Redis info but no bot instance
                 recording_info = redis_recording
                 has_bot = False
                 logger.warning(f"⚠️ Recording found on DIFFERENT POD")
                 logger.warning(f"   Current pod: {current_pod}, Recording pod: {redis_pod}")
-
         try:
             logger.info(f"🛑 Stopping FAST recording for meeting {meeting_id}")
             
