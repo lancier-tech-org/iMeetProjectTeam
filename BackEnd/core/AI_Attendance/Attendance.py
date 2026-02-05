@@ -1284,65 +1284,20 @@ def save_extended_tracking_data(attendance_obj, extended_data):
         logger.error(f"Failed to save extended tracking data: {e}")
 
 def calculate_current_break_time(session, current_time):
-    """
-    ✅ FIXED: Calculate current break time with proper type handling
-    
-    Args:
-        session: Session dictionary
-        current_time: Current Unix timestamp (float)
-    
-    Returns:
-        float: Total break time used in seconds
-    """
-    total_used = session.get('total_break_time_used', 0)
-    
+    """Calculate current break time"""
     if session.get('is_currently_on_break') and session.get('current_break_start_time'):
-        break_start = session['current_break_start_time']
-        
-        # ✅ FIXED: Handle different types for break_start
-        if isinstance(break_start, (int, float)):
-            current_break_duration = current_time - float(break_start)
-        else:
-            # If it's somehow a datetime, convert it
-            try:
-                current_break_duration = current_time - break_start.timestamp()
-            except:
-                logger.warning("Could not calculate break duration, using 0")
-                current_break_duration = 0
-        
-        return total_used + max(0, current_break_duration)
-    
-    return total_used
-
+        current_break_duration = current_time - session['current_break_start_time']
+        return session.get('total_break_time_used', 0) + current_break_duration
+    return session.get('total_break_time_used', 0)
 
 def update_break_time_used(session, attendance_obj, current_time):
-    """
-    ✅ FIXED: Update break time used with proper type handling
-    
-    Args:
-        session: Session dictionary
-        attendance_obj: Database AttendanceSession object
-        current_time: Current Unix timestamp (float)
-    """
+    """Update break time used"""
     if session.get('is_currently_on_break') and session.get('current_break_start_time'):
-        break_start = session['current_break_start_time']
+        current_break_duration = current_time - session['current_break_start_time']
+        session['total_break_time_used'] += current_break_duration
         
-        # ✅ FIXED: Handle different types for break_start
-        if isinstance(break_start, (int, float)):
-            current_break_duration = current_time - float(break_start)
-        else:
-            try:
-                current_break_duration = current_time - break_start.timestamp()
-            except:
-                logger.warning("Could not calculate break duration, using 60s default")
-                current_break_duration = 60
-        
-        current_break_duration = max(0, current_break_duration)
-        session['total_break_time_used'] = session.get('total_break_time_used', 0) + current_break_duration
-        
-        # Record break session
         break_session = {
-            'start_time': float(break_start) if isinstance(break_start, (int, float)) else break_start.timestamp(),
+            'start_time': session['current_break_start_time'],
             'end_time': current_time,
             'duration': current_break_duration,
             'break_number': session.get('break_count', 0)
@@ -1352,15 +1307,10 @@ def update_break_time_used(session, attendance_obj, current_time):
             session['break_sessions'] = []
         session['break_sessions'].append(break_session)
         
-        # Update database
         attendance_obj.total_break_time_used = int(session['total_break_time_used'])
         attendance_obj.break_sessions = json.dumps(session['break_sessions'])
         
-        logger.info(
-            f"MULTI-USER: Break session recorded for {attendance_obj.user_id}: "
-            f"{current_break_duration:.1f}s (Total: {session['total_break_time_used']:.1f}s)"
-        )
-
+        logger.info(f"MULTI-USER: Break session recorded for {attendance_obj.user_id}: {current_break_duration:.1f}s")
 
 def generate_camera_verification_token(meeting_id: str, user_id: str, timestamp: float) -> str:
     """Generate verification token"""
@@ -1368,161 +1318,6 @@ def generate_camera_verification_token(meeting_id: str, user_id: str, timestamp:
     data = f"{meeting_id}_{user_id}_{timestamp}_{uuid.uuid4()}"
     return hashlib.sha256(data.encode()).hexdigest()[:32]
 
-
-def restore_session_from_db(meeting_id: str, user_id: str, session_key: str) -> bool:
-    """
-    ✅ NEW: Helper function to restore session from database to memory
-    
-    Args:
-        meeting_id: Meeting identifier
-        user_id: User identifier  
-        session_key: Session key for attendance_sessions dict
-    
-    Returns:
-        bool: True if session was restored, False otherwise
-    """
-    try:
-        db_session = AttendanceSession.objects.filter(
-            meeting_id=meeting_id,
-            user_id=user_id
-        ).first()
-        
-        if not db_session:
-            logger.error(f"❌ RESTORE: No session in DB for {user_id}")
-            return False
-        
-        # Parse existing data from DB
-        existing_violations = {'warnings': [], 'detections': [], 'continuous_removals': []}
-        try:
-            if db_session.violations:
-                parsed = json.loads(db_session.violations) if isinstance(db_session.violations, str) else db_session.violations
-                if isinstance(parsed, dict):
-                    existing_violations = parsed
-        except:
-            pass
-        
-        existing_identity_warnings = []
-        try:
-            if db_session.identity_warnings:
-                existing_identity_warnings = json.loads(db_session.identity_warnings) if isinstance(db_session.identity_warnings, str) else db_session.identity_warnings
-        except:
-            pass
-        
-        existing_break_sessions = []
-        try:
-            if db_session.break_sessions:
-                existing_break_sessions = json.loads(db_session.break_sessions) if isinstance(db_session.break_sessions, str) else db_session.break_sessions
-        except:
-            pass
-        
-        existing_violation_start_times = {}
-        try:
-            if db_session.violation_start_times:
-                existing_violation_start_times = json.loads(db_session.violation_start_times) if isinstance(db_session.violation_start_times, str) else db_session.violation_start_times
-        except:
-            pass
-        
-        extended_data = get_extended_tracking_data(db_session)
-        
-        # ✅ FIXED: Handle current_break_start_time properly (it's a float)
-        current_break_start = None
-        if db_session.current_break_start_time:
-            if isinstance(db_session.current_break_start_time, (int, float)):
-                current_break_start = float(db_session.current_break_start_time)
-            else:
-                try:
-                    current_break_start = db_session.current_break_start_time.timestamp()
-                except:
-                    current_break_start = None
-        
-        # ✅ FIXED: Handle session_start_time properly
-        session_started_at = time.time()
-        if db_session.session_start_time:
-            try:
-                if hasattr(db_session.session_start_time, 'timestamp'):
-                    session_started_at = db_session.session_start_time.timestamp()
-                else:
-                    session_started_at = float(db_session.session_start_time)
-            except:
-                session_started_at = time.time()
-        
-        # Restore session to memory
-        attendance_sessions[session_key] = {
-            "meeting_id": meeting_id,
-            "user_id": user_id,
-            "session_active": db_session.session_active,
-            "popup_count": db_session.popup_count or 0,
-            "warning_count": extended_data.get('warning_count', 0),
-            "detection_counts": extended_data.get('detection_counts', 0),
-            "total_detections": db_session.total_detections or 0,
-            "attendance_penalty": float(db_session.attendance_penalty or 0),
-            "violations": [],
-            "violation_start_times": existing_violation_start_times,
-            "break_used": db_session.break_used or False,
-            "break_count": db_session.break_count or 0,
-            "total_break_time_used": db_session.total_break_time_used or 0,
-            "max_break_time_allowed": db_session.max_break_time_allowed or AttendanceConfig.MAX_TOTAL_BREAK_TIME,
-            "is_currently_on_break": db_session.is_currently_on_break or False,
-            "current_break_start_time": current_break_start,
-            "break_sessions": existing_break_sessions,
-            "session_started_at": session_started_at,
-            "start_time": db_session.session_start_time or timezone.now(),
-            "last_face_movement_time": db_session.last_face_movement_time or time.time(),
-            "frame_processing_count": db_session.frame_processing_count or 0,
-            "inactivity_popup_shown": db_session.inactivity_popup_shown or False,
-            "last_popup_time": db_session.last_popup_time or 0,
-            "warning_phase_complete": extended_data.get('warning_phase_complete', False),
-            "last_detection_time": extended_data.get('last_detection_time', 0),
-            "total_detection_penalty_applied": extended_data.get('total_detection_penalty', 0.0),
-            "continuous_violation_start_time": extended_data.get('continuous_violation_start_time'),
-            "is_removed_from_meeting": extended_data.get('is_removed_from_meeting', False),
-            "removal_timestamp": extended_data.get('removal_timestamp'),
-            "removal_reason": extended_data.get('removal_reason', ""),
-            "behavior_messages": existing_violations,
-            "camera_resume_expected": extended_data.get('camera_resume_expected', False),
-            "camera_resume_deadline": extended_data.get('camera_resume_deadline'),
-            "camera_confirmation_token": extended_data.get('camera_confirmation_token'),
-            "camera_verified_at": extended_data.get('camera_verified_at'),
-            "grace_period_active": extended_data.get('grace_period_active', False),
-            "grace_period_until": extended_data.get('grace_period_until'),
-            "identity_warning_count": db_session.identity_warning_count or 0,
-            "identity_consecutive_unknown_seconds": db_session.identity_consecutive_unknown_seconds or 0,
-            "identity_total_unknown_seconds": db_session.identity_total_unknown_seconds or 0,
-            "identity_is_removed": db_session.identity_is_removed or False,
-            "identity_can_rejoin": db_session.identity_can_rejoin if db_session.identity_can_rejoin is not None else True,
-            "identity_warnings": existing_identity_warnings,
-            "identity_last_check_time": db_session.identity_last_check_time or time.time(),
-            "identity_removal_count": db_session.identity_removal_count or 0,
-            "identity_total_warnings": db_session.identity_total_warnings_issued or 0,
-            "identity_current_cycle_warnings": db_session.identity_current_cycle_warnings or 0,
-            "behavior_removal_count": db_session.behavior_removal_count or 0,
-            "continuous_violation_removal_count": db_session.continuous_violation_removal_count or 0,
-            "violation_continuous_timer": None,
-            "violation_current_type": None,
-            "violation_popup_shown": False,
-            "baseline_established": False,
-            "baseline_ear": None,
-            "baseline_yaw": None,
-            "baseline_samples": 0,
-            "face_detected": False,
-        }
-        
-        logger.info(
-            f"✅ RESTORE: Session restored from DB for {user_id}\n"
-            f"   - is_currently_on_break: {db_session.is_currently_on_break}\n"
-            f"   - current_break_start_time: {current_break_start}\n"
-            f"   - total_break_time_used: {db_session.total_break_time_used}\n"
-            f"   - break_count: {db_session.break_count}\n"
-            f"   - session_active: {db_session.session_active}"
-        )
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ RESTORE: Failed to restore session for {user_id}: {e}")
-        logger.error(traceback.format_exc())
-        return False
-        
 # ==================== HELPER: Run async code in sync context ====================
 
 # ==================== IDENTITY VERIFICATION HELPER FUNCTIONS ====================
@@ -3438,11 +3233,7 @@ def auto_store_attendance_periodic(meeting_id: str, interval_seconds: int = 60, 
 @csrf_exempt
 @require_http_methods(["POST"])
 def verify_camera_resumed(request):
-    """
-    ✅ FIXED: Verify camera was re-enabled after break
-    ✅ FIXED: Proper session restoration from DB
-    ✅ FIXED: Handle current_break_start_time as float
-    """
+    """Verify camera was re-enabled after break"""
     try:
         data = json.loads(request.body)
         meeting_id = data.get('meeting_id')
@@ -3467,7 +3258,8 @@ def verify_camera_resumed(request):
             try:
                 db_session = AttendanceSession.objects.filter(
                     meeting_id=meeting_id,
-                    user_id=user_id
+                    user_id=user_id,
+                    session_active=True
                 ).first()
                 
                 if db_session:
@@ -3475,9 +3267,7 @@ def verify_camera_resumed(request):
                     existing_violations = {'warnings': [], 'detections': [], 'continuous_removals': []}
                     try:
                         if db_session.violations:
-                            parsed = json.loads(db_session.violations) if isinstance(db_session.violations, str) else db_session.violations
-                            if isinstance(parsed, dict):
-                                existing_violations = parsed
+                            existing_violations = json.loads(db_session.violations) if isinstance(db_session.violations, str) else db_session.violations
                     except:
                         pass
                     
@@ -3505,33 +3295,11 @@ def verify_camera_resumed(request):
                     # Get extended tracking data
                     extended_data = get_extended_tracking_data(db_session)
                     
-                    # ✅ FIXED: Handle current_break_start_time properly (it's a float)
-                    current_break_start = None
-                    if db_session.current_break_start_time:
-                        if isinstance(db_session.current_break_start_time, (int, float)):
-                            current_break_start = float(db_session.current_break_start_time)
-                        else:
-                            try:
-                                current_break_start = db_session.current_break_start_time.timestamp()
-                            except:
-                                current_break_start = None
-                    
-                    # ✅ FIXED: Handle session_start_time properly
-                    session_started_at = time.time()
-                    if db_session.session_start_time:
-                        try:
-                            if hasattr(db_session.session_start_time, 'timestamp'):
-                                session_started_at = db_session.session_start_time.timestamp()
-                            else:
-                                session_started_at = float(db_session.session_start_time)
-                        except:
-                            session_started_at = time.time()
-                    
                     # Restore session to memory
                     attendance_sessions[session_key] = {
                         "meeting_id": meeting_id,
                         "user_id": user_id,
-                        "session_active": db_session.session_active,
+                        "session_active": True,
                         "popup_count": db_session.popup_count or 0,
                         "warning_count": extended_data.get('warning_count', 0),
                         "detection_counts": extended_data.get('detection_counts', 0),
@@ -3544,9 +3312,9 @@ def verify_camera_resumed(request):
                         "total_break_time_used": db_session.total_break_time_used or 0,
                         "max_break_time_allowed": db_session.max_break_time_allowed or AttendanceConfig.MAX_TOTAL_BREAK_TIME,
                         "is_currently_on_break": db_session.is_currently_on_break or False,
-                        "current_break_start_time": current_break_start,  # ✅ FIXED
+                        "current_break_start_time": db_session.current_break_start_time.timestamp() if db_session.current_break_start_time else None,
                         "break_sessions": existing_break_sessions,
-                        "session_started_at": session_started_at,  # ✅ FIXED
+                        "session_started_at": db_session.session_start_time.timestamp() if db_session.session_start_time else time.time(),
                         "start_time": db_session.session_start_time or timezone.now(),
                         "last_face_movement_time": db_session.last_face_movement_time or time.time(),
                         "frame_processing_count": db_session.frame_processing_count or 0,
@@ -3581,7 +3349,7 @@ def verify_camera_resumed(request):
                     }
                     logger.info(f"✅ CAMERA VERIFY: Session RESTORED from DB for {user_id}")
                 else:
-                    logger.error(f"❌ CAMERA VERIFY: No session in DB for {user_id}")
+                    logger.error(f"❌ CAMERA VERIFY: No active session in DB for {user_id}")
                     return JsonResponse({
                         'success': False,
                         'error': 'Session not found'
@@ -3589,6 +3357,7 @@ def verify_camera_resumed(request):
                     
             except Exception as e:
                 logger.error(f"❌ CAMERA VERIFY: Failed to restore session: {e}")
+                import traceback
                 logger.error(traceback.format_exc())
                 return JsonResponse({
                     'success': False,
@@ -3599,17 +3368,8 @@ def verify_camera_resumed(request):
         session = attendance_sessions[session_key]
         expected_token = session.get('camera_confirmation_token')
         
-        # ✅ FIXED: Handle case where no verification is expected
         if not expected_token:
             logger.warning(f"CAMERA VERIFY: No token expected for {user_id}")
-            # Instead of returning error, return success since camera is active
-            if camera_active:
-                return JsonResponse({
-                    'success': True,
-                    'message': 'Camera is active, no verification was pending',
-                    'detection_can_start': True,
-                    'timestamp': time.time(),
-                })
             return JsonResponse({
                 'success': False,
                 'error': 'No camera verification expected'
@@ -3627,11 +3387,6 @@ def verify_camera_resumed(request):
         
         if current_time > deadline:
             logger.warning(f"CAMERA VERIFY: Deadline exceeded for {user_id}")
-            # ✅ FIXED: Clear the verification state even if deadline exceeded
-            session['camera_resume_expected'] = False
-            session['camera_resume_deadline'] = None
-            session['camera_confirmation_token'] = None
-            
             return JsonResponse({
                 'success': False,
                 'error': 'Verification deadline exceeded',
@@ -3646,13 +3401,11 @@ def verify_camera_resumed(request):
                 'retry_required': True
             }, status=400)
         
-        # ✅ SUCCESS: Clear verification state
         session['camera_resume_expected'] = False
         session['camera_resume_deadline'] = None
         session['camera_confirmation_token'] = None
         session['camera_verified_at'] = current_time
         
-        # ✅ Update database
         try:
             attendance_obj = AttendanceSession.objects.get(meeting_id=meeting_id, user_id=user_id)
             extended_data = get_extended_tracking_data(attendance_obj)
@@ -3661,7 +3414,7 @@ def verify_camera_resumed(request):
             extended_data['camera_confirmation_token'] = None
             extended_data['camera_verified_at'] = current_time
             save_extended_tracking_data(attendance_obj, extended_data)
-            attendance_obj.save()
+            attendance_obj.save()  # ✅ ADDED: Ensure save to DB
         except AttendanceSession.DoesNotExist:
             pass
         
@@ -3681,10 +3434,9 @@ def verify_camera_resumed(request):
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
     except Exception as e:
         logger.error(f"Camera verification error: {e}")
+        import traceback
         logger.error(traceback.format_exc())
         return JsonResponse({'success': False, 'error': 'Verification failed'}, status=500)
-
-
 # ==================== PAUSE/RESUME WITH GRACE PERIOD ====================
 
 @csrf_exempt
@@ -3692,8 +3444,6 @@ def verify_camera_resumed(request):
 def pause_resume_attendance(request):
     """
     ✅ FIXED: Enhanced pause/resume with STRICT 5-minute break enforcement
-    ✅ FIXED: Correct handling of current_break_start_time (it's a float, not datetime)
-    ✅ FIXED: Better state synchronization between memory and database
     ✅ UPDATED: Preserves violation_start_times across breaks (never clears them)
     
     Changes from original:
@@ -3701,8 +3451,7 @@ def pause_resume_attendance(request):
     - Prevents break if currently on break
     - Applies break penalty correctly
     - Sets break_used flag automatically when time exhausted
-    - Does NOT clear violation_start_times on resume
-    - FIXED: current_break_start_time is a float, not datetime
+    - ✅ NEW: Does NOT clear violation_start_times on resume
     
     NO NEW DATABASE COLUMNS REQUIRED - Uses existing structure
     """
@@ -3733,9 +3482,11 @@ def pause_resume_attendance(request):
         
         logger.info(f"MULTI-USER: {action} request for {user_id}. {len(other_participants)} other participants unaffected")
         
-        # ============================================================================
-        # ✅ FIXED: RESTORE SESSION FROM DB IF NOT IN MEMORY
-        # ============================================================================
+        # if session_key not in attendance_sessions:
+        #     return JsonResponse({
+        #         'success': False, 
+        #         'error': 'No active attendance session'
+        #     }, status=404)
         if session_key not in attendance_sessions:
             logger.warning(f"⚠️ PAUSE_RESUME: Session not in memory for {user_id}, attempting to restore from DB...")
             
@@ -3746,21 +3497,12 @@ def pause_resume_attendance(request):
                     session_active=True
                 ).first()
                 
-                if not db_session_restore:
-                    # Try to find ANY session for this user (even inactive)
-                    db_session_restore = AttendanceSession.objects.filter(
-                        meeting_id=meeting_id,
-                        user_id=user_id
-                    ).first()
-                
                 if db_session_restore:
                     # Parse existing data from DB
                     existing_violations = {'warnings': [], 'detections': [], 'continuous_removals': []}
                     try:
                         if db_session_restore.violations:
-                            parsed = json.loads(db_session_restore.violations) if isinstance(db_session_restore.violations, str) else db_session_restore.violations
-                            if isinstance(parsed, dict):
-                                existing_violations = parsed
+                            existing_violations = json.loads(db_session_restore.violations) if isinstance(db_session_restore.violations, str) else db_session_restore.violations
                     except:
                         pass
                     
@@ -3787,29 +3529,6 @@ def pause_resume_attendance(request):
                     
                     extended_data_restore = get_extended_tracking_data(db_session_restore)
                     
-                    # ✅ FIXED: current_break_start_time is already a float, don't call .timestamp()
-                    current_break_start = None
-                    if db_session_restore.current_break_start_time:
-                        if isinstance(db_session_restore.current_break_start_time, (int, float)):
-                            current_break_start = float(db_session_restore.current_break_start_time)
-                        else:
-                            # If it's somehow a datetime, convert it
-                            try:
-                                current_break_start = db_session_restore.current_break_start_time.timestamp()
-                            except:
-                                current_break_start = None
-                    
-                    # ✅ FIXED: session_start_time handling
-                    session_started_at = time.time()
-                    if db_session_restore.session_start_time:
-                        try:
-                            if hasattr(db_session_restore.session_start_time, 'timestamp'):
-                                session_started_at = db_session_restore.session_start_time.timestamp()
-                            else:
-                                session_started_at = float(db_session_restore.session_start_time)
-                        except:
-                            session_started_at = time.time()
-                    
                     attendance_sessions[session_key] = {
                         "meeting_id": meeting_id,
                         "user_id": user_id,
@@ -3826,9 +3545,9 @@ def pause_resume_attendance(request):
                         "total_break_time_used": db_session_restore.total_break_time_used or 0,
                         "max_break_time_allowed": db_session_restore.max_break_time_allowed or AttendanceConfig.MAX_TOTAL_BREAK_TIME,
                         "is_currently_on_break": db_session_restore.is_currently_on_break or False,
-                        "current_break_start_time": current_break_start,  # ✅ FIXED
+                        "current_break_start_time": db_session_restore.current_break_start_time.timestamp() if db_session_restore.current_break_start_time else None,
                         "break_sessions": existing_break_sessions,
-                        "session_started_at": session_started_at,  # ✅ FIXED
+                        "session_started_at": db_session_restore.session_start_time.timestamp() if db_session_restore.session_start_time else time.time(),
                         "start_time": db_session_restore.session_start_time or timezone.now(),
                         "last_face_movement_time": db_session_restore.last_face_movement_time or time.time(),
                         "frame_processing_count": db_session_restore.frame_processing_count or 0,
@@ -3869,16 +3588,9 @@ def pause_resume_attendance(request):
                         "baseline_samples": 0,
                         "face_detected": False,
                     }
-                    
-                    logger.info(
-                        f"✅ PAUSE_RESUME: Session RESTORED from DB for {user_id}\n"
-                        f"   - is_currently_on_break: {db_session_restore.is_currently_on_break}\n"
-                        f"   - current_break_start_time: {current_break_start}\n"
-                        f"   - total_break_time_used: {db_session_restore.total_break_time_used}\n"
-                        f"   - break_count: {db_session_restore.break_count}"
-                    )
+                    logger.info(f"✅ PAUSE_RESUME: Session RESTORED from DB for {user_id}")
                 else:
-                    logger.error(f"❌ PAUSE_RESUME: No session in DB for {user_id}")
+                    logger.error(f"❌ PAUSE_RESUME: No active session in DB for {user_id}")
                     return JsonResponse({
                         'success': False, 
                         'error': 'No active attendance session'
@@ -3886,18 +3598,15 @@ def pause_resume_attendance(request):
                     
             except Exception as e:
                 logger.error(f"❌ PAUSE_RESUME: Failed to restore session: {e}")
+                import traceback
                 logger.error(traceback.format_exc())
                 return JsonResponse({
                     'success': False, 
                     'error': 'No active attendance session'
                 }, status=404)
-        
         session = attendance_sessions[session_key]
         current_time = time.time()
         
-        # ============================================================================
-        # ✅ GET DATABASE OBJECT
-        # ============================================================================
         try:
             attendance_obj = AttendanceSession.objects.get(meeting_id=meeting_id, user_id=user_id)
         except AttendanceSession.DoesNotExist:
@@ -3906,54 +3615,20 @@ def pause_resume_attendance(request):
                 'error': 'Attendance session not found in database'
             }, status=404)
         
-        # ============================================================================
-        # ✅ SYNC BREAK STATE FROM DATABASE TO MEMORY
-        # ============================================================================
-        db_is_on_break = attendance_obj.is_currently_on_break or False
-        memory_is_on_break = session.get('is_currently_on_break', False)
-        
-        if db_is_on_break != memory_is_on_break:
-            logger.warning(
-                f"⚠️ BREAK STATE MISMATCH for {user_id}:\n"
-                f"   - DB is_on_break: {db_is_on_break}\n"
-                f"   - Memory is_on_break: {memory_is_on_break}\n"
-                f"   - Syncing memory from DB..."
-            )
-            session['is_currently_on_break'] = db_is_on_break
-            
-            # ✅ FIXED: Handle current_break_start_time properly
-            if attendance_obj.current_break_start_time:
-                if isinstance(attendance_obj.current_break_start_time, (int, float)):
-                    session['current_break_start_time'] = float(attendance_obj.current_break_start_time)
-                else:
-                    try:
-                        session['current_break_start_time'] = attendance_obj.current_break_start_time.timestamp()
-                    except:
-                        session['current_break_start_time'] = None
-            else:
-                session['current_break_start_time'] = None
-        
-        # ✅ SYNC other break fields from DB
-        session['total_break_time_used'] = attendance_obj.total_break_time_used or 0
-        session['break_count'] = attendance_obj.break_count or 0
-        session['break_used'] = attendance_obj.break_used or False
-        session['max_break_time_allowed'] = attendance_obj.max_break_time_allowed or AttendanceConfig.MAX_TOTAL_BREAK_TIME
-        
-        try:
-            session['break_sessions'] = json.loads(attendance_obj.break_sessions) if attendance_obj.break_sessions else []
-        except json.JSONDecodeError:
-            session['break_sessions'] = []
+        # ✅ INITIALIZE: Break tracking if missing
+        if 'total_break_time_used' not in session:
+            session['total_break_time_used'] = attendance_obj.total_break_time_used or 0
+            session['current_break_start_time'] = attendance_obj.current_break_start_time
+            session['is_currently_on_break'] = attendance_obj.is_currently_on_break
+            session['break_count'] = attendance_obj.break_count or 0
+            session['break_used'] = attendance_obj.break_used
+            session['max_break_time_allowed'] = attendance_obj.max_break_time_allowed or AttendanceConfig.MAX_TOTAL_BREAK_TIME
+            try:
+                session['break_sessions'] = json.loads(attendance_obj.break_sessions) if attendance_obj.break_sessions else []
+            except json.JSONDecodeError:
+                session['break_sessions'] = []
         
         max_break_time = session.get('max_break_time_allowed', AttendanceConfig.MAX_TOTAL_BREAK_TIME)
-        
-        logger.info(
-            f"📊 BREAK STATE SYNCED for {user_id}:\n"
-            f"   - is_currently_on_break: {session['is_currently_on_break']}\n"
-            f"   - current_break_start_time: {session['current_break_start_time']}\n"
-            f"   - total_break_time_used: {session['total_break_time_used']}\n"
-            f"   - break_count: {session['break_count']}\n"
-            f"   - max_break_time: {max_break_time}"
-        )
         
         # ============================================================================
         # ✅ ACTION: PAUSE (Take Break)
@@ -3962,7 +3637,6 @@ def pause_resume_attendance(request):
             # ✅ CHECK 1: Already on break?
             if session.get('is_currently_on_break', False):
                 current_total_break_time = calculate_current_break_time(session, current_time)
-                logger.warning(f"⚠️ PAUSE REJECTED: {user_id} is already on break")
                 return JsonResponse({
                     'success': False,
                     'error': 'Already on break',
@@ -4016,19 +3690,20 @@ def pause_resume_attendance(request):
             session['is_currently_on_break'] = True
             session['current_break_start_time'] = current_time
             session['session_active'] = False
-            session['break_count'] = session.get('break_count', 0) + 1
+            session['break_count'] += 1
+            
+            # Note: Don't set break_used=True here! Only when time exhausted on resume.
             
             logger.info(
                 f"✅ BREAK #{session['break_count']} STARTED for {user_id}:\n"
                 f"  - Available: {break_duration_available}s\n"
                 f"  - Already Used: {current_total_break_time}s\n"
-                f"  - Remaining After: {max_break_time - current_total_break_time}s\n"
-                f"  - Break Start Time: {current_time}"
+                f"  - Remaining After: {max_break_time - current_total_break_time}s"
             )
             
             # ✅ UPDATE DATABASE
             attendance_obj.is_currently_on_break = True
-            attendance_obj.current_break_start_time = current_time  # Store as float
+            attendance_obj.current_break_start_time = current_time
             attendance_obj.session_active = False
             attendance_obj.break_count = session['break_count']
             attendance_obj.save()
@@ -4053,79 +3728,26 @@ def pause_resume_attendance(request):
         # ✅ ACTION: RESUME (End Break)
         # ============================================================================
         elif action == 'resume':
-            # ✅ FIXED: Check BOTH memory and database state
-            db_is_on_break = attendance_obj.is_currently_on_break or False
-            memory_is_on_break = session.get('is_currently_on_break', False)
-            
-            logger.info(
-                f"📊 RESUME CHECK for {user_id}:\n"
-                f"   - DB is_on_break: {db_is_on_break}\n"
-                f"   - Memory is_on_break: {memory_is_on_break}"
-            )
-            
-            # ✅ CASE 1: Neither DB nor memory says on break
-            if not db_is_on_break and not memory_is_on_break:
-                logger.warning(f"⚠️ RESUME REJECTED: {user_id} is NOT on break (both DB and memory)")
+            # ✅ CHECK: Not currently on break?
+            if not session.get('is_currently_on_break', False):
                 return JsonResponse({
                     'success': False,
                     'error': 'Not currently on break',
                     'break_time_remaining': max(0, max_break_time - session.get('total_break_time_used', 0)),
                     'total_break_time_used': session.get('total_break_time_used', 0),
                     'is_on_break': False,
-                    'message': 'You are not currently on a break. Break may have already ended.',
                 }, status=400)
             
-            # ✅ CASE 2: DB says on break but memory doesn't - sync from DB
-            if db_is_on_break and not memory_is_on_break:
-                logger.warning(f"⚠️ STATE MISMATCH: Syncing break state from DB for {user_id}")
-                session['is_currently_on_break'] = True
-                
-                # ✅ FIXED: Handle current_break_start_time properly
-                if attendance_obj.current_break_start_time:
-                    if isinstance(attendance_obj.current_break_start_time, (int, float)):
-                        session['current_break_start_time'] = float(attendance_obj.current_break_start_time)
-                    else:
-                        try:
-                            session['current_break_start_time'] = attendance_obj.current_break_start_time.timestamp()
-                        except:
-                            session['current_break_start_time'] = current_time - 60  # Default: assume 1 min break
-                else:
-                    session['current_break_start_time'] = current_time - 60  # Default: assume 1 min break
-            
-            # ✅ CASE 3: Memory says on break but DB doesn't - this is unusual, trust DB
-            if memory_is_on_break and not db_is_on_break:
-                logger.warning(f"⚠️ STATE MISMATCH: Memory says on break but DB doesn't for {user_id}")
-                # Reset memory state and return error
-                session['is_currently_on_break'] = False
-                session['current_break_start_time'] = None
-                return JsonResponse({
-                    'success': False,
-                    'error': 'Not currently on break',
-                    'break_time_remaining': max(0, max_break_time - session.get('total_break_time_used', 0)),
-                    'total_break_time_used': session.get('total_break_time_used', 0),
-                    'is_on_break': False,
-                    'message': 'Break state was inconsistent. Please try taking a new break.',
-                }, status=400)
-            
-            # ✅ NOW PROCEED WITH RESUME
-            # Calculate break duration for this session
-            break_start = session.get('current_break_start_time')
-            if break_start:
-                break_duration_used = current_time - break_start
-            else:
-                # Fallback: estimate from DB
-                break_duration_used = 60  # Default 1 minute
-                logger.warning(f"⚠️ No break_start_time found, using default {break_duration_used}s")
-            
-            # Update break time used
+            # ✅ CALCULATE: Break duration for this session
             update_break_time_used(session, attendance_obj, current_time)
+            break_duration_used = current_time - session['current_break_start_time'] if session.get('current_break_start_time') else 0
             
             # ============================================================================
             # ✅ APPLY BREAK PENALTY: 1% per 5 minutes (300 seconds)
             # ============================================================================
             penalty_per_5_minutes = AttendanceConfig.BREAK_PENALTY  # 1.0%
             break_penalty = (break_duration_used / 300.0) * penalty_per_5_minutes
-            session['attendance_penalty'] = session.get('attendance_penalty', 0) + break_penalty
+            session['attendance_penalty'] += break_penalty
             
             logger.info(
                 f"💰 BREAK #{session['break_count']} PENALTY for {user_id}: "
@@ -4136,7 +3758,7 @@ def pause_resume_attendance(request):
             # ============================================================================
             # ✅ CHECK: Automatically set break_used flag if time exhausted
             # ============================================================================
-            total_break_used = session.get('total_break_time_used', 0)
+            total_break_used = session['total_break_time_used']
             if total_break_used >= max_break_time:
                 session['break_used'] = True
                 logger.info(f"🚫 break_used AUTO-SET to True for {user_id} - Time exhausted ({total_break_used}s >= {max_break_time}s)")
@@ -4149,6 +3771,8 @@ def pause_resume_attendance(request):
             session['inactivity_popup_shown'] = False
             
             # ✅ CRITICAL: DO NOT CLEAR violation_start_times
+            # Violations accumulated before break remain valid after break
+            # This preserves the violation history across breaks
             logger.info(
                 f"🔒 VIOLATION TIMES PRESERVED for {user_id} after break: "
                 f"{len(session.get('violation_start_times', {}))} violations kept"
@@ -4170,7 +3794,7 @@ def pause_resume_attendance(request):
             logger.info(f"⏱️ GRACE PERIOD ACTIVATED for {user_id}: {AttendanceConfig.GRACE_PERIOD_DURATION}s")
             
             # ============================================================================
-            # ✅ UPDATE DATABASE
+            # ✅ UPDATE DATABASE: Penalty, percentage, engagement score, break_used
             # ============================================================================
             attendance_obj.is_currently_on_break = False
             attendance_obj.current_break_start_time = None
@@ -4184,10 +3808,9 @@ def pause_resume_attendance(request):
             attendance_obj.engagement_score = new_percentage
             
             # ✅ Update break_used flag in database
-            attendance_obj.break_used = session.get('break_used', False)
-            attendance_obj.total_break_time_used = int(session.get('total_break_time_used', 0))
+            attendance_obj.break_used = session['break_used']
             
-            # ✅ PRESERVE violation_start_times in database
+            # ✅ PRESERVE violation_start_times in database (don't reset)
             attendance_obj.violation_start_times = json.dumps(session.get('violation_start_times', {}))
             
             attendance_obj.save()
@@ -4196,8 +3819,9 @@ def pause_resume_attendance(request):
                 f"💾 DB UPDATED: User {user_id} - "
                 f"Penalty: {session['attendance_penalty']:.4f}%, "
                 f"Attendance: {new_percentage:.2f}%, "
-                f"break_used: {session.get('break_used', False)}, "
-                f"total_break_time_used: {session.get('total_break_time_used', 0)}s"
+                f"Engagement: {new_percentage:.2f}%, "
+                f"break_used: {session['break_used']}, "
+                f"Violation times preserved: {len(session.get('violation_start_times', {}))}"
             )
             
             # ✅ UPDATE EXTENDED DATA
@@ -4212,15 +3836,16 @@ def pause_resume_attendance(request):
             except Exception as e:
                 logger.error(f"Failed to save camera verification: {e}")
             
-            break_time_remaining = max(0, max_break_time - session.get('total_break_time_used', 0))
+            break_time_remaining = max(0, max_break_time - session['total_break_time_used'])
             break_exhausted = break_time_remaining <= 0
             
             logger.info(
                 f"✅ BREAK #{session['break_count']} ENDED for {user_id}:\n"
                 f"  - Duration: {break_duration_used:.1f}s\n"
-                f"  - Total Used: {session.get('total_break_time_used', 0)}s\n"
+                f"  - Total Used: {session['total_break_time_used']}s\n"
                 f"  - Remaining: {break_time_remaining}s\n"
-                f"  - break_used: {session.get('break_used', False)}\n"
+                f"  - break_used: {session['break_used']}\n"
+                f"  - Violation times preserved: {len(session.get('violation_start_times', {}))}\n"
                 f"  - Grace period active"
             )
             
@@ -4229,9 +3854,9 @@ def pause_resume_attendance(request):
                 'action': 'resumed',
                 'message': f'Break #{session["break_count"]} ended. Detection resumed.',
                 'break_time_remaining': break_time_remaining,
-                'total_break_time_used': session.get('total_break_time_used', 0),
+                'total_break_time_used': session['total_break_time_used'],
                 'max_break_time_allowed': max_break_time,
-                'break_count': session.get('break_count', 0),
+                'break_count': session['break_count'],
                 'break_used': session.get('break_used', False),
                 'is_on_break': False,
                 'can_take_more_breaks': not break_exhausted and break_time_remaining > 0,
@@ -4244,8 +3869,8 @@ def pause_resume_attendance(request):
                 # ✅ Break penalty information
                 'break_penalty_applied': break_penalty,
                 'break_penalty_percentage': f"{break_penalty:.4f}%",
-                'total_penalty': session.get('attendance_penalty', 0),
-                'total_penalty_percentage': f"{session.get('attendance_penalty', 0):.4f}%",
+                'total_penalty': session['attendance_penalty'],
+                'total_penalty_percentage': f"{session['attendance_penalty']:.4f}%",
                 'attendance_percentage': new_percentage,
                 'engagement_score': new_percentage,
                 'new_attendance_percentage': float(new_percentage),
@@ -4279,10 +3904,11 @@ def pause_resume_attendance(request):
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
     except Exception as e:
         logger.error(f"Error in pause_resume: {e}")
+        import traceback
         logger.error(traceback.format_exc())
         return JsonResponse({'success': False, 'error': 'Internal server error'}, status=500)
-
-
+        
+             
 # ==================== DETECT VIOLATIONS (SYNC - NO ASYNC) ====================
 
 # ==================== COMPLETE detect_violations FUNCTION ====================
@@ -5266,40 +4892,142 @@ def detect_violations(request):
 @csrf_exempt
 @require_http_methods(["POST"])
 def take_break(request):
-    """
-    ✅ FIXED: Handle break (legacy endpoint) with proper session restoration
-    """
+    """Handle break (legacy endpoint)"""
     try:
         data = json.loads(request.body)
         meeting_id = data.get("meeting_id")
         user_id = data.get("user_id")
         
         validate_session_data(meeting_id, user_id)
-        user_id = str(user_id)
         session_key = get_session_key(meeting_id, user_id)
         
         other_participants = [k for k in attendance_sessions.keys() 
                             if k.startswith(f"{meeting_id}_") and k != session_key]
         
-        # ✅ FIXED: Restore session from DB if not in memory
+        # if session_key not in attendance_sessions:
+        #     return JsonResponse({"status": "error", "message": "Session not active"}, status=403)
+
         if session_key not in attendance_sessions:
             logger.warning(f"⚠️ BREAK: Session not in memory for {user_id}, attempting to restore from DB...")
             
-            if not restore_session_from_db(meeting_id, user_id, session_key):
+            try:
+                db_session_restore = AttendanceSession.objects.filter(
+                    meeting_id=meeting_id,
+                    user_id=user_id,
+                    session_active=True
+                ).first()
+                
+                if db_session_restore:
+                    # Parse existing data from DB
+                    existing_violations = {'warnings': [], 'detections': [], 'continuous_removals': []}
+                    try:
+                        if db_session_restore.violations:
+                            existing_violations = json.loads(db_session_restore.violations) if isinstance(db_session_restore.violations, str) else db_session_restore.violations
+                    except:
+                        pass
+                    
+                    existing_identity_warnings = []
+                    try:
+                        if db_session_restore.identity_warnings:
+                            existing_identity_warnings = json.loads(db_session_restore.identity_warnings) if isinstance(db_session_restore.identity_warnings, str) else db_session_restore.identity_warnings
+                    except:
+                        pass
+                    
+                    existing_break_sessions = []
+                    try:
+                        if db_session_restore.break_sessions:
+                            existing_break_sessions = json.loads(db_session_restore.break_sessions) if isinstance(db_session_restore.break_sessions, str) else db_session_restore.break_sessions
+                    except:
+                        pass
+                    
+                    existing_violation_start_times = {}
+                    try:
+                        if db_session_restore.violation_start_times:
+                            existing_violation_start_times = json.loads(db_session_restore.violation_start_times) if isinstance(db_session_restore.violation_start_times, str) else db_session_restore.violation_start_times
+                    except:
+                        pass
+                    
+                    extended_data_restore = get_extended_tracking_data(db_session_restore)
+                    
+                    attendance_sessions[session_key] = {
+                        "meeting_id": meeting_id,
+                        "user_id": user_id,
+                        "session_active": True,
+                        "popup_count": db_session_restore.popup_count or 0,
+                        "warning_count": extended_data_restore.get('warning_count', 0),
+                        "detection_counts": extended_data_restore.get('detection_counts', 0),
+                        "total_detections": db_session_restore.total_detections or 0,
+                        "attendance_penalty": float(db_session_restore.attendance_penalty or 0),
+                        "violations": [],
+                        "violation_start_times": existing_violation_start_times,
+                        "break_used": db_session_restore.break_used or False,
+                        "break_count": db_session_restore.break_count or 0,
+                        "total_break_time_used": db_session_restore.total_break_time_used or 0,
+                        "max_break_time_allowed": db_session_restore.max_break_time_allowed or AttendanceConfig.MAX_TOTAL_BREAK_TIME,
+                        "is_currently_on_break": db_session_restore.is_currently_on_break or False,
+                        "current_break_start_time": db_session_restore.current_break_start_time.timestamp() if db_session_restore.current_break_start_time else None,
+                        "break_sessions": existing_break_sessions,
+                        "session_started_at": db_session_restore.session_start_time.timestamp() if db_session_restore.session_start_time else time.time(),
+                        "start_time": db_session_restore.session_start_time or timezone.now(),
+                        "last_face_movement_time": db_session_restore.last_face_movement_time or time.time(),
+                        "frame_processing_count": db_session_restore.frame_processing_count or 0,
+                        "inactivity_popup_shown": db_session_restore.inactivity_popup_shown or False,
+                        "last_popup_time": db_session_restore.last_popup_time or 0,
+                        "warning_phase_complete": extended_data_restore.get('warning_phase_complete', False),
+                        "last_detection_time": extended_data_restore.get('last_detection_time', 0),
+                        "total_detection_penalty_applied": extended_data_restore.get('total_detection_penalty', 0.0),
+                        "continuous_violation_start_time": extended_data_restore.get('continuous_violation_start_time'),
+                        "is_removed_from_meeting": extended_data_restore.get('is_removed_from_meeting', False),
+                        "removal_timestamp": extended_data_restore.get('removal_timestamp'),
+                        "removal_reason": extended_data_restore.get('removal_reason', ""),
+                        "behavior_messages": existing_violations,
+                        "camera_resume_expected": extended_data_restore.get('camera_resume_expected', False),
+                        "camera_resume_deadline": extended_data_restore.get('camera_resume_deadline'),
+                        "camera_confirmation_token": extended_data_restore.get('camera_confirmation_token'),
+                        "camera_verified_at": extended_data_restore.get('camera_verified_at'),
+                        "grace_period_active": extended_data_restore.get('grace_period_active', False),
+                        "grace_period_until": extended_data_restore.get('grace_period_until'),
+                        "identity_warning_count": db_session_restore.identity_warning_count or 0,
+                        "identity_consecutive_unknown_seconds": db_session_restore.identity_consecutive_unknown_seconds or 0,
+                        "identity_total_unknown_seconds": db_session_restore.identity_total_unknown_seconds or 0,
+                        "identity_is_removed": db_session_restore.identity_is_removed or False,
+                        "identity_can_rejoin": db_session_restore.identity_can_rejoin if db_session_restore.identity_can_rejoin is not None else True,
+                        "identity_warnings": existing_identity_warnings,
+                        "identity_last_check_time": db_session_restore.identity_last_check_time or time.time(),
+                        "identity_removal_count": db_session_restore.identity_removal_count or 0,
+                        "identity_total_warnings": db_session_restore.identity_total_warnings_issued or 0,
+                        "identity_current_cycle_warnings": db_session_restore.identity_current_cycle_warnings or 0,
+                        "behavior_removal_count": db_session_restore.behavior_removal_count or 0,
+                        "continuous_violation_removal_count": db_session_restore.continuous_violation_removal_count or 0,
+                        "violation_continuous_timer": None,
+                        "violation_current_type": None,
+                        "violation_popup_shown": False,
+                        "baseline_established": False,
+                        "baseline_ear": None,
+                        "baseline_yaw": None,
+                        "baseline_samples": 0,
+                        "face_detected": False,
+                    }
+                    logger.info(f"✅ BREAK: Session RESTORED from DB for {user_id}")
+                else:
+                    logger.error(f"❌ BREAK: No active session in DB for {user_id}")
+                    return JsonResponse({"status": "error", "message": "Session not active"}, status=403)
+                    
+            except Exception as e:
+                logger.error(f"❌ BREAK: Failed to restore session: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 return JsonResponse({"status": "error", "message": "Session not active"}, status=403)
 
         session = attendance_sessions[session_key]
-        
-        # Check if break already used (legacy single-break logic)
-        if session.get("break_used", False):
+        if session["break_used"]:
             return JsonResponse({"status": "error", "message": "Break already used"}, status=400)
 
         session["break_used"] = True
         session["session_active"] = False
-        session["attendance_penalty"] = session.get("attendance_penalty", 0) + AttendanceConfig.BREAK_PENALTY
+        session["attendance_penalty"] += AttendanceConfig.BREAK_PENALTY
         session["is_currently_on_break"] = True
         session["current_break_start_time"] = time.time()
-        session["break_count"] = session.get("break_count", 0) + 1
         
         logger.info(f"MULTI-USER: Legacy break started for {user_id}")
         
@@ -5310,7 +5038,6 @@ def take_break(request):
             attendance_obj.attendance_penalty = session["attendance_penalty"]
             attendance_obj.is_currently_on_break = True
             attendance_obj.current_break_start_time = session["current_break_start_time"]
-            attendance_obj.break_count = session["break_count"]
             attendance_obj.save()
         except AttendanceSession.DoesNotExist:
             pass
@@ -5318,37 +5045,34 @@ def take_break(request):
         def resume_after_break():
             time.sleep(AttendanceConfig.BREAK_DURATION)
             if session_key in attendance_sessions:
-                local_session = attendance_sessions[session_key]
-                current_time_local = time.time()
-                
-                local_session["session_active"] = True
-                local_session["last_face_movement_time"] = current_time_local
-                local_session["popup_count"] = 0
-                local_session["violations"] = []
-                # ✅ NOTE: We intentionally keep violation_start_times
-                local_session["is_currently_on_break"] = False
-                local_session["current_break_start_time"] = None
+                session["session_active"] = True
+                session["last_face_movement_time"] = time.time()
+                session["popup_count"] = 0
+                session["violations"] = []
+                session["violation_start_times"] = {}
+                session["is_currently_on_break"] = False
+                session["current_break_start_time"] = None
 
                 try:
                     attendance_obj = AttendanceSession.objects.get(meeting_id=meeting_id, user_id=user_id)
-                    
-                    # Calculate break time used
-                    local_session["total_break_time_used"] = local_session.get("total_break_time_used", 0) + AttendanceConfig.BREAK_DURATION
-                    
+                    current_time_local = time.time()
+                    session["is_currently_on_break"] = True
+                    session["current_break_start_time"] = session.get("current_break_start_time") or (current_time_local - AttendanceConfig.BREAK_DURATION)
+                    update_break_time_used(session, attendance_obj, current_time_local)
+                    session["is_currently_on_break"] = False
+                    session["current_break_start_time"] = None
                     attendance_obj.is_currently_on_break = False
                     attendance_obj.current_break_start_time = None
                     attendance_obj.session_active = True
-                    attendance_obj.total_break_time_used = int(local_session["total_break_time_used"])
                     attendance_obj.save()
                 except AttendanceSession.DoesNotExist:
                     pass
 
-                # Setup camera verification
-                verification_token = generate_camera_verification_token(meeting_id, user_id, current_time_local)
-                verification_deadline = current_time_local + AttendanceConfig.CAMERA_VERIFICATION_TIMEOUT
-                local_session["camera_resume_expected"] = True
-                local_session["camera_resume_deadline"] = verification_deadline
-                local_session["camera_confirmation_token"] = verification_token
+                verification_token = generate_camera_verification_token(meeting_id, user_id, time.time())
+                verification_deadline = time.time() + AttendanceConfig.CAMERA_VERIFICATION_TIMEOUT
+                session["camera_resume_expected"] = True
+                session["camera_resume_deadline"] = verification_deadline
+                session["camera_confirmation_token"] = verification_token
 
                 try:
                     attendance_obj = AttendanceSession.objects.get(meeting_id=meeting_id, user_id=user_id)
@@ -5361,20 +5085,25 @@ def take_break(request):
                     logger.error(f"Failed to save camera resume enforcement: {e}")
 
                 logger.info(f"Legacy break ended for {user_id}")
+                
+                try:
+                    attendance_obj = AttendanceSession.objects.get(meeting_id=meeting_id, user_id=user_id)
+                    attendance_obj.session_active = True
+                    attendance_obj.save()
+                except AttendanceSession.DoesNotExist:
+                    pass
 
         threading.Thread(target=resume_after_break, daemon=True).start()
 
         return JsonResponse({
             "status": "break_used",
             "message": f"Break granted for {AttendanceConfig.BREAK_DURATION} seconds (5 minutes)",
-            "break_duration": AttendanceConfig.BREAK_DURATION,
-            "break_count": session["break_count"],
         })
         
     except Exception as e:
         logger.error(f"Error in take_break: {e}")
-        logger.error(traceback.format_exc())
         return JsonResponse({"status": "error", "message": "Internal server error"}, status=500)
+
 
 # ==================== REST OF THE CODE CONTINUES AS BEFORE ====================
 # (get_attendance_status, start_attendance_tracking_api, stop_attendance_tracking_api, urlpatterns)
