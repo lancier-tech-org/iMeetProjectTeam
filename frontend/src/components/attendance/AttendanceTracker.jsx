@@ -114,7 +114,7 @@ const AttendanceConfig = {
 
 // ==================== API CONFIGURATION ====================
 // Use environment variable or fallback to development URL
-const API_BASE =  'https://192.168.48.201:8220';
+const API_BASE =  'https://api.lancieretech.com';
 
 // ==================== MAIN COMPONENT ====================
 const AttendanceTracker = ({
