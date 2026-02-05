@@ -43,7 +43,11 @@ spec:
             - name: FONTCONFIG_PATH
               value: /tmp/.fontconfig
             - name: LOG_DIR
-              value: /app/logs
+              value: /tmp/logs
+          volumeMounts:              
+            - name: tmp              
+              mountPath: /tmp       
+          resources:
           resources:
             requests:
               memory: "512Mi"
@@ -105,7 +109,7 @@ spec:
             - name: FONTCONFIG_PATH
               value: /tmp/.fontconfig
             - name: LOG_DIR
-              value: /app/logs
+              value: /tmp/logs
           resources:
             requests:
               memory: "256Mi"
@@ -113,6 +117,9 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
+      volumes:                      
+        - name: tmp                 
+          emptyDir: {}            
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

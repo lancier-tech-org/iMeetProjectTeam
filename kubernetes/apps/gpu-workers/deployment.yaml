@@ -60,13 +60,13 @@ spec:
             - name: NVIDIA_DRIVER_CAPABILITIES
               value: "compute,utility"
             - name: INSIGHTFACE_HOME
-              value: /app/models/.insightface
+              value: /tmp/.insightface
             - name: MPLCONFIGDIR
               value: /tmp/.matplotlib
             - name: FONTCONFIG_PATH
               value: /tmp/.fontconfig
             - name: LOG_DIR
-              value: /app/logs
+              value: /tmp/logs
           resources:
             requests:
               memory: "4Gi"
