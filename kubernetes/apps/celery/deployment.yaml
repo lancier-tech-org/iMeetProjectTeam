@@ -48,16 +48,12 @@ spec:
             - name: tmp              
               mountPath: /tmp       
           resources:
-          resources:
             requests:
               memory: "512Mi"
               cpu: "250m"
             limits:
               memory: "2Gi"
               cpu: "1000m"
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp
       volumes:
         - name: tmp
           emptyDir: {}
@@ -110,12 +106,15 @@ spec:
               value: /tmp/.fontconfig
             - name: LOG_DIR
               value: /tmp/logs
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
-              memory: "256Mi"
+              memory: "1Gi"
               cpu: "100m"
             limits:
-              memory: "512Mi"
+              memory: "2Gi"
               cpu: "500m"
       volumes:                      
         - name: tmp                 
