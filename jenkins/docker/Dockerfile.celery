@@ -45,7 +45,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONFAULTHANDLER=1 \
     APP_HOME=/app \
     PYTHONPATH=/app \
-    INSIGHTFACE_HOME=/tmp/.insightface
+    INSIGHTFACE_HOME=/tmp/.insightface \
+    MPLCONFIGDIR=/tmp/.matplotlib \
+    FONTCONFIG_PATH=/tmp/.fontconfig \
+    LOG_DIR=/app/logs
 
 WORKDIR $APP_HOME
 
@@ -76,11 +79,20 @@ COPY --from=deps /usr/local/bin /usr/local/bin
 COPY --chown=appuser:appgroup . .
 
 # Create necessary directories and log files
-RUN mkdir -p /app/logs /app/staticfiles /app/mediafiles && \
+RUN mkdir -p /app/logs /app/staticfiles /app/mediafiles \
+             /tmp/logs /tmp/.insightface /tmp/.matplotlib /tmp/.fontconfig && \
     touch /app/celery.log \
           /app/django.log \
           /app/notifications_debug.log && \
-    chown -R appuser:appgroup /app
+    chown -R appuser:appgroup /app && \
+    chmod -R 777 /tmp/logs /tmp/.insightface /tmp/.matplotlib /tmp/.fontconfig
+
+# Pre-download InsightFace models during build (prevents runtime download & errors)
+RUN python -c "import os; os.environ['INSIGHTFACE_HOME']='/tmp/.insightface'; \
+    import insightface; \
+    app = insightface.app.FaceAnalysis(providers=['CPUExecutionProvider']); \
+    app.prepare(ctx_id=0, det_size=(640,640))" 2>/dev/null || \
+    echo "⚠️  InsightFace model download skipped (will download on first use)"
 
 # Clean unnecessary files
 RUN rm -rf *.sql *.pem *.key *.crt .env .vscode .git __pycache__ tests/ docs/ *.md chromedriver* || true

@@ -10,7 +10,10 @@ FROM 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/gpu-worker-base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     APP_HOME=/app \
-    INSIGHTFACE_HOME=/app/models/.insightface
+    INSIGHTFACE_HOME=/app/models/.insightface \
+    MPLCONFIGDIR=/tmp/.matplotlib \
+    FONTCONFIG_PATH=/tmp/.fontconfig \
+    LOG_DIR=/app/logs
 
 WORKDIR $APP_HOME
 
@@ -24,7 +27,8 @@ RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || true && \
 COPY --chown=appuser:appgroup . .
 
 # Create necessary directories & log files
-RUN mkdir -p /app/logs /app/models /app/temp /app/mediafiles /app/staticfiles && \
+RUN mkdir -p /app/logs /app/models /app/temp /app/mediafiles /app/staticfiles \
+             /app/models/.insightface /tmp/.matplotlib /tmp/.fontconfig && \
     touch /app/attendance_verification.log \
           /app/django.log \
           /app/celery.log \
@@ -33,8 +37,16 @@ RUN mkdir -p /app/logs /app/models /app/temp /app/mediafiles /app/staticfiles &&
           /app/notifications_debug.log \
           /app/participants_debug.log \
           /app/recording_service_debug.log && \
-    chown -R appuser:appgroup /app
+    chown -R appuser:appgroup /app && \
+    chmod -R 755 /app/models/.insightface
 
+# Pre-download InsightFace models during build (GPU-enabled)
+RUN python -c "import os; os.environ['INSIGHTFACE_HOME']='/app/models/.insightface'; \
+    import insightface; \
+    app = insightface.app.FaceAnalysis(providers=['CUDAExecutionProvider','CPUExecutionProvider']); \
+    app.prepare(ctx_id=0, det_size=(640,640))" 2>/dev/null || \
+    echo "⚠️  InsightFace model download skipped (will download on first use)"
+    
 # Clean unnecessary files
 RUN rm -rf *.sql *.pem *.key *.crt .env .vscode .git __pycache__ tests/ docs/ *.md chromedriver* || true
 

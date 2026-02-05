@@ -38,6 +38,12 @@ spec:
           env:
             - name: INSIGHTFACE_HOME
               value: /tmp/.insightface
+            - name: MPLCONFIGDIR
+              value: /tmp/.matplotlib
+            - name: FONTCONFIG_PATH
+              value: /tmp/.fontconfig
+            - name: LOG_DIR
+              value: /app/logs
           resources:
             requests:
               memory: "512Mi"
@@ -77,7 +83,7 @@ spec:
     spec:
       containers:
         - name: celery-beat
-          image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/backend:latest
+          image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/celery-worker:latest
           imagePullPolicy: Always
           command:
             - celery
@@ -91,6 +97,15 @@ spec:
                 name: backend-config
             - secretRef:
                 name: backend-secrets
+          env:
+            - name: INSIGHTFACE_HOME
+              value: /tmp/.insightface
+            - name: MPLCONFIGDIR
+              value: /tmp/.matplotlib
+            - name: FONTCONFIG_PATH
+              value: /tmp/.fontconfig
+            - name: LOG_DIR
+              value: /app/logs
           resources:
             requests:
               memory: "256Mi"
