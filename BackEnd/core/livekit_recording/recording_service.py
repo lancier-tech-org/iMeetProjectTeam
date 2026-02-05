@@ -1909,6 +1909,10 @@ class FixedGoogleMeetRecorder:
         """Generate Redis key for recording state"""
         return f"recording:active:{meeting_id}"
     
+    def _get_pod_name(self) -> str:
+        """Get current Kubernetes pod name"""
+        return os.getenv('HOSTNAME', f'unknown-{os.getpid()}')
+    
     def _save_recording_to_redis(self, meeting_id: str, recording_data: dict) -> bool:
         """Save recording state to Redis"""
         try:
@@ -1916,6 +1920,7 @@ class FixedGoogleMeetRecorder:
                 logger.warning("Redis not available, using in-memory only")
                 return False
             
+            # Convert non-serializable objects to strings
             # Convert non-serializable objects to strings
             redis_data = {
                 "meeting_id": meeting_id,
@@ -1926,9 +1931,11 @@ class FixedGoogleMeetRecorder:
                 "target_fps": recording_data.get("target_fps", 20),
                 "is_paused": recording_data.get("is_paused", False),
                 "start_time": recording_data.get("start_time").isoformat() if recording_data.get("start_time") else "",
-                "status": "active"
+                "status": "active",
+                "pod_name": self._get_pod_name(),  # ✅ ADD THIS LINE
+                "worker_pid": os.getpid()          # ✅ ADD THIS LINE
             }
-            
+                        
             # Store with 6 hour TTL (recordings shouldn't last longer)
             redis_client.setex(
                 self._redis_key(meeting_id),
@@ -2328,24 +2335,42 @@ class FixedGoogleMeetRecorder:
         
         # If not found locally, check Redis (different pod scenario)
         redis_recording = self._get_recording_from_redis(meeting_id)
-        
+
         if not local_recording and not redis_recording:
             return {
                 "status": "error",
                 "message": "No active recording found",
                 "meeting_id": meeting_id
             }
-        
+
         # If we have local recording, use it (best case - same pod)
         if local_recording:
             recording_info = local_recording.copy()
             has_bot = True
         else:
-            # Different pod - we have Redis info but no bot instance
-            recording_info = redis_recording
-            has_bot = False
-            logger.warning(f"⚠️ Recording found in Redis but not locally - different pod scenario")
-        
+            # ✅ NEW: Check if it's actually a different pod
+            current_pod = self._get_pod_name()
+            redis_pod = redis_recording.get("pod_name", "unknown")
+            
+            if current_pod == redis_pod:
+                # Same pod, different worker - don't have bot instance but can't stop it
+                logger.warning(f"⚠️ Recording found in Redis on SAME POD but not in local memory")
+                logger.warning(f"   This is a worker restart/different worker scenario - cannot stop")
+                logger.warning(f"   Pod: {current_pod}, Worker PID: {os.getpid()}")
+                
+                return {
+                    "status": "error",
+                    "message": "Recording is on this pod but in different worker process. Wait for recording to finish or restart the pod.",
+                    "meeting_id": meeting_id,
+                    "note": "Worker restart detected - recording bot is still running but not accessible"
+                }
+            else:
+                # Actually different pod - we have Redis info but no bot instance
+                recording_info = redis_recording
+                has_bot = False
+                logger.warning(f"⚠️ Recording found on DIFFERENT POD")
+                logger.warning(f"   Current pod: {current_pod}, Recording pod: {redis_pod}")
+
         try:
             logger.info(f"🛑 Stopping FAST recording for meeting {meeting_id}")
             
