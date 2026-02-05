@@ -79,14 +79,19 @@ class SharedFaceModel:
             logger.info(f"🔹 Initializing Shared InsightFace Model: {FACE_MODEL_NAME}")
             logger.info(f"   Detection Size: {FACE_DETECTION_SIZE}")
             
+            # Get INSIGHTFACE_HOME from environment
+            insightface_root = os.environ.get('INSIGHTFACE_HOME', '/tmp/.insightface')
+            logger.info(f"🔹 Using InsightFace root directory: {insightface_root}")
+            
             self._app = FaceAnalysis(
                 name=FACE_MODEL_NAME,
+                root=insightface_root,  # ← ADD THIS
                 providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
             )
             
             # Prepare with detection size
             self._app.prepare(ctx_id=-1, det_size=FACE_DETECTION_SIZE)
-            
+
             logger.info("✅ Shared InsightFace Model initialized successfully")
             logger.info(f"   Model: {FACE_MODEL_NAME}")
             logger.info(f"   Providers: {self._app.det_model.session.get_providers()}")

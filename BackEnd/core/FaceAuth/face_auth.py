@@ -205,8 +205,13 @@ class FaceModel:
         if not self._initialized:
             logger.info(f"🔹 Initializing InsightFace model: {FACE_MODEL_NAME}...")
             try:
+                # Get INSIGHTFACE_HOME from environment
+                insightface_root = os.environ.get('INSIGHTFACE_HOME', '/tmp/.insightface')
+                logger.info(f"🔹 Using InsightFace root directory: {insightface_root}")
+                
                 self.app = FaceAnalysis(
                     name=FACE_MODEL_NAME,
+                    root=insightface_root,  # ← ADD THIS
                     providers=['CPUExecutionProvider']
                 )
                 self.app.prepare(ctx_id=-1, det_size=FACE_DETECTION_SIZE)
