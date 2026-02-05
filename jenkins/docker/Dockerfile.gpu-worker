@@ -9,7 +9,8 @@ FROM 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/gpu-worker-base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    APP_HOME=/app
+    APP_HOME=/app \
+    INSIGHTFACE_HOME=/app/models/.insightface
 
 WORKDIR $APP_HOME
 

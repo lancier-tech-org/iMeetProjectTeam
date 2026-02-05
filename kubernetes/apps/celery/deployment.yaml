@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: celery-worker
-          image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/backend:latest
+          image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/celery-worker:latest
           imagePullPolicy: Always
           command:
             - celery
@@ -35,6 +35,9 @@ spec:
                 name: backend-config
             - secretRef:
                 name: backend-secrets
+          env:
+            - name: INSIGHTFACE_HOME
+              value: /tmp/.insightface
           resources:
             requests:
               memory: "512Mi"

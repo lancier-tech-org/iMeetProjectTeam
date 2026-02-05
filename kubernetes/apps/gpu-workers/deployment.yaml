@@ -59,6 +59,8 @@ spec:
               value: "all"
             - name: NVIDIA_DRIVER_CAPABILITIES
               value: "compute,utility"
+            - name: INSIGHTFACE_HOME
+              value: /app/models/.insightface
           resources:
             requests:
               memory: "4Gi"
@@ -87,5 +89,7 @@ spec:
             medium: Memory
             sizeLimit: 2Gi
       securityContext:
-        runAsNonRoot: false
-        runAsUser: 0
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
