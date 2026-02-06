@@ -113,8 +113,7 @@ const AttendanceConfig = {
 };
 
 // ==================== API CONFIGURATION ====================
-// Use environment variable or fallback to development URL
-const API_BASE =  'https://api.lancieretech.com';
+const API_BASE = 'https://api.lancieretech.com';
 
 // ==================== MAIN COMPONENT ====================
 const AttendanceTracker = ({
@@ -133,7 +132,7 @@ const AttendanceTracker = ({
   isCoHost = false,
   effectiveRole = "participant",
 }) => {
-  
+
   // ==================== REFS ====================
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -150,8 +149,8 @@ const AttendanceTracker = ({
   const gracePeriodRef = useRef({ active: false, until: 0 });
   const cameraPromptTimerRef = useRef(null);
   const syncIntervalRef = useRef(null);
-  
-  // ✅ FIXED: Refs for state synchronization in async callbacks
+
+  // ✅ Refs for state synchronization in async callbacks
   const isOnBreakRef = useRef(false);
   const isTrackingRef = useRef(false);
   const isSessionActiveRef = useRef(false);
@@ -159,7 +158,7 @@ const AttendanceTracker = ({
   const currentTrackingModeRef = useRef("participant");
   const cameraEnabledRef = useRef(propCameraEnabled);
 
-  // ✅ FIXED: Function refs to avoid stale closures
+  // ✅ Function refs to avoid stale closures
   const handleEndBreakRef = useRef(null);
   const captureAndAnalyzeRef = useRef(null);
 
@@ -198,7 +197,7 @@ const AttendanceTracker = ({
 
   // ==================== VIOLATION STATE ====================
   const [currentViolations, setCurrentViolations] = useState([]);
-  
+
   // ==================== MODAL STATE ====================
   const [showTerminationPopup, setShowTerminationPopup] = useState(false);
   const [terminationMessage, setTerminationMessage] = useState("");
@@ -222,7 +221,7 @@ const AttendanceTracker = ({
   // ==================== WARNING SYSTEM STATE ====================
   const [warningCount, setWarningCount] = useState(0);
   const [warningsExhausted, setWarningsExhausted] = useState(false);
-  
+
   // ==================== IDENTITY STATES ====================
   const [authWarningCount, setAuthWarningCount] = useState(0);
   const [isAuthBlocked, setIsAuthBlocked] = useState(false);
@@ -230,6 +229,7 @@ const AttendanceTracker = ({
   // ==================== BREAK MANAGEMENT STATE ====================
   const [isOnBreak, setIsOnBreak] = useState(false);
   const [breakTimeLeft, setBreakTimeLeft] = useState(0);
+  const breakTimeLeftRef = useRef(0);
   const [totalBreakTimeUsed, setTotalBreakTimeUsed] = useState(0);
   const [breakTimeRemaining, setBreakTimeRemaining] = useState(300);
   const [showSuccessPopup, setShowSuccessPopup] = useState(true);
@@ -269,6 +269,69 @@ const AttendanceTracker = ({
   useEffect(() => {
     cameraEnabledRef.current = cameraEnabled;
   }, [cameraEnabled]);
+
+  useEffect(() => {
+    breakTimeLeftRef.current = breakTimeLeft;
+  }, [breakTimeLeft]);
+
+  // ====================================================================
+  // ✅ FIX: CENTRALIZED BREAK GUARD - Single source of truth for whether
+  // camera can be enabled. Every code path that enables camera MUST call
+  // this first. This prevents ALL race conditions.
+  // ====================================================================
+  const canEnableCamera = useCallback(() => {
+    if (isOnBreakRef.current) {
+      console.log("[BREAK GUARD] ❌ Camera enable BLOCKED - participant is on break");
+      return false;
+    }
+    if (isSessionTerminatedRef.current) {
+      console.log("[BREAK GUARD] ❌ Camera enable BLOCKED - session terminated");
+      return false;
+    }
+    if (breakProcessingRef.current) {
+      console.log("[BREAK GUARD] ❌ Camera enable BLOCKED - break processing in progress");
+      return false;
+    }
+    return true;
+  }, []);
+
+  // ✅ FIX: Safe camera enable helper - wraps all camera enable operations
+  const safeCameraEnable = useCallback((source = "unknown") => {
+    if (!canEnableCamera()) {
+      console.log(`[SAFE CAMERA] ❌ Blocked camera enable from source: ${source}`);
+      return false;
+    }
+    console.log(`[SAFE CAMERA] ✅ Allowing camera enable from source: ${source}`);
+    return true;
+  }, [canEnableCamera]);
+
+  // ✅ FIX: Force disable camera during break - ensures camera stays off
+  const forceDisableCameraDuringBreak = useCallback(() => {
+    if (!isOnBreakRef.current) return;
+
+    console.log("[BREAK GUARD] 🔒 Force-disabling camera during break");
+
+    setCameraEnabled(false);
+    cameraEnabledRef.current = false;
+
+    // Stop tracking interval
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    setIsTracking(false);
+    isTrackingRef.current = false;
+
+    // Notify parent to disable camera
+    if (onCameraToggle) {
+      try {
+        onCameraToggle(false);
+      } catch (e) {
+        console.warn("[BREAK GUARD] Failed to notify parent about camera disable:", e);
+      }
+    }
+  }, [onCameraToggle]);
 
   // ==================== ROLE-BASED TRACKING MODE ====================
   const determineTrackingMode = useCallback(() => {
@@ -331,9 +394,9 @@ const AttendanceTracker = ({
       const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
       const url = `${API_BASE}/api/attendance${cleanEndpoint}`.replace(/([^:]\/)\/+/g, "$1");
       const httpMethod = method.toUpperCase();
-      
+
       console.log(`[API CALL] ${httpMethod} ${url}`);
-      
+
       const options = {
         method: httpMethod,
         headers: {
@@ -354,17 +417,15 @@ const AttendanceTracker = ({
 
       try {
         const response = await fetch(url, options);
-        
-        // Detect HTML response (nginx misconfiguration)
+
         const contentType = response.headers.get('content-type');
         if (contentType && contentType.includes('text/html')) {
           throw new Error('Server returned HTML instead of JSON - check nginx config');
         }
-        
+
         if (!response.ok) {
           const errorText = await response.text();
           const error = new Error(`HTTP ${response.status}: ${errorText.substring(0, 100)}`);
-          // ✅ FIXED: Parse error response if it's JSON
           try {
             error.data = JSON.parse(errorText);
           } catch {
@@ -372,8 +433,7 @@ const AttendanceTracker = ({
           }
           throw error;
         }
-        
-        // ✅ FIXED: Wrap JSON parsing in try-catch
+
         try {
           return await response.json();
         } catch (parseError) {
@@ -391,7 +451,7 @@ const AttendanceTracker = ({
   const showViolationPopup = useCallback(
     (message, type = "warning", force = false) => {
       if (!mountedRef.current) return;
-      
+
       if (
         currentTrackingModeRef.current !== "participant" &&
         type !== "info" &&
@@ -400,10 +460,10 @@ const AttendanceTracker = ({
         return;
       }
 
-      const isTermination = 
-        type === "error" && 
-        (message.toLowerCase().includes("terminated") || 
-         message.toLowerCase().includes("blocked") || 
+      const isTermination =
+        type === "error" &&
+        (message.toLowerCase().includes("terminated") ||
+         message.toLowerCase().includes("blocked") ||
          message.toLowerCase().includes("removed"));
 
       if (isTermination) {
@@ -411,10 +471,10 @@ const AttendanceTracker = ({
         setShowTerminationPopup(true);
       } else {
         if (type === "success" && !force) {
-           if (!showSuccessPopup) return;
-           setShowSuccessPopup(false);
+          if (!showSuccessPopup) return;
+          setShowSuccessPopup(false);
         }
-        
+
         let toastType = type;
         if (type === "violation") toastType = "warning";
 
@@ -432,7 +492,7 @@ const AttendanceTracker = ({
   const handleSessionTermination = useCallback(
     async (reason = "violations", message = "Session ended due to violations") => {
       if (currentTrackingModeRef.current !== "participant") return;
-      if (isSessionTerminatedRef.current) return; // Prevent double termination
+      if (isSessionTerminatedRef.current) return;
 
       console.log("[TERMINATION] Starting termination process:", reason);
 
@@ -444,13 +504,11 @@ const AttendanceTracker = ({
       setIsTerminating(true);
       setShowCameraEnablePrompt(false);
 
-      // Update refs immediately
       isSessionTerminatedRef.current = true;
       isSessionActiveRef.current = false;
       isTrackingRef.current = false;
 
       try {
-        // Clear all intervals and timers
         if (intervalRef.current) {
           clearInterval(intervalRef.current);
           intervalRef.current = null;
@@ -476,7 +534,6 @@ const AttendanceTracker = ({
           syncIntervalRef.current = null;
         }
 
-        // Stop camera stream
         if (streamRef.current) {
           streamRef.current.getTracks().forEach((track) => {
             track.stop();
@@ -490,7 +547,6 @@ const AttendanceTracker = ({
 
         setVideoReady(false);
 
-        // Notify backend
         if (meetingId && userId) {
           try {
             await apiCall("/stop/", "POST", {
@@ -509,7 +565,6 @@ const AttendanceTracker = ({
 
       showViolationPopup(message, "error");
 
-      // Countdown and callback
       setTerminationCountdown(3);
       const countdownInterval = setInterval(() => {
         setTerminationCountdown((prev) => {
@@ -542,6 +597,12 @@ const AttendanceTracker = ({
       return false;
     }
 
+    // ✅ FIX: Block camera init during break
+    if (isOnBreakRef.current) {
+      console.log("[CAMERA] ❌ Init blocked - participant is on break");
+      return false;
+    }
+
     try {
       setCameraError(null);
       setCameraInitStatus("initializing");
@@ -565,6 +626,13 @@ const AttendanceTracker = ({
 
       if (!stream) {
         throw new Error("Failed to get camera stream");
+      }
+
+      // ✅ FIX: Double-check break state after async getUserMedia
+      if (isOnBreakRef.current) {
+        console.log("[CAMERA] ❌ Break started during camera init - stopping stream");
+        stream.getTracks().forEach((track) => track.stop());
+        return false;
       }
 
       streamRef.current = stream;
@@ -604,6 +672,20 @@ const AttendanceTracker = ({
         });
       }
 
+      // ✅ FIX: Final break check after all async operations
+      if (isOnBreakRef.current) {
+        console.log("[CAMERA] ❌ Break started during video setup - cleaning up");
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+        }
+        setVideoReady(false);
+        return false;
+      }
+
       if (mountedRef.current && !isSessionTerminatedRef.current) {
         setVideoReady(true);
         setCameraInitStatus("ready");
@@ -626,6 +708,12 @@ const AttendanceTracker = ({
     async (maxRetries = 5, retryDelay = 500) => {
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         if (!mountedRef.current || isSessionTerminatedRef.current) return false;
+
+        // ✅ FIX: Abort verification if break started during retries
+        if (isOnBreakRef.current) {
+          console.log("[VERIFY CAMERA] ❌ Aborted - participant went on break");
+          return false;
+        }
 
         if (!videoRef.current || !streamRef.current) {
           if (attempt < maxRetries) {
@@ -719,7 +807,7 @@ const AttendanceTracker = ({
           return true;
         } else {
           const errorMsg = response.error || "";
-          if (errorMsg.includes("No camera verification expected") || 
+          if (errorMsg.includes("No camera verification expected") ||
               errorMsg.includes("no session") ||
               errorMsg.includes("session not found")) {
             console.log("[VERIFY CAMERA] Backend doesn't expect verification - OK to continue");
@@ -730,7 +818,7 @@ const AttendanceTracker = ({
         }
       } catch (error) {
         const errorMsg = error.message || "";
-        
+
         if (errorMsg.includes("400") ||
             errorMsg.includes("No camera verification expected") ||
             errorMsg.includes("session not found") ||
@@ -740,7 +828,7 @@ const AttendanceTracker = ({
         }
 
         console.error("[VERIFY CAMERA] ❌ Error:", error.message);
-        return true; // Non-blocking
+        return true;
       }
     },
     [meetingId, userId, apiCall]
@@ -752,50 +840,56 @@ const AttendanceTracker = ({
       if (!response || !mountedRef.current) return;
       if (isSessionTerminatedRef.current) return;
 
+      // ✅ FIX: Ignore analysis responses that arrive during break
+      if (isOnBreakRef.current) {
+        console.log("[ANALYSIS] ⚠️ Ignoring analysis response - participant is on break");
+        return;
+      }
+
       // ============================================================
       // 1. IDENTITY VERIFICATION
       // ============================================================
-      
+
       if (response.identity_warning_count !== undefined) {
         setAuthWarningCount(response.identity_warning_count);
-        
+
         if (response.identity_warning_count > 0) {
-           setFaceAuthStatus("unauthorized");
+          setFaceAuthStatus("unauthorized");
         } else if (response.identity_verified) {
-           setFaceAuthStatus("verified");
+          setFaceAuthStatus("verified");
         }
       }
 
       if (response.identity_popup && response.identity_popup.trim() !== "") {
-         triggerToast(response.identity_popup, "error");
+        triggerToast(response.identity_popup, "error");
       }
 
-      if (response.identity_is_removed === true || 
+      if (response.identity_is_removed === true ||
           (response.status === "removed_from_meeting" && response.removal_type === "identity_verification")) {
-         setIsAuthBlocked(true);
-         isAuthBlockedRef.current = true;
-         handleSessionTermination(
-            "identity_verification_failure",
-            response.message || "🚫 Session terminated: Identity verification failed 3 times."
-         );
-         return;
+        setIsAuthBlocked(true);
+        isAuthBlockedRef.current = true;
+        handleSessionTermination(
+          "identity_verification_failure",
+          response.message || "🚫 Session terminated: Identity verification failed 3 times."
+        );
+        return;
       }
 
       // ============================================================
-      // 2. BEHAVIORAL ANALYSIS 
+      // 2. BEHAVIORAL ANALYSIS
       // ============================================================
 
       if (response.popup && response.popup.trim() !== "") {
         let popupType = "warning";
-        
+
         if (response.popup.includes("Detection")) {
-             popupType = "error";
+          popupType = "error";
         } else if (response.popup.includes("Warning")) {
-             popupType = "warning";
+          popupType = "warning";
         } else if (response.popup.includes("Inactivity")) {
-             popupType = "info";
+          popupType = "info";
         }
-        
+
         triggerToast(response.popup, popupType);
       }
 
@@ -865,7 +959,13 @@ const AttendanceTracker = ({
     if (!mountedRef.current) return;
     if (isSessionTerminatedRef.current) return;
     if (!cameraEnabledRef.current) return;
-    if (isOnBreakRef.current) return;
+
+    // ✅ FIX: Explicit break check at the very top
+    if (isOnBreakRef.current) {
+      console.log("[CAPTURE] ⚠️ Skipping frame capture - participant is on break");
+      return;
+    }
+
     if (!isSessionActiveRef.current || !videoReady || !isTrackingRef.current) return;
     if (!videoRef.current || !canvasRef.current) return;
 
@@ -883,6 +983,12 @@ const AttendanceTracker = ({
 
     try {
       setProcessingFrame(true);
+
+      // ✅ FIX: Re-check break state before making API call
+      if (isOnBreakRef.current) {
+        console.log("[CAPTURE] ⚠️ Break started during frame prep - aborting");
+        return;
+      }
 
       const context = canvas.getContext("2d");
       const maxWidth = 640;
@@ -955,7 +1061,7 @@ const AttendanceTracker = ({
     handleSessionTermination,
   ]);
 
-  // ✅ FIXED: Update the ref whenever captureAndAnalyze changes
+  // Update the ref whenever captureAndAnalyze changes
   useEffect(() => {
     captureAndAnalyzeRef.current = captureAndAnalyze;
   }, [captureAndAnalyze]);
@@ -964,7 +1070,6 @@ const AttendanceTracker = ({
   const handleEndBreak = useCallback(async (isAutoExpire = false) => {
     if (currentTrackingModeRef.current !== "participant") return;
 
-    // Guard against duplicate calls
     if (breakProcessingRef.current) {
       console.log("[END BREAK] Already processing, skipping...");
       return;
@@ -983,9 +1088,9 @@ const AttendanceTracker = ({
     }
     setIsProcessingBreak(true);
 
-    console.log("[END BREAK] Starting end break process...", { 
-      isAutoExpire, 
-      cameraWasEnabled 
+    console.log("[END BREAK] Starting end break process...", {
+      isAutoExpire,
+      cameraWasEnabled
     });
 
     let backendResponse = null;
@@ -1000,7 +1105,7 @@ const AttendanceTracker = ({
 
       // STEP 2: Check backend status FIRST
       let skipResumeApi = false;
-      
+
       try {
         const statusResponse = await apiCall(
           `/status/?meeting_id=${meetingId}&user_id=${userId}`,
@@ -1012,18 +1117,17 @@ const AttendanceTracker = ({
           break_time_remaining: statusResponse.break_time_remaining,
         });
 
-        // If backend says NOT on break, skip the resume API call
         if (!statusResponse.is_on_break) {
           console.log("[END BREAK] Backend says not on break - syncing state only");
           skipResumeApi = true;
-          
+
           setIsOnBreak(false);
           isOnBreakRef.current = false;
           setBreakTimeLeft(0);
           setBreakStartedAt(null);
           setTotalBreakTimeUsed(statusResponse.total_break_time_used || 0);
           setBreakTimeRemaining(statusResponse.break_time_remaining || 0);
-          
+
           backendResponse = {
             success: true,
             is_on_break: false,
@@ -1062,10 +1166,9 @@ const AttendanceTracker = ({
         } catch (resumeError) {
           const errorMessage = resumeError.message || "";
           const errorData = resumeError.data || {};
-          
+
           console.log("[END BREAK] Resume error:", errorMessage);
-          
-          // Handle "Not currently on break" gracefully
+
           if (
             errorMessage.includes("400") ||
             errorMessage.includes("Not currently on break") ||
@@ -1074,45 +1177,52 @@ const AttendanceTracker = ({
             errorData.error?.includes("Not currently on break")
           ) {
             console.log("[END BREAK] ✅ Backend says not on break - this is OK, syncing state");
-            
+
             setIsOnBreak(false);
             isOnBreakRef.current = false;
             setBreakTimeLeft(0);
             setBreakStartedAt(null);
-            
+
             if (errorData.break_time_remaining !== undefined) {
               setBreakTimeRemaining(errorData.break_time_remaining);
             }
             if (errorData.total_break_time_used !== undefined) {
               setTotalBreakTimeUsed(errorData.total_break_time_used);
             }
-            
+
             backendResponse = {
               success: true,
               is_on_break: false,
               camera_verification_required: false,
             };
-            
+
             if (!isAutoExpire) {
               showViolationPopup("Break already ended - resuming tracking", "info");
             }
           } else {
             console.error("[END BREAK] ❌ Resume API error:", resumeError);
             showViolationPopup(`Failed to end break: ${errorMessage}`, "error");
-            return; // Exit on real error
+            return;
           }
         }
       }
 
-      // Check session validity
       if (isSessionTerminatedRef.current) {
         return;
+      }
+
+      // ✅ FIX: Verify break is truly ended before re-enabling camera
+      // At this point isOnBreakRef.current MUST be false
+      if (isOnBreakRef.current) {
+        console.log("[END BREAK] ⚠️ Break ref still true after resume - forcing false");
+        setIsOnBreak(false);
+        isOnBreakRef.current = false;
       }
 
       // STEP 4: Re-enable camera if it was enabled before
       if (cameraWasEnabled) {
         console.log("[END BREAK] 📷 Re-enabling camera...");
-        
+
         if (!onCameraToggle) {
           showViolationPopup("Cannot control camera - please enable manually", "warning");
         } else {
@@ -1137,7 +1247,6 @@ const AttendanceTracker = ({
             showViolationPopup("Failed to enable camera - please enable manually", "warning");
           }
 
-          // Wait for camera
           const waitTime = isAutoExpire ? 4000 : 2000;
           await new Promise((resolve) => setTimeout(resolve, waitTime));
 
@@ -1151,9 +1260,8 @@ const AttendanceTracker = ({
             showViolationPopup("⚠️ Camera may not be ready - check manually", "warning");
           }
 
-          // Camera verification (non-blocking)
-          if (backendResponse?.camera_verification_required && 
-              cameraVerificationTokenRef.current && 
+          if (backendResponse?.camera_verification_required &&
+              cameraVerificationTokenRef.current &&
               !isAutoExpire) {
             try {
               await verifyWithBackend(cameraVerificationTokenRef.current);
@@ -1176,8 +1284,8 @@ const AttendanceTracker = ({
         }
 
         intervalRef.current = setInterval(() => {
-          if (mountedRef.current && 
-              !isSessionTerminatedRef.current && 
+          if (mountedRef.current &&
+              !isSessionTerminatedRef.current &&
               !isOnBreakRef.current &&
               captureAndAnalyzeRef.current) {
             captureAndAnalyzeRef.current();
@@ -1185,8 +1293,8 @@ const AttendanceTracker = ({
         }, AttendanceConfig.DETECTION_INTERVAL);
 
         setTimeout(() => {
-          if (mountedRef.current && 
-              !isSessionTerminatedRef.current && 
+          if (mountedRef.current &&
+              !isSessionTerminatedRef.current &&
               !isOnBreakRef.current &&
               captureAndAnalyzeRef.current) {
             captureAndAnalyzeRef.current();
@@ -1194,7 +1302,6 @@ const AttendanceTracker = ({
         }, 1000);
       }
 
-      // Success message
       const endType = isAutoExpire ? "⏰ Auto-completed" : "✋ Manually ended";
       showViolationPopup(`✅ Break ${endType} - Tracking resumed!`, "success");
 
@@ -1202,13 +1309,11 @@ const AttendanceTracker = ({
     } catch (error) {
       console.error("[END BREAK] ❌ Unexpected error:", error);
       showViolationPopup(`Error: ${error.message}`, "error");
-      
-      // Reset state
+
       setIsOnBreak(false);
       isOnBreakRef.current = false;
       setBreakTimeLeft(0);
     } finally {
-      // ✅ FIXED: Always reset processing flags
       breakProcessingRef.current = false;
       autoResumeInProgressRef.current = false;
       setIsProcessingBreak(false);
@@ -1223,7 +1328,7 @@ const AttendanceTracker = ({
     verifyWithBackend,
   ]);
 
-  // ✅ FIXED: Update the ref whenever handleEndBreak changes
+  // Update the ref whenever handleEndBreak changes
   useEffect(() => {
     handleEndBreakRef.current = handleEndBreak;
   }, [handleEndBreak]);
@@ -1231,7 +1336,6 @@ const AttendanceTracker = ({
   // ==================== BREAK TIMER ====================
   const startBreakTimer = useCallback(
     (duration) => {
-      // Clear any existing timer first
       if (breakTimerRef.current) {
         clearInterval(breakTimerRef.current);
         breakTimerRef.current = null;
@@ -1246,42 +1350,34 @@ const AttendanceTracker = ({
         setBreakTimeLeft((prevTime) => {
           const newTime = prevTime - 1;
 
-          // Log every 30 seconds
           if (newTime > 0 && newTime % 30 === 0) {
             console.log(`[BREAK TIMER] ${newTime} seconds remaining`);
           }
 
-          // Warning at 60 seconds
           if (newTime === 60) {
             showViolationPopup("⚠️ 1 minute remaining on your break", "warning");
           }
 
-          // Warning at 30 seconds
           if (newTime === 30) {
             showViolationPopup("⚠️ 30 seconds remaining on your break", "warning");
           }
 
-          // Warning at 10 seconds
           if (newTime === 10) {
             showViolationPopup("⚠️ 10 seconds remaining! Break will end soon.", "warning");
           }
 
-          // Countdown from 5 to 1
           if (newTime >= 1 && newTime <= 5) {
             showViolationPopup(`⏱️ ${newTime}...`, "warning");
           }
 
-          // AUTO-EXPIRE at 0
           if (newTime <= 0) {
             console.log("[BREAK TIMER] ⏰ Timer expired! Auto-ending break...");
 
-            // Clear the timer immediately
             if (breakTimerRef.current) {
               clearInterval(breakTimerRef.current);
               breakTimerRef.current = null;
             }
 
-            // ✅ FIXED: Use ref to get latest function and prevent stale closure
             if (
               mountedRef.current &&
               !isSessionTerminatedRef.current &&
@@ -1289,10 +1385,9 @@ const AttendanceTracker = ({
               !autoResumeInProgressRef.current
             ) {
               autoResumeInProgressRef.current = true;
-              
+
               showViolationPopup("⏰ Break time expired! Resuming tracking...", "info");
 
-              // Use setTimeout to avoid state update during render
               setTimeout(() => {
                 if (handleEndBreakRef.current) {
                   handleEndBreakRef.current(true).finally(() => {
@@ -1339,37 +1434,82 @@ const AttendanceTracker = ({
         setTotalBreakTimeUsed(backendTotalUsed);
       }
 
-      // Sync break state
+      // ====================================================================
+      // ✅ FIX: Sync break state with much stricter guards
+      // Only act on break state changes when NOT currently processing a break
+      // and when there's no auto-resume in progress
+      // ====================================================================
       if (isOnBreakRef.current !== backendOnBreak) {
-        setIsOnBreak(backendOnBreak);
-        isOnBreakRef.current = backendOnBreak;
 
-        if (!backendOnBreak && breakTimerRef.current) {
-          clearInterval(breakTimerRef.current);
-          breakTimerRef.current = null;
+        // ✅ FIX: If we're currently processing break start/end, skip sync
+        if (breakProcessingRef.current || autoResumeInProgressRef.current) {
+          console.log("[SYNC] ⚠️ Break processing in progress - skipping break state sync");
+          return;
+        }
+
+        // Case 1: Backend says NOT on break, but frontend thinks we are
+        if (!backendOnBreak && isOnBreakRef.current) {
+          console.log("[SYNC] Backend says break ended - syncing state");
+
+          // ✅ FIX: Only sync if the break timer has actually expired or is very close
+          // This prevents premature camera re-enable from a single bad API response
+          const currentBreakTimeLeft = breakTimeLeftRef.current;
+          
+          if (currentBreakTimeLeft > 5) {
+            // Break timer still has significant time - this might be a backend glitch
+            console.log(`[SYNC] ⚠️ Break timer still has ${currentBreakTimeLeft}s - ignoring backend desync (possible glitch)`);
+            return;
+          }
+
+          // Break timer is at or near 0, safe to sync
+          setIsOnBreak(false);
+          isOnBreakRef.current = false;
+
+          if (breakTimerRef.current) {
+            clearInterval(breakTimerRef.current);
+            breakTimerRef.current = null;
+          }
           setBreakTimeLeft(0);
           setBreakStartedAt(null);
           breakProcessingRef.current = false;
           autoResumeInProgressRef.current = false;
           setIsProcessingBreak(false);
 
+          // ✅ FIX: Only re-enable camera AFTER confirming break is truly over
           if (cameraWasEnabledBeforeBreakRef.current && onCameraToggle) {
+            console.log("[SYNC] Re-enabling camera after confirmed break end");
             onCameraToggle(true);
             setCameraEnabled(true);
             cameraEnabledRef.current = true;
           }
-        } else if (
-          backendOnBreak &&
-          !breakTimerRef.current &&
-          !breakProcessingRef.current
-        ) {
-          const remainingTime = Math.max(0, backendBreakTimeRemaining);
-          if (remainingTime > 0) {
-            setBreakTimeLeft(remainingTime);
-            startBreakTimer(remainingTime);
+
+        // Case 2: Backend says ON break, but frontend doesn't think so
+        } else if (backendOnBreak && !isOnBreakRef.current) {
+          // ✅ FIX: Backend says we're on break - force break state
+          console.log("[SYNC] Backend says on break - forcing break state");
+
+          setIsOnBreak(true);
+          isOnBreakRef.current = true;
+
+          // Force disable camera
+          forceDisableCameraDuringBreak();
+
+          if (!breakTimerRef.current && !breakProcessingRef.current) {
+            const remainingTime = Math.max(0, backendBreakTimeRemaining);
+            if (remainingTime > 0) {
+              setBreakTimeLeft(remainingTime);
+              startBreakTimer(remainingTime);
+            }
           }
         }
       }
+
+      // ✅ FIX: Even when break states match, if we're on break, ensure camera is off
+      if (isOnBreakRef.current && (cameraEnabledRef.current || isTrackingRef.current)) {
+        console.log("[SYNC] 🔒 Break active but camera/tracking still on - forcing disable");
+        forceDisableCameraDuringBreak();
+      }
+
     } catch (error) {
       console.warn("[SYNC] Backend sync failed:", error.message);
     }
@@ -1382,6 +1522,7 @@ const AttendanceTracker = ({
     onCameraToggle,
     startBreakTimer,
     apiCall,
+    forceDisableCameraDuringBreak,
   ]);
 
   // ==================== TAKE BREAK ====================
@@ -1412,6 +1553,40 @@ const AttendanceTracker = ({
       cameraWasEnabledBeforeBreakRef.current = cameraEnabledRef.current;
       console.log("[START BREAK] Camera was enabled before break:", cameraWasEnabledBeforeBreakRef.current);
 
+      // ✅ FIX: Disable camera IMMEDIATELY before even calling backend
+      // This prevents any race conditions where camera could re-enable
+      if (cameraEnabledRef.current && onCameraToggle) {
+        try {
+          console.log("[START BREAK] 🔒 Immediately disabling camera before API call");
+          onCameraToggle(false);
+          setCameraEnabled(false);
+          cameraEnabledRef.current = false;
+        } catch (cameraError) {
+          console.error("[START BREAK] Failed to disable camera:", cameraError);
+        }
+      }
+
+      // ✅ FIX: Stop tracking interval IMMEDIATELY
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      setIsTracking(false);
+      isTrackingRef.current = false;
+
+      // ✅ FIX: Set break state IMMEDIATELY (before API call)
+      // This ensures all guards see break=true even if API call takes time
+      setIsOnBreak(true);
+      isOnBreakRef.current = true;
+
+      // Clear camera prompt
+      setShowCameraEnablePrompt(false);
+      setCameraPromptDismissed(false);
+      if (cameraPromptTimerRef.current) {
+        clearTimeout(cameraPromptTimerRef.current);
+        cameraPromptTimerRef.current = null;
+      }
+
       // Call backend to start break
       const response = await apiCall("/pause-resume/", "POST", {
         meeting_id: meetingId,
@@ -1422,39 +1597,10 @@ const AttendanceTracker = ({
       console.log("[START BREAK] Backend response:", response);
 
       if (response.success) {
-        // Update state from backend response
-        setIsOnBreak(true);
-        isOnBreakRef.current = true;
         setCurrentViolations([]);
         setTotalBreakTimeUsed(response.total_break_time_used || 0);
         setBreakTimeRemaining(response.break_time_remaining || 0);
         setBreakCount(response.break_count || 0);
-
-        // Disable camera
-        if (cameraEnabledRef.current && onCameraToggle) {
-          try {
-            onCameraToggle(false);
-            setCameraEnabled(false);
-            cameraEnabledRef.current = false;
-            console.log("[START BREAK] Camera disabled");
-          } catch (cameraError) {
-            console.error("[START BREAK] Failed to disable camera:", cameraError);
-          }
-        }
-
-        // Stop tracking interval
-        if (intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
-
-        // Clear camera prompt
-        setShowCameraEnablePrompt(false);
-        setCameraPromptDismissed(false);
-        if (cameraPromptTimerRef.current) {
-          clearTimeout(cameraPromptTimerRef.current);
-          cameraPromptTimerRef.current = null;
-        }
 
         // Start break timer
         const breakDuration = response.break_duration || response.break_time_remaining || 300;
@@ -1470,17 +1616,35 @@ const AttendanceTracker = ({
           "success"
         );
       } else {
-        // Handle specific errors
         if (response.error === "Already on break") {
           console.log("[START BREAK] Already on break according to backend");
-          setIsOnBreak(true);
-          isOnBreakRef.current = true;
+          // Keep break state true (already set above)
           startBreakTimer(response.break_time_remaining || breakTimeRemaining);
           showViolationPopup("Break is already active", "info");
         } else if (response.break_time_exhausted || (response.error && response.error.includes("exceeded"))) {
+          // ✅ FIX: Revert break state since backend rejected it
+          setIsOnBreak(false);
+          isOnBreakRef.current = false;
           setBreakTimeRemaining(0);
           showViolationPopup("No break time remaining", "error");
+
+          // Re-enable camera since break was rejected
+          if (cameraWasEnabledBeforeBreakRef.current && onCameraToggle) {
+            onCameraToggle(true);
+            setCameraEnabled(true);
+            cameraEnabledRef.current = true;
+          }
         } else {
+          // ✅ FIX: Revert break state on error
+          setIsOnBreak(false);
+          isOnBreakRef.current = false;
+
+          // Re-enable camera since break failed
+          if (cameraWasEnabledBeforeBreakRef.current && onCameraToggle) {
+            onCameraToggle(true);
+            setCameraEnabled(true);
+            cameraEnabledRef.current = true;
+          }
           throw new Error(response.error || "Failed to start break");
         }
       }
@@ -1489,6 +1653,13 @@ const AttendanceTracker = ({
       showViolationPopup(`Break failed: ${error.message}`, "error");
       setIsOnBreak(false);
       isOnBreakRef.current = false;
+
+      // ✅ FIX: Re-enable camera on failure
+      if (cameraWasEnabledBeforeBreakRef.current && onCameraToggle) {
+        onCameraToggle(true);
+        setCameraEnabled(true);
+        cameraEnabledRef.current = true;
+      }
     } finally {
       breakProcessingRef.current = false;
       setIsProcessingBreak(false);
@@ -1511,6 +1682,12 @@ const AttendanceTracker = ({
       return;
     }
 
+    // ✅ FIX: Block retry during break
+    if (!safeCameraEnable("handleRetryCamera")) {
+      showViolationPopup("Cannot enable camera during break", "warning");
+      return;
+    }
+
     setCameraInitStatus("initializing");
     showViolationPopup("Retrying camera initialization...", "info");
 
@@ -1521,6 +1698,13 @@ const AttendanceTracker = ({
 
       await new Promise((resolve) => setTimeout(resolve, 2000));
 
+      // ✅ FIX: Re-check break state after async wait
+      if (isOnBreakRef.current) {
+        console.log("[RETRY CAMERA] Break started during retry - aborting");
+        forceDisableCameraDuringBreak();
+        return;
+      }
+
       const cameraReady = await verifyCameraReady(5, 500);
 
       if (!cameraReady) {
@@ -1530,9 +1714,9 @@ const AttendanceTracker = ({
       setCameraInitStatus("ready");
       showViolationPopup("Camera enabled successfully", "success");
 
-      if (!isTrackingRef.current && 
-          isSessionActiveRef.current && 
-          !isSessionTerminatedRef.current && 
+      if (!isTrackingRef.current &&
+          isSessionActiveRef.current &&
+          !isSessionTerminatedRef.current &&
           !isOnBreakRef.current) {
         setIsTracking(true);
         isTrackingRef.current = true;
@@ -1542,8 +1726,8 @@ const AttendanceTracker = ({
         }
 
         intervalRef.current = setInterval(() => {
-          if (mountedRef.current && 
-              !isSessionTerminatedRef.current && 
+          if (mountedRef.current &&
+              !isSessionTerminatedRef.current &&
               !isOnBreakRef.current &&
               captureAndAnalyzeRef.current) {
             captureAndAnalyzeRef.current();
@@ -1551,8 +1735,8 @@ const AttendanceTracker = ({
         }, AttendanceConfig.DETECTION_INTERVAL);
 
         setTimeout(() => {
-          if (mountedRef.current && 
-              !isSessionTerminatedRef.current && 
+          if (mountedRef.current &&
+              !isSessionTerminatedRef.current &&
               !isOnBreakRef.current &&
               captureAndAnalyzeRef.current) {
             captureAndAnalyzeRef.current();
@@ -1564,7 +1748,7 @@ const AttendanceTracker = ({
       setCameraInitError(error.message);
       showViolationPopup(`Camera retry failed: ${error.message}`, "error");
     }
-  }, [onCameraToggle, showViolationPopup, verifyCameraReady]);
+  }, [onCameraToggle, showViolationPopup, verifyCameraReady, safeCameraEnable, forceDisableCameraDuringBreak]);
 
   // ==================== HANDLE ENABLE CAMERA FROM PROMPT ====================
   const handleEnableCameraFromPrompt = useCallback(async () => {
@@ -1574,17 +1758,31 @@ const AttendanceTracker = ({
       return;
     }
 
+    // ✅ FIX: Block camera enable from prompt during break
+    if (!safeCameraEnable("handleEnableCameraFromPrompt")) {
+      triggerToast("Cannot enable camera during break", "warning");
+      setShowCameraEnablePrompt(false);
+      return;
+    }
+
     try {
       setShowCameraEnablePrompt(false);
       setCameraPromptDismissed(false);
-      
+
       triggerToast("Enabling camera...", "info");
-      
+
       onCameraToggle(true);
       setCameraEnabled(true);
       cameraEnabledRef.current = true;
 
       await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      // ✅ FIX: Re-check break state after async wait
+      if (isOnBreakRef.current) {
+        console.log("[CAMERA PROMPT] Break started during enable - aborting");
+        forceDisableCameraDuringBreak();
+        return;
+      }
 
       const cameraReady = await verifyCameraReady(5, 500);
 
@@ -1595,9 +1793,9 @@ const AttendanceTracker = ({
       setCameraInitStatus("ready");
       triggerToast("Camera enabled - tracking resumed", "success");
 
-      if (!isTrackingRef.current && 
-          isSessionActiveRef.current && 
-          !isSessionTerminatedRef.current && 
+      if (!isTrackingRef.current &&
+          isSessionActiveRef.current &&
+          !isSessionTerminatedRef.current &&
           !isOnBreakRef.current) {
         setIsTracking(true);
         isTrackingRef.current = true;
@@ -1607,8 +1805,8 @@ const AttendanceTracker = ({
         }
 
         intervalRef.current = setInterval(() => {
-          if (mountedRef.current && 
-              !isSessionTerminatedRef.current && 
+          if (mountedRef.current &&
+              !isSessionTerminatedRef.current &&
               !isOnBreakRef.current &&
               captureAndAnalyzeRef.current) {
             captureAndAnalyzeRef.current();
@@ -1616,8 +1814,8 @@ const AttendanceTracker = ({
         }, AttendanceConfig.DETECTION_INTERVAL);
 
         setTimeout(() => {
-          if (mountedRef.current && 
-              !isSessionTerminatedRef.current && 
+          if (mountedRef.current &&
+              !isSessionTerminatedRef.current &&
               !isOnBreakRef.current &&
               captureAndAnalyzeRef.current) {
             captureAndAnalyzeRef.current();
@@ -1629,7 +1827,7 @@ const AttendanceTracker = ({
       setCameraInitError(error.message);
       triggerToast(`Failed to enable camera: ${error.message}`, "error");
     }
-  }, [onCameraToggle, triggerToast, verifyCameraReady]);
+  }, [onCameraToggle, triggerToast, verifyCameraReady, safeCameraEnable, forceDisableCameraDuringBreak]);
 
   // ==================== ROLE TRANSITION ====================
   const handleRoleTransition = useCallback(
@@ -1676,13 +1874,11 @@ const AttendanceTracker = ({
       return false;
     }
 
-    // Guard: Prevent duplicate calls
     if (startTrackingInProgressRef.current) {
       console.warn("[START TRACKING] Already in progress, skipping duplicate call");
       return false;
     }
 
-    // Guard: Already tracking
     if (isTrackingRef.current && isSessionActiveRef.current) {
       console.warn("[START TRACKING] Already tracking, skipping");
       return true;
@@ -1693,15 +1889,26 @@ const AttendanceTracker = ({
     console.log(`[START TRACKING] Starting for meeting: ${meetingId}, user: ${userId}`);
 
     try {
-      // Initialize camera if needed
+      // ✅ FIX: Skip camera initialization if on break
       if (!videoReady && !isOnBreakRef.current) {
         console.log("[START TRACKING] Initializing camera...");
-        const cameraReady = await initializeCamera();
-        if (!cameraReady || !mountedRef.current || isSessionTerminatedRef.current) {
-          showViolationPopup("Camera initialization failed", "error");
-          return false;
+        
+        // Double-check break state before camera init
+        if (isOnBreakRef.current) {
+          console.log("[START TRACKING] Break detected before camera init - skipping");
+        } else {
+          const cameraReady = await initializeCamera();
+          if (!cameraReady || !mountedRef.current || isSessionTerminatedRef.current) {
+            // ✅ FIX: Don't show error if we're on break (camera skip is expected)
+            if (!isOnBreakRef.current) {
+              showViolationPopup("Camera initialization failed", "error");
+            }
+            return false;
+          }
+          console.log("[START TRACKING] Camera initialized successfully");
         }
-        console.log("[START TRACKING] Camera initialized successfully");
+      } else if (isOnBreakRef.current) {
+        console.log("[START TRACKING] On break - skipping camera initialization");
       }
 
       const requestData = {
@@ -1725,50 +1932,49 @@ const AttendanceTracker = ({
         return false;
       }
 
-      // Update state on success
       setSessionActive(true);
       isSessionActiveRef.current = true;
-      setIsTracking(true);
-      isTrackingRef.current = true;
-      
-      if (currentTrackingModeRef.current === "participant") {
-        setWarningCount(0);
-        setWarningsExhausted(false);
-        setFaceAuthStatus("verified");
-        setIsAuthBlocked(false);
-        isAuthBlockedRef.current = false;
-      }
 
-      // Clear any existing interval
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-
-      // Start the detection interval
-      intervalRef.current = setInterval(() => {
-        if (mountedRef.current && 
-            !isSessionTerminatedRef.current && 
-            !isOnBreakRef.current &&
-            captureAndAnalyzeRef.current) {
-          captureAndAnalyzeRef.current();
-        }
-      }, AttendanceConfig.DETECTION_INTERVAL);
-
-      // Initial capture
+      // ✅ FIX: Don't start tracking interval if on break
       if (!isOnBreakRef.current) {
+        setIsTracking(true);
+        isTrackingRef.current = true;
+
+        if (currentTrackingModeRef.current === "participant") {
+          setWarningCount(0);
+          setWarningsExhausted(false);
+          setFaceAuthStatus("verified");
+          setIsAuthBlocked(false);
+          isAuthBlockedRef.current = false;
+        }
+
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+
+        intervalRef.current = setInterval(() => {
+          if (mountedRef.current &&
+              !isSessionTerminatedRef.current &&
+              !isOnBreakRef.current &&
+              captureAndAnalyzeRef.current) {
+            captureAndAnalyzeRef.current();
+          }
+        }, AttendanceConfig.DETECTION_INTERVAL);
+
         setTimeout(() => {
-          if (mountedRef.current && 
-              !isOnBreakRef.current && 
+          if (mountedRef.current &&
+              !isOnBreakRef.current &&
               !isSessionTerminatedRef.current &&
               captureAndAnalyzeRef.current) {
             captureAndAnalyzeRef.current();
           }
         }, 500);
+      } else {
+        console.log("[START TRACKING] On break - not starting detection interval");
       }
 
-      // Show success message
-      if (showSuccessPopup) {
+      if (showSuccessPopup && !isOnBreakRef.current) {
         const message =
           currentTrackingModeRef.current === "participant"
             ? "AI attendance monitoring started"
@@ -1777,12 +1983,12 @@ const AttendanceTracker = ({
       }
 
       return true;
-      
+
     } catch (error) {
       console.error("[START TRACKING] Failed:", error);
-      
+
       let errorMessage = error.message;
-      
+
       if (error.message.includes("405")) {
         errorMessage = "Server configuration error (HTTP 405). Check nginx config.";
       } else if (error.message.includes("404")) {
@@ -1792,11 +1998,10 @@ const AttendanceTracker = ({
       } else if (error.message.includes("Failed to fetch") || error.message.includes("NetworkError")) {
         errorMessage = "Network error. Please check your connection.";
       }
-      
+
       showViolationPopup(`Failed to start: ${errorMessage}`, "error");
       return false;
     } finally {
-      // ✅ FIXED: Always reset the flag
       startTrackingInProgressRef.current = false;
     }
   }, [
@@ -1858,7 +2063,7 @@ const AttendanceTracker = ({
   }, [meetingId, userId, apiCall]);
 
   // ==================== EFFECTS ====================
-  
+
   // Role transition effect
   useEffect(() => {
     const newMode = determineTrackingMode();
@@ -1874,6 +2079,7 @@ const AttendanceTracker = ({
       cameraPromptTimerRef.current = null;
     }
 
+    // ✅ FIX: Always hide camera prompt during break
     if (
       isOnBreak ||
       isSessionTerminated ||
@@ -1925,10 +2131,59 @@ const AttendanceTracker = ({
     cameraPromptDismissed,
   ]);
 
-  // Camera state sync effect
+  // ====================================================================
+  // ✅ FIX: Camera state sync effect - CRITICAL FIX for production
+  // This is the main source of the bug. When the parent component pushes
+  // propCameraEnabled=true (e.g. due to WebRTC re-negotiation, layout
+  // changes, or parent re-renders), this effect would override break state.
+  // Now it has an absolute break guard.
+  // ====================================================================
   useEffect(() => {
     const prevEnabled = cameraEnabledRef.current;
 
+    // ✅ FIX: If we're on break, IGNORE any propCameraEnabled=true from parent
+    if (isOnBreakRef.current) {
+      if (propCameraEnabled) {
+        console.log("[CAMERA SYNC] 🔒 BLOCKED: Parent pushed propCameraEnabled=true during break - IGNORING");
+        
+        // Force internal state to disabled
+        setCameraEnabled(false);
+        cameraEnabledRef.current = false;
+
+        // ✅ FIX: Tell parent to disable camera back
+        if (onCameraToggle) {
+          try {
+            onCameraToggle(false);
+          } catch (e) {
+            console.warn("[CAMERA SYNC] Failed to push back camera disable to parent:", e);
+          }
+        }
+
+        // Ensure tracking is stopped
+        if (isTrackingRef.current) {
+          setIsTracking(false);
+          isTrackingRef.current = false;
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+          }
+        }
+        return; // ← EXIT EARLY, do nothing else
+      } else {
+        // propCameraEnabled is false during break - that's correct, just sync
+        setCameraEnabled(false);
+        cameraEnabledRef.current = false;
+        return;
+      }
+    }
+
+    // ✅ FIX: Also block during break processing
+    if (breakProcessingRef.current && propCameraEnabled) {
+      console.log("[CAMERA SYNC] 🔒 BLOCKED: Break processing in progress - ignoring camera enable");
+      return;
+    }
+
+    // Normal (non-break) camera sync logic
     setCameraEnabled(propCameraEnabled);
     cameraEnabledRef.current = propCameraEnabled;
 
@@ -1948,7 +2203,8 @@ const AttendanceTracker = ({
       } else {
         setShowCameraEnablePrompt(false);
         setCameraPromptDismissed(false);
-        
+
+        // ✅ FIX: Final break guard before starting tracking
         if (
           !isTrackingRef.current &&
           !isOnBreakRef.current &&
@@ -1970,16 +2226,17 @@ const AttendanceTracker = ({
           }
 
           intervalRef.current = setInterval(() => {
-            if (mountedRef.current && 
+            if (mountedRef.current &&
                 !isSessionTerminatedRef.current &&
+                !isOnBreakRef.current &&
                 captureAndAnalyzeRef.current) {
               captureAndAnalyzeRef.current();
             }
           }, AttendanceConfig.DETECTION_INTERVAL);
 
           setTimeout(() => {
-            if (mountedRef.current && 
-                !isSessionTerminatedRef.current && 
+            if (mountedRef.current &&
+                !isSessionTerminatedRef.current &&
                 !isOnBreakRef.current &&
                 captureAndAnalyzeRef.current) {
               captureAndAnalyzeRef.current();
@@ -1988,20 +2245,58 @@ const AttendanceTracker = ({
         }
       }
     }
-  }, [propCameraEnabled, showViolationPopup, currentTrackingMode]);
+  }, [propCameraEnabled, showViolationPopup, currentTrackingMode, onCameraToggle]);
+
+  // ====================================================================
+  // ✅ FIX: NEW EFFECT - Break state enforcement watchdog
+  // This runs whenever isOnBreak changes and ENFORCES camera-off during break.
+  // Acts as a safety net that catches any edge case where camera gets enabled.
+  // ====================================================================
+  useEffect(() => {
+    if (isOnBreak) {
+      console.log("[BREAK WATCHDOG] 🔒 Break is active - enforcing camera off");
+
+      // Force camera disabled
+      if (cameraEnabledRef.current || cameraEnabled) {
+        setCameraEnabled(false);
+        cameraEnabledRef.current = false;
+
+        if (onCameraToggle) {
+          try {
+            onCameraToggle(false);
+          } catch (e) {
+            console.warn("[BREAK WATCHDOG] Failed to disable camera:", e);
+          }
+        }
+      }
+
+      // Force tracking off
+      if (isTrackingRef.current) {
+        setIsTracking(false);
+        isTrackingRef.current = false;
+
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+      }
+
+      // Hide camera prompt
+      setShowCameraEnablePrompt(false);
+    }
+  }, [isOnBreak, cameraEnabled, onCameraToggle]);
 
   // Backend sync interval effect
   useEffect(() => {
     if (!meetingId || !userId || isSessionTerminated) return;
 
-    // Clear existing sync interval
     if (syncIntervalRef.current) {
       clearInterval(syncIntervalRef.current);
       syncIntervalRef.current = null;
     }
 
-    const syncInterval = isOnBreak 
-      ? AttendanceConfig.SYNC_INTERVAL_BREAK 
+    const syncInterval = isOnBreak
+      ? AttendanceConfig.SYNC_INTERVAL_BREAK
       : AttendanceConfig.SYNC_INTERVAL_NORMAL;
 
     syncIntervalRef.current = setInterval(syncWithBackend, syncInterval);
@@ -2014,7 +2309,7 @@ const AttendanceTracker = ({
     };
   }, [meetingId, userId, isSessionTerminated, isOnBreak, syncWithBackend]);
 
-  // ✅ FIXED: Initialization effect with proper cleanup
+  // Initialization effect
   useEffect(() => {
     mountedRef.current = true;
 
@@ -2027,12 +2322,35 @@ const AttendanceTracker = ({
     if (meetingId && userId) {
       const initialize = async () => {
         if (!mountedRef.current || isSessionTerminatedRef.current) return;
-        
+
         try {
           await syncWithBackend();
-          
+
           if (!mountedRef.current || isSessionTerminatedRef.current) return;
-          
+
+          // ✅ FIX: Check if sync revealed we're on break before starting tracking
+          if (isOnBreakRef.current) {
+            console.log("[INIT] On break after sync - starting session but skipping camera/tracking");
+            setSessionActive(true);
+            isSessionActiveRef.current = true;
+            // Don't call startTracking, just register with backend
+            try {
+              await apiCall("/start/", "POST", {
+                meeting_id: meetingId,
+                user_id: userId,
+                user_name: userName,
+                user_role: effectiveRole,
+                current_tracking_mode: currentTrackingModeRef.current,
+                is_host: isHost,
+                is_cohost: isCoHost,
+                should_detect_violations: false,
+              });
+            } catch (e) {
+              console.warn("[INIT] Start API during break failed (non-blocking):", e.message);
+            }
+            return;
+          }
+
           await startTracking();
         } catch (error) {
           console.error("[INIT] Error:", error);
@@ -2046,7 +2364,6 @@ const AttendanceTracker = ({
       if (initTimeoutId) {
         clearTimeout(initTimeoutId);
       }
-      // ✅ FIXED: Clean up interval on effect re-run
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
@@ -2054,7 +2371,7 @@ const AttendanceTracker = ({
     };
   }, [meetingId, userId, isSessionTerminated, isSessionPermanentlyEnded]);
 
-  // ✅ FIXED: Cleanup effect on unmount
+  // Cleanup effect on unmount
   useEffect(() => {
     return () => {
       mountedRef.current = false;
@@ -2284,13 +2601,13 @@ const AttendanceTracker = ({
         onClose={handleToastClose}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       >
-        <Alert 
-            onClose={handleToastClose} 
-            severity={toastSeverity === "violation" ? "warning" : toastSeverity} 
+        <Alert
+            onClose={handleToastClose}
+            severity={toastSeverity === "violation" ? "warning" : toastSeverity}
             variant={toastVariant}
             sx={{ width: '100%', boxShadow: 3, fontWeight: 600 }}
             icon={
-                toastMessage.includes("Identity") ? <PersonOff /> : 
+                toastMessage.includes("Identity") ? <PersonOff /> :
                 toastSeverity === "error" ? <ErrorIcon /> :
                 toastSeverity === "warning" ? <Warning /> : undefined
             }
@@ -2309,9 +2626,9 @@ const AttendanceTracker = ({
         }}
       >
         <DialogTitle sx={{ textAlign: 'center', pb: 1, pt: 3 }} component="div">
-          <Box sx={{ 
-            display: 'flex', 
-            alignItems: 'center', 
+          <Box sx={{
+            display: 'flex',
+            alignItems: 'center',
             justifyContent: 'center',
             mb: 2
           }}>
@@ -2364,7 +2681,7 @@ const AttendanceTracker = ({
             variant="contained"
             onClick={handleEnableCameraFromPrompt}
             startIcon={<Videocam />}
-            sx={{ 
+            sx={{
               backgroundColor: '#FF9800',
               color: 'white',
               fontWeight: 600,
