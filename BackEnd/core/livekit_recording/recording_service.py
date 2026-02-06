@@ -418,9 +418,19 @@ class S3ChunkUploader:
             if self.upload_thread.is_alive():
                 logger.warning("⚠️ Upload thread still running after 60s")
         
-        # NEW: Wait for file to be fully written
+        # ✅ CHANGED: Longer wait for production stability
         logger.info("⏳ Waiting for file to be fully written by FFmpeg...")
-        time.sleep(5)  # Give FFmpeg time to flush final data
+        logger.info("   Production environment needs more time for I/O sync...")
+        time.sleep(15)  # ✅ CHANGED: 5 → 15 seconds for production
+        
+        # ✅ NEW: Verify file size stabilizes
+        if os.path.exists(local_file_path):
+            prev_size = os.path.getsize(local_file_path)
+            time.sleep(3)
+            curr_size = os.path.getsize(local_file_path)
+            if curr_size != prev_size:
+                logger.warning(f"⚠️ File still growing: {prev_size} → {curr_size} bytes")
+                time.sleep(5)  # Extra wait
         
         try:
             if os.path.exists(local_file_path):
@@ -705,6 +715,7 @@ class StreamingRecordingWithChunks:
 
             next_wake = time.perf_counter()
             last_buffer_check = time.perf_counter()
+            consecutive_empty_checks = 0  # ✅ NEW: Counter for stability
 
             # Run until explicitly told to drain and all buffers are empty
             while True:
@@ -717,20 +728,26 @@ class StreamingRecordingWithChunks:
                     
                     # Check if we should enter draining mode
                     if not self.is_recording and not self.audio_accepting_new_data:
-                        # Check if all audio buffers are empty every second
+                        # Check if all audio buffers are empty every 0.5 seconds (faster check)
                         now = time.perf_counter()
-                        if now - last_buffer_check >= 1.0:
+                        if now - last_buffer_check >= 0.5:  # ✅ CHANGED: 1.0 → 0.5
                             buffers_empty = self._check_all_audio_buffers_empty()
                             last_buffer_check = now
                             
                             if buffers_empty:
-                                logger.info("🎵 All audio buffers empty - entering final flush mode")
-                                self.audio_buffers_empty = True
-                                break  # Exit loop, enter final flush
+                                consecutive_empty_checks += 1  # ✅ NEW
+                                # ✅ NEW: Require 3 consecutive empty checks (1.5 seconds total)
+                                if consecutive_empty_checks >= 3:
+                                    logger.info("🎵 All audio buffers empty for 1.5s - entering final flush mode")
+                                    self.audio_buffers_empty = True
+                                    break  # Exit loop, enter final flush
+                                else:
+                                    logger.info(f"🎵 Buffers empty ({consecutive_empty_checks}/3 checks)")
                             else:
+                                consecutive_empty_checks = 0  # ✅ NEW: Reset counter
                                 non_empty = self._count_non_empty_audio_buffers()
                                 logger.info(f"🎵 Still draining audio - {non_empty} source(s) with data")
-                    
+
                     # Continue mixing and writing as long as we're active or draining
                     now = time.perf_counter()
                     if now >= next_wake:
@@ -747,32 +764,43 @@ class StreamingRecordingWithChunks:
                     logger.error(f"Audio clock error: {e}")
                     time.sleep(0.1)
 
-            # FINAL FLUSH: Write any remaining partial samples and close FIFO
+            # FINAL FLUSH: Write silence and wait for FFmpeg to catch up
             logger.info("🎵 Audio clock: Final flush sequence starting...")
             try:
-                # Write one final chunk of silence to clear any partial samples
                 with self.audio_lock:
                     if self.audio_enabled and self.audio_fifo_writer:
-                        silence = np.zeros(samples_per_chunk, dtype=np.int16)
-                        self.audio_fifo_writer.write(silence.tobytes())
+                        # ✅ NEW: Write 2 seconds of silence to ensure FFmpeg processes everything
+                        silence_duration = 2.0  # seconds
+                        total_silence_samples = int(48000 * 2 * silence_duration)
                         
-                        # Multiple flushes with delays
-                        for i in range(5):
+                        logger.info(f"📝 Writing {silence_duration}s of silence to ensure FFmpeg catches up...")
+                        
+                        # Write in chunks
+                        remaining = total_silence_samples
+                        while remaining > 0:
+                            chunk_size = min(samples_per_chunk, remaining)
+                            silence = np.zeros(chunk_size, dtype=np.int16)
+                            self.audio_fifo_writer.write(silence.tobytes())
+                            remaining -= chunk_size
+                        
+                        # ✅ NEW: Extended flush with longer delays
+                        for i in range(10):  # CHANGED: 5 → 10 iterations
                             self.audio_fifo_writer.flush()
-                            time.sleep(0.2)
+                            time.sleep(0.5)  # CHANGED: 0.2 → 0.5 seconds
                         
                         # Force sync if possible
                         if hasattr(self.audio_fifo_writer, 'fileno'):
                             try:
                                 os.fsync(self.audio_fifo_writer.fileno())
+                                time.sleep(1.0)  # ✅ NEW: Extra delay after fsync
                             except:
                                 pass
                         
-                        logger.info("✅ Audio FIFO flushed completely")
+                        logger.info("✅ Audio FIFO flushed with 2s silence buffer")
                 
                 self.audio_drain_complete = True
                 logger.info("⏰ Audio master clock thread stopped - drain complete")
-                
+
             except Exception as e:
                 logger.error(f"❌ Final flush error: {e}")
                 self.audio_drain_complete = True  # Mark complete anyway to unblock
@@ -1325,6 +1353,22 @@ class StreamingRecordingWithChunks:
         
         # Phase 1: Stop accepting new data
         self.audio_accepting_new_data = False
+        
+        # ✅ NEW: Wait for video writer to catch up before stopping recording
+        logger.info("⏳ Waiting for video writer to catch up with timeline...")
+        current_pts = self.timeline.get_current_pts()
+        expected_frames = int(current_pts * self.target_fps)
+        
+        # Wait up to 30 seconds for video writer to catch up
+        wait_start = time.perf_counter()
+        while time.perf_counter() - wait_start < 30.0:
+            if self.frames_written >= expected_frames * 0.98:  # 98% threshold
+                logger.info(f"✅ Video writer caught up: {self.frames_written}/{expected_frames} frames")
+                break
+            time.sleep(0.5)
+        else:
+            logger.warning(f"⚠️ Video writer timeout: {self.frames_written}/{expected_frames} frames")
+        
         self.is_recording = False
         self.stop_event.set()
         
@@ -1370,10 +1414,20 @@ class StreamingRecordingWithChunks:
         drain_duration = time.perf_counter() - start_drain_time
         logger.info(f"✅ Audio drain completed in {drain_duration:.1f}s")
 
-        # Phase 3: Close audio FIFO after thread confirms done
+        # ✅ NEW: Phase 2.5 - Wait additional time for FIFO to fully drain to FFmpeg
+        logger.info("🛑 Phase 2.5: Waiting for FIFO to drain to FFmpeg...")
+        additional_wait = 10.0  # ✅ NEW: 10 seconds for production safety
+        logger.info(f"   Waiting {additional_wait}s to ensure FFmpeg consumes all FIFO data...")
+        time.sleep(additional_wait)
+        logger.info("✅ FIFO drain wait complete")
+
+        # Phase 3: Close audio FIFO after confirmed drain
         logger.info("🛑 Phase 3: Closing audio FIFO...")
         if self.audio_fifo_writer:
             try:
+                # ✅ NEW: Final flush before close
+                self.audio_fifo_writer.flush()
+                time.sleep(2.0)  # ✅ NEW: Extra safety delay
                 self.audio_fifo_writer.close()
                 self.audio_fifo_closed = True
                 logger.info("✅ Audio FIFO closed")
@@ -1391,29 +1445,37 @@ class StreamingRecordingWithChunks:
             except Exception as e:
                 logger.warning(f"Video close: {e}")
         
-        # Phase 5: Wait for FFmpeg processes (no timeout)
+        # Phase 5: Wait for FFmpeg processes with generous timeout
         logger.info("🛑 Phase 5: Waiting for FFmpeg processes to complete...")
         
         # Wait for VIDEO FFmpeg
         if self.ffmpeg_video_process:
-            logger.info("⏳ Waiting for video FFmpeg (no timeout)...")
+            logger.info("⏳ Waiting for video FFmpeg (120s timeout for production)...")
             try:
-                ret = self.ffmpeg_video_process.wait()  # NO TIMEOUT
+                ret = self.ffmpeg_video_process.wait(timeout=120)  # ✅ NEW: 2 minute timeout
                 logger.info(f"✅ Video FFmpeg exited: {ret}")
+            except subprocess.TimeoutExpired:
+                logger.error("❌ Video FFmpeg timeout - forcing termination")
+                self.ffmpeg_video_process.kill()
+                self.ffmpeg_video_process.wait()
             except Exception as e:
                 logger.error(f"❌ Video FFmpeg error: {e}")
                 self.ffmpeg_video_process.kill()
         
         # Wait for AUDIO FFmpeg
         if self.ffmpeg_audio_process:
-            logger.info("⏳ Waiting for audio FFmpeg (no timeout)...")
+            logger.info("⏳ Waiting for audio FFmpeg (120s timeout for production)...")
             try:
-                ret = self.ffmpeg_audio_process.wait()  # NO TIMEOUT
+                ret = self.ffmpeg_audio_process.wait(timeout=120)  # ✅ NEW: 2 minute timeout
                 logger.info(f"✅ Audio FFmpeg exited: {ret}")
+            except subprocess.TimeoutExpired:
+                logger.error("❌ Audio FFmpeg timeout - forcing termination")
+                self.ffmpeg_audio_process.kill()
+                self.ffmpeg_audio_process.wait()
             except Exception as e:
                 logger.error(f"❌ Audio FFmpeg error: {e}")
                 self.ffmpeg_audio_process.kill()
-        
+                
         # Phase 6: Verify file stability
         logger.info("🛑 Phase 6: Verifying file stability...")
         time.sleep(2.0)  # Let files settle
