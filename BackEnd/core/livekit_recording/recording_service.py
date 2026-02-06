@@ -418,25 +418,20 @@ class S3ChunkUploader:
             if self.upload_thread.is_alive():
                 logger.warning("⚠️ Upload thread still running after 60s")
         
-        # ✅ PRODUCTION: Even longer wait for EKS/production I/O
+        # ✅ CHANGED: Longer wait for production stability
         logger.info("⏳ Waiting for file to be fully written by FFmpeg...")
         logger.info("   Production environment needs more time for I/O sync...")
-        time.sleep(20)  # ✅ PRODUCTION: 20 seconds for Kubernetes I/O
-
-        # ✅ PRODUCTION: Verify file size stabilizes with longer wait
+        time.sleep(15)  # ✅ CHANGED: 5 → 15 seconds for production
+        
+        # ✅ NEW: Verify file size stabilizes
         if os.path.exists(local_file_path):
             prev_size = os.path.getsize(local_file_path)
-            time.sleep(5)  # Longer check interval
+            time.sleep(3)
             curr_size = os.path.getsize(local_file_path)
             if curr_size != prev_size:
                 logger.warning(f"⚠️ File still growing: {prev_size} → {curr_size} bytes")
-                time.sleep(10)  # Extra wait
-                # Final check
-                prev_size = curr_size
-                time.sleep(5)
-                curr_size = os.path.getsize(local_file_path)
-                if curr_size != prev_size:
-                    logger.error(f"❌ File STILL growing after 30s: {prev_size} → {curr_size}")
+                time.sleep(5)  # Extra wait
+        
         try:
             if os.path.exists(local_file_path):
                 current_size = os.path.getsize(local_file_path)
@@ -645,12 +640,11 @@ class StreamingRecordingWithChunks:
         self.has_screen_share = False
         self.last_screen_frame = None  # Store last frame for gap filling
         self.last_screen_frame_time = 0  # When was last frame received
-        self.screen_share_gap_threshold = 2.0  # Seconds before considering screen share stale
         self.screen_share_lock = threading.Lock()
         
         # ✅ NEW: Ring buffer for timeline-driven video writing
         from collections import deque
-        self.frame_ring_buffer = deque(maxlen=100)  # Last 100 frames (5 seconds at 20 FPS)
+        self.frame_ring_buffer = deque(maxlen=10)  # Last 10 frames
         self.frame_buffer_lock = threading.Lock()
         self.video_writer_thread = None
         self.placeholder_frame = None  # Generated once on startup
@@ -742,9 +736,9 @@ class StreamingRecordingWithChunks:
                             
                             if buffers_empty:
                                 consecutive_empty_checks += 1  # ✅ NEW
-                                # ✅ PRODUCTION: Require 6 consecutive empty checks (3 seconds total)
-                                if consecutive_empty_checks >= 6:
-                                    logger.info("🎵 All audio buffers empty for 3.0s - entering final flush mode")
+                                # ✅ NEW: Require 3 consecutive empty checks (1.5 seconds total)
+                                if consecutive_empty_checks >= 3:
+                                    logger.info("🎵 All audio buffers empty for 1.5s - entering final flush mode")
                                     self.audio_buffers_empty = True
                                     break  # Exit loop, enter final flush
                                 else:
@@ -775,11 +769,12 @@ class StreamingRecordingWithChunks:
             try:
                 with self.audio_lock:
                     if self.audio_enabled and self.audio_fifo_writer:
-                        # ✅ PRODUCTION: Write 3 seconds of silence to ensure FFmpeg catches up
-                        silence_duration = 3.0  # seconds (longer for production)
+                        # ✅ NEW: Write 2 seconds of silence to ensure FFmpeg processes everything
+                        silence_duration = 2.0  # seconds
                         total_silence_samples = int(48000 * 2 * silence_duration)
-
+                        
                         logger.info(f"📝 Writing {silence_duration}s of silence to ensure FFmpeg catches up...")
+                        
                         # Write in chunks
                         remaining = total_silence_samples
                         while remaining > 0:
@@ -1126,8 +1121,9 @@ class StreamingRecordingWithChunks:
                         # Advance to next frame time
                         next_frame_pts += frame_interval
                     
-                    # Sleep for a fraction of frame interval (shorter for production responsiveness)
-                    time.sleep(frame_interval / 8)  # 6.25ms for 20 FPS (more responsive)
+                    # Sleep for a fraction of frame interval
+                    time.sleep(frame_interval / 4)  # 12.5ms for 20 FPS
+                    
                 except Exception as e:
                     logger.error(f"Video writer error: {e}")
                     time.sleep(0.1)
@@ -1143,7 +1139,7 @@ class StreamingRecordingWithChunks:
         logger.info("✅ Video writer clock thread launched")
 
     def _get_frame_for_pts(self, target_pts):
-        """Get the best frame for a given timeline PTS - PRODUCTION OPTIMIZED"""
+        """Get the best frame for a given timeline PTS"""
         try:
             with self.frame_buffer_lock:
                 # If no frames in buffer yet
@@ -1151,61 +1147,44 @@ class StreamingRecordingWithChunks:
                     # Check if we have screen share active
                     with self.screen_share_lock:
                         if self.has_screen_share and self.last_screen_frame is not None:
-                            # Check if last frame is recent enough (within 2 seconds)
-                            frame_age = time.perf_counter() - self.last_screen_frame_time
-                            if frame_age < self.screen_share_gap_threshold:
-                                return self.last_screen_frame.copy()
-                            else:
-                                # Frame too old - use placeholder
-                                if self.placeholder_frame is None:
-                                    self._create_placeholder_frame()
-                                return self.placeholder_frame.copy()
+                            # Use last known screen frame
+                            return self.last_screen_frame.copy()
                         else:
                             # Use placeholder
                             if self.placeholder_frame is None:
                                 self._create_placeholder_frame()
                             return self.placeholder_frame.copy()
                 
-                # Find frame closest to target PTS (ALLOW FUTURE FRAMES within 0.5s)
+                # Find frame closest to target PTS (but not in the future)
                 best_frame = None
                 best_diff = float('inf')
-                best_pts = None
                 
                 for frame_data in self.frame_ring_buffer:
                     frame_pts = frame_data['pts']
-                    diff = abs(target_pts - frame_pts)
                     
-                    # Accept frames within 0.5s window (past or future)
-                    if diff < 0.5 and diff < best_diff:
-                        best_diff = diff
-                        best_frame = frame_data['frame']
-                        best_pts = frame_pts
+                    # Only consider frames at or before target PTS
+                    if frame_pts <= target_pts:
+                        diff = abs(target_pts - frame_pts)
+                        if diff < best_diff:
+                            best_diff = diff
+                            best_frame = frame_data['frame']
                 
                 # If we found a good frame, return it
                 if best_frame is not None:
                     return best_frame.copy()
                 
-                # Fallback: use most recent frame (even if old)
+                # Fallback: use most recent frame
                 if len(self.frame_ring_buffer) > 0:
-                    most_recent = self.frame_ring_buffer[-1]
-                    frame_age = target_pts - most_recent['pts']
-                    
-                    # If frame is less than 5 seconds old, use it
-                    if frame_age < 5.0:
-                        return most_recent['frame'].copy()
+                    return self.frame_ring_buffer[-1]['frame'].copy()
                 
-                # Last resort: use last_screen_frame or placeholder
+                # Last resort: placeholder
                 with self.screen_share_lock:
-                    if self.last_screen_frame is not None:
-                        frame_age = time.perf_counter() - self.last_screen_frame_time
-                        # Use last screen frame even if somewhat old (up to 10 seconds)
-                        if frame_age < 10.0:
-                            return self.last_screen_frame.copy()
-                    
-                    # Final fallback: placeholder
-                    if self.placeholder_frame is None:
-                        self._create_placeholder_frame()
-                    return self.placeholder_frame.copy()
+                    if self.has_screen_share and self.last_screen_frame is not None:
+                        return self.last_screen_frame.copy()
+                    else:
+                        if self.placeholder_frame is None:
+                            self._create_placeholder_frame()
+                        return self.placeholder_frame.copy()
                 
         except Exception as e:
             logger.error(f"Frame selection error: {e}")
@@ -1213,7 +1192,7 @@ class StreamingRecordingWithChunks:
             if self.placeholder_frame is None:
                 self._create_placeholder_frame()
             return self.placeholder_frame.copy()
-    
+        
     def add_audio_samples(self, samples, participant_id="unknown", source_type="microphone"):
         """
         Just store incoming audio samples per source — do NOT mix or write here.
@@ -1375,23 +1354,21 @@ class StreamingRecordingWithChunks:
         # Phase 1: Stop accepting new data
         self.audio_accepting_new_data = False
         
-        # ✅ PRODUCTION: Longer wait for video writer to catch up
+        # ✅ NEW: Wait for video writer to catch up before stopping recording
         logger.info("⏳ Waiting for video writer to catch up with timeline...")
         current_pts = self.timeline.get_current_pts()
         expected_frames = int(current_pts * self.target_fps)
-
-        # Wait up to 60 seconds for video writer to catch up (production needs more time)
+        
+        # Wait up to 30 seconds for video writer to catch up
         wait_start = time.perf_counter()
-        while time.perf_counter() - wait_start < 60.0:
-            if self.frames_written >= expected_frames * 0.95:  # 95% threshold (more lenient)
+        while time.perf_counter() - wait_start < 30.0:
+            if self.frames_written >= expected_frames * 0.98:  # 98% threshold
                 logger.info(f"✅ Video writer caught up: {self.frames_written}/{expected_frames} frames")
                 break
-            # Log progress every 10 seconds
-            if int(time.perf_counter() - wait_start) % 10 == 0:
-                logger.info(f"   Progress: {self.frames_written}/{expected_frames} frames ({self.frames_written/expected_frames*100:.1f}%)")
             time.sleep(0.5)
         else:
-            logger.warning(f"⚠️ Video writer timeout after 60s: {self.frames_written}/{expected_frames} frames")
+            logger.warning(f"⚠️ Video writer timeout: {self.frames_written}/{expected_frames} frames")
+        
         self.is_recording = False
         self.stop_event.set()
         
@@ -1439,15 +1416,9 @@ class StreamingRecordingWithChunks:
 
         # ✅ NEW: Phase 2.5 - Wait additional time for FIFO to fully drain to FFmpeg
         logger.info("🛑 Phase 2.5: Waiting for FIFO to drain to FFmpeg...")
-        additional_wait = 15.0  # ✅ PRODUCTION: 15 seconds for Kubernetes I/O
+        additional_wait = 10.0  # ✅ NEW: 10 seconds for production safety
         logger.info(f"   Waiting {additional_wait}s to ensure FFmpeg consumes all FIFO data...")
         time.sleep(additional_wait)
-
-        # ✅ PRODUCTION: Check if audio FFmpeg is still alive
-        if self.ffmpeg_audio_process and self.ffmpeg_audio_process.poll() is None:
-            logger.info("   Audio FFmpeg still running - waiting additional 5s...")
-            time.sleep(5.0)
-
         logger.info("✅ FIFO drain wait complete")
 
         # Phase 3: Close audio FIFO after confirmed drain
