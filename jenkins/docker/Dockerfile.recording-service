@@ -45,18 +45,23 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     # Install FastAPI and Uvicorn for standalone server
     pip install --no-cache-dir fastapi==0.115.14 uvicorn==0.34.3
 
+# # ============================================
+# # Copy Application Code
+# # ============================================
+# # Only copy necessary directories for recording service
+# COPY core/livekit_recording ./core/livekit_recording
+# COPY core/UserDashBoard ./core/UserDashBoard
+# COPY core/scheduler ./core/scheduler
+# COPY core/WebSocketConnection ./core/WebSocketConnection
+# COPY core/AI_Attendance ./core/AI_Attendance
+# COPY core/__init__.py ./core/__init__.py
+# COPY SampleDB ./SampleDB
+# COPY manage.py .
 # ============================================
 # Copy Application Code
 # ============================================
-# Only copy necessary directories for recording service
-COPY core/livekit_recording ./core/livekit_recording
-COPY core/UserDashBoard ./core/UserDashBoard
-COPY core/scheduler ./core/scheduler
-COPY core/WebSocketConnection ./core/WebSocketConnection
-COPY core/__init__.py ./core/__init__.py
-COPY SampleDB ./SampleDB
-COPY manage.py .
-
+# Copy the entire backend codebase (same as backend container)
+COPY . .
 # ============================================
 # Create Non-Root User
 # ============================================
