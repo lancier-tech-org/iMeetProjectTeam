@@ -6,9 +6,9 @@ export const WEBSOCKET_URL = import.meta.env.VITE_WEBSOCKET_URL || 'wss://api.la
 
 // NEW: LiveKit Configuration
 export const LIVEKIT_CONFIG = {
-  url: import.meta.env.VITE_LIVEKIT_URL || 'wss://imeetpro-izcww638.livekit.cloud',
-  apiKey: import.meta.env.VITE_LIVEKIT_API_KEY || 'APIzajCrwcu2sdX',
-  apiSecret: import.meta.env.VITE_LIVEKIT_API_SECRET || 'd28CFTgofqSFwQi6GoQRiX9v0wCbxk6Qxh7MA7oWIPd',
+  url: import.meta.env.VITE_LIVEKIT_URL || 'wss://imeetpro-7yq8bbet.livekit.cloud',
+  apiKey: import.meta.env.VITE_LIVEKIT_API_KEY || 'APIdoUsqTdsBbPh',
+  apiSecret: import.meta.env.VITE_LIVEKIT_API_SECRET || 'lepK3q3M5uG13J0mPfxroVyWqsmEDbgnelzf7IkDOiYC',
   ttl: 3600, // Token TTL in seconds
   maxParticipants: 200,
   emptyTimeout: 300, // 5 minutes
