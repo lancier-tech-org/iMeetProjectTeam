@@ -4844,7 +4844,19 @@ export const createInstantMeetingAPI = async (userData) => {
     };
   }
 };
-
+export const companyAPI = {
+  getCompanyLogo: async (filename = 'ImeetPro.png') => {
+    try {
+      const response = await api.get('/api/company/logo/', {
+        params: { filename }
+      });
+      return response.logo_url || null;
+    } catch (error) {
+      console.error('❌ Failed to get company logo:', error);
+      return null;
+    }
+  },
+};
 // NEW: Queue Management API
 export const queueAPI = {
   // Check connection queue status

@@ -1,148 +1,82 @@
-// // Images index file - exports all images used in the app
-// // This file provides a centralized way to import and use images
+// Icons index file - exports all custom icons used in the app
+// This file provides a centralized way to import and use custom SVG icons
 
-// // User & Profile Images
-// export { default as DefaultAvatar } from './default-avatar.png';
+// Meeting & Conference Icons
+export { default as MeetingIcon } from './meeting.svg';
+export { default as CalendarIcon } from './calendar.svg';
+export { default as VideoIcon } from './video.svg';
+export { default as AudioIcon } from './audio.svg';
+export { default as ChatIcon } from './chat.svg';
+export { default as ScreenShareIcon } from './screen-share.svg';
+export { default as ParticipantsIcon } from './participants.svg';
+export { default as RecordingIcon } from './recording.svg';
+export { default as HandRaiseIcon } from './hand-raise.svg';
+export { default as ReactionsIcon } from './reactions.svg';
+export { default as SettingsIcon } from './settings.svg';
+// export { default as LogoIcon } from './logo.svg';
+import { useCompanyLogo } from '../hooks/useCompanyLogo';
+import { LogoIcon } from '@assets/icons'; // keep as fallback
 
-// // Background Images
-// export { default as MeetingBackground } from './meeting-bg.jpg';
-// export { default as LoginBackground } from './login-bg.jpg';
-// export { default as WaitingRoomBg } from './waiting-room-bg.jpg';
+function MyComponent() {
+  const { logoUrl, loading } = useCompanyLogo();
 
-// // Illustrations & Graphics
-// export { default as EmptyState } from './empty-state.svg';
-// export { default as ErrorIllustration } from './error-illustration.svg';
-// export { default as SuccessIllustration } from './success-illustration.svg';
+  return (
+    <img 
+      src={logoUrl || LogoIcon} 
+      alt="iMeetPro Logo"
+      style={{ height: 40 }} // adjust as needed
+    />
+  );
+}
 
-// // Loading & Animation
-// export { default as LoadingAnimation } from './loading.gif';
+// Usage example:
+// import { MeetingIcon, VideoIcon } from '@assets/icons';
+// 
+// function MyComponent() {
+//   return (
+//     <div>
+//       <img src={MeetingIcon} alt="Meeting" />
+//       <img src={VideoIcon} alt="Video" />
+//     </div>
+//   );
+// }
 
-// // Usage example:
-// // import { DefaultAvatar, MeetingBackground } from '@assets/images';
-// // 
-// // function ProfileComponent() {
-// //   return (
-// //     <div>
-// //       <img src={DefaultAvatar} alt="User Avatar" />
-// //       <div style={{ backgroundImage: `url(${MeetingBackground})` }}>
-// //         Meeting Content
-// //       </div>
-// //     </div>
-// //   );
-// // }
+// For Material-UI integration, you can create icon components:
+import React from 'react';
+import SvgIcon from '@mui/material/SvgIcon';
 
-// // Image preloading utility
-// export const preloadImages = () => {
-//   const images = [
-//     DefaultAvatar,
-//     MeetingBackground,
-//     LoginBackground,
-//     WaitingRoomBg,
-//     EmptyState,
-//     ErrorIllustration,
-//     SuccessIllustration,
-//     LoadingAnimation,
-//   ];
+// Example of creating a Material-UI compatible icon component
+export const CustomMeetingIcon = (props) => (
+  <SvgIcon {...props}>
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+    </svg>
+  </SvgIcon>
+);
 
-//   images.forEach((src) => {
-//     const img = new Image();
-//     img.src = src;
-//   });
-// };
+export const CustomVideoIcon = (props) => (
+  <SvgIcon {...props}>
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+    </svg>
+  </SvgIcon>
+);
 
-// // Image optimization utilities
-// export const getOptimizedImageUrl = (src, width, height, quality = 80) => {
-//   // This function can be extended to work with image optimization services
-//   // like Cloudinary, ImageKit, or custom optimization endpoints
-//   if (!src) return DefaultAvatar;
-  
-//   // For now, return the original image
-//   // In production, you might use:
-//   // return `${src}?w=${width}&h=${height}&q=${quality}`;
-//   return src;
-// };
+// Icon size constants for consistency
+export const ICON_SIZES = {
+  small: 16,
+  medium: 24,
+  large: 32,
+  xlarge: 48,
+};
 
-// // Responsive image helper
-// export const getResponsiveImageSrc = (baseSrc) => {
-//   return {
-//     src: baseSrc,
-//     srcSet: `
-//       ${baseSrc} 1x,
-//       ${baseSrc.replace('.', '@2x.')} 2x,
-//       ${baseSrc.replace('.', '@3x.')} 3x
-//     `,
-//   };
-// };
-
-// // Image constants
-// export const IMAGE_FORMATS = {
-//   JPEG: 'image/jpeg',
-//   PNG: 'image/png',
-//   SVG: 'image/svg+xml',
-//   WEBP: 'image/webp',
-//   GIF: 'image/gif',
-// };
-
-// export const IMAGE_SIZES = {
-//   avatar: {
-//     small: { width: 32, height: 32 },
-//     medium: { width: 48, height: 48 },
-//     large: { width: 64, height: 64 },
-//     xlarge: { width: 128, height: 128 },
-//   },
-//   thumbnail: {
-//     small: { width: 150, height: 100 },
-//     medium: { width: 300, height: 200 },
-//     large: { width: 600, height: 400 },
-//   },
-//   hero: {
-//     mobile: { width: 768, height: 432 },
-//     tablet: { width: 1024, height: 576 },
-//     desktop: { width: 1920, height: 1080 },
-//   },
-// };
-
-// // Lazy loading helper for images
-// export const createLazyImageObserver = (callback) => {
-//   if ('IntersectionObserver' in window) {
-//     return new IntersectionObserver((entries) => {
-//       entries.forEach((entry) => {
-//         if (entry.isIntersecting) {
-//           callback(entry.target);
-//         }
-//       });
-//     }, {
-//       rootMargin: '50px',
-//     });
-//   }
-//   return null;
-// };
-
-// Image assets exports
-// For now, we'll use placeholder imports until you have actual image files
-
-// You can replace these with actual image imports when you have the files
-export const defaultAvatar = '/src/assets/images/default-avatar.png';
-export const meetingBg = '/src/assets/images/meeting-bg.jpg';
-export const loginBg = '/src/assets/images/login-bg.jpg';
-export const emptyState = '/src/assets/images/empty-state.svg';
-export const loadingGif = '/src/assets/images/loading.gif';
-export const waitingRoomBg = '/src/assets/images/waiting-room-bg.jpg';
-export const errorIllustration = '/src/assets/images/error-illustration.svg';
-export const successIllustration = '/src/assets/images/success-illustration.svg';
-
-// Named export for ErrorBoundary compatibility
-export const ErrorIllustration = errorIllustration;
-
-// Default export if needed
-export default {
-  defaultAvatar,
-  meetingBg,
-  loginBg,
-  emptyState,
-  loadingGif,
-  waitingRoomBg,
-  errorIllustration,
-  ErrorIllustration,
-  successIllustration
+// Icon color constants
+export const ICON_COLORS = {
+  primary: '#1976d2',
+  secondary: '#dc004e',
+  success: '#4caf50',
+  warning: '#ff9800',
+  error: '#f44336',
+  info: '#2196f3',
+  disabled: '#9e9e9e',
 };
