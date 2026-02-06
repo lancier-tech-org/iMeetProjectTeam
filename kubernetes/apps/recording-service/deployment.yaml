@@ -150,7 +150,17 @@ spec:
                 secretKeyRef:
                   name: backend-secrets
                   key: GROQ_API_KEY
-          
+            # ✅ ADD CELERY CONFIGURATION
+            - name: CELERY_BROKER_URL
+              value: "redis://redis.databases.svc.cluster.local:6379/0"
+            - name: CELERY_RESULT_BACKEND
+              value: "redis://redis.databases.svc.cluster.local:6379/0"
+            - name: CELERY_ACCEPT_CONTENT
+              value: "json"
+            - name: CELERY_TASK_SERIALIZER
+              value: "json"
+            - name: CELERY_RESULT_SERIALIZER
+              value: "json"
           # ============================================
           # PROBES
           # ============================================
