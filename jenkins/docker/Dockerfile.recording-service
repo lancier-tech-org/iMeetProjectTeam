@@ -52,6 +52,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY core/livekit_recording ./core/livekit_recording
 COPY core/UserDashBoard ./core/UserDashBoard
 COPY core/scheduler ./core/scheduler
+COPY core/WebSocketConnection ./core/WebSocketConnection
 COPY core/__init__.py ./core/__init__.py
 COPY SampleDB ./SampleDB
 COPY manage.py .
