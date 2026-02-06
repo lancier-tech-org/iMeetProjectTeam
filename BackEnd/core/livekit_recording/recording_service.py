@@ -418,20 +418,34 @@ class S3ChunkUploader:
             if self.upload_thread.is_alive():
                 logger.warning("⚠️ Upload thread still running after 60s")
         
-        # ✅ CHANGED: Longer wait for production stability
+        # ✅ PRODUCTION FIX: Much longer wait for container I/O
         logger.info("⏳ Waiting for file to be fully written by FFmpeg...")
-        logger.info("   Production environment needs more time for I/O sync...")
-        time.sleep(15)  # ✅ CHANGED: 5 → 15 seconds for production
+        logger.info("   Production environment needs extended time for I/O sync...")
+        time.sleep(30)  # ✅ CHANGED: 15 → 30 seconds base wait
         
-        # ✅ NEW: Verify file size stabilizes
+        # ✅ PRODUCTION FIX: Multiple stability checks over 15 seconds
         if os.path.exists(local_file_path):
+            stable_count = 0
             prev_size = os.path.getsize(local_file_path)
-            time.sleep(3)
-            curr_size = os.path.getsize(local_file_path)
-            if curr_size != prev_size:
-                logger.warning(f"⚠️ File still growing: {prev_size} → {curr_size} bytes")
-                time.sleep(5)  # Extra wait
-        
+            
+            for check in range(5):  # Check 5 times over 15 seconds
+                time.sleep(3)
+                curr_size = os.path.getsize(local_file_path)
+                
+                if curr_size == prev_size:
+                    stable_count += 1
+                    logger.info(f"✅ File stable check {stable_count}/3: {curr_size:,} bytes")
+                    if stable_count >= 3:  # Require 3 consecutive stable checks
+                        break
+                else:
+                    stable_count = 0
+                    logger.warning(f"⚠️ File still growing: {prev_size:,} → {curr_size:,} bytes")
+                
+                prev_size = curr_size
+            
+            if stable_count < 3:
+                logger.warning("⚠️ File may not be fully stable, adding extra wait...")
+                time.sleep(10)  # Extra safety margin        
         try:
             if os.path.exists(local_file_path):
                 current_size = os.path.getsize(local_file_path)
@@ -783,19 +797,20 @@ class StreamingRecordingWithChunks:
                             self.audio_fifo_writer.write(silence.tobytes())
                             remaining -= chunk_size
                         
-                        # ✅ NEW: Extended flush with longer delays
-                        for i in range(10):  # CHANGED: 5 → 10 iterations
+                        # ✅ PRODUCTION FIX: Extended flush with much longer delays
+                        for i in range(15):  # CHANGED: 10 → 15 iterations
                             self.audio_fifo_writer.flush()
-                            time.sleep(0.5)  # CHANGED: 0.2 → 0.5 seconds
+                            time.sleep(1.0)  # CHANGED: 0.5 → 1.0 seconds
                         
                         # Force sync if possible
                         if hasattr(self.audio_fifo_writer, 'fileno'):
                             try:
                                 os.fsync(self.audio_fifo_writer.fileno())
-                                time.sleep(1.0)  # ✅ NEW: Extra delay after fsync
+                                logger.info("✅ Forced audio FIFO fsync")
+                                time.sleep(3.0)  # CHANGED: 1.0 → 3.0 seconds after fsync
                             except:
                                 pass
-                        
+
                         logger.info("✅ Audio FIFO flushed with 2s silence buffer")
                 
                 self.audio_drain_complete = True
@@ -1372,6 +1387,14 @@ class StreamingRecordingWithChunks:
         self.is_recording = False
         self.stop_event.set()
         
+        # ✅ PRODUCTION FIX: Stop S3 chunk uploader NOW to prevent I/O interference
+        if self.chunk_uploader:
+            logger.info("🛑 Stopping S3 chunk uploader to avoid I/O conflicts...")
+            self.chunk_uploader.is_uploading = False
+            if self.chunk_uploader.upload_thread and self.chunk_uploader.upload_thread.is_alive():
+                self.chunk_uploader.upload_thread.join(timeout=10)
+                logger.info("✅ S3 chunk uploader stopped")
+        
         # Stop timeline
         final_pts = self.timeline.stop()
 
@@ -1414,11 +1437,21 @@ class StreamingRecordingWithChunks:
         drain_duration = time.perf_counter() - start_drain_time
         logger.info(f"✅ Audio drain completed in {drain_duration:.1f}s")
 
-        # ✅ NEW: Phase 2.5 - Wait additional time for FIFO to fully drain to FFmpeg
+        # ✅ PRODUCTION FIX: Phase 2.5 - Extended wait for container I/O
         logger.info("🛑 Phase 2.5: Waiting for FIFO to drain to FFmpeg...")
-        additional_wait = 10.0  # ✅ NEW: 10 seconds for production safety
+        additional_wait = 20.0  # ✅ CHANGED: 10 → 20 seconds for production
         logger.info(f"   Waiting {additional_wait}s to ensure FFmpeg consumes all FIFO data...")
+        logger.info(f"   Production container I/O requires extended buffer flush time...")
         time.sleep(additional_wait)
+        
+        # ✅ NEW: Force filesystem sync if possible
+        try:
+            if self.ffmpeg_video_pipe and hasattr(self.ffmpeg_video_pipe, 'fileno'):
+                os.fsync(self.ffmpeg_video_pipe.fileno())
+                logger.info("✅ Forced video pipe fsync")
+        except:
+            pass
+        
         logger.info("✅ FIFO drain wait complete")
 
         # Phase 3: Close audio FIFO after confirmed drain
@@ -1450,9 +1483,9 @@ class StreamingRecordingWithChunks:
         
         # Wait for VIDEO FFmpeg
         if self.ffmpeg_video_process:
-            logger.info("⏳ Waiting for video FFmpeg (120s timeout for production)...")
+            logger.info("⏳ Waiting for video FFmpeg (300s timeout for production)...")
             try:
-                ret = self.ffmpeg_video_process.wait(timeout=120)  # ✅ NEW: 2 minute timeout
+                ret = self.ffmpeg_video_process.wait(timeout=300)  # CHANGED: 120 → 300 seconds (5 min)
                 logger.info(f"✅ Video FFmpeg exited: {ret}")
             except subprocess.TimeoutExpired:
                 logger.error("❌ Video FFmpeg timeout - forcing termination")
@@ -1464,9 +1497,9 @@ class StreamingRecordingWithChunks:
         
         # Wait for AUDIO FFmpeg
         if self.ffmpeg_audio_process:
-            logger.info("⏳ Waiting for audio FFmpeg (120s timeout for production)...")
+            logger.info("⏳ Waiting for audio FFmpeg (300s timeout for production)...")
             try:
-                ret = self.ffmpeg_audio_process.wait(timeout=120)  # ✅ NEW: 2 minute timeout
+                ret = self.ffmpeg_audio_process.wait(timeout=300)  # CHANGED: 120 → 300 seconds (5 min)
                 logger.info(f"✅ Audio FFmpeg exited: {ret}")
             except subprocess.TimeoutExpired:
                 logger.error("❌ Audio FFmpeg timeout - forcing termination")
@@ -2929,19 +2962,42 @@ class FixedGoogleMeetRecorder:
             except Exception as e:
                 logger.warning(f"⚠️ Frame validation error: {e}")
 
-            # Verify file exists with retry logic
+            # ✅ PRODUCTION FIX: Extended file verification with fsync
             logger.info(f"🔍 Checking output file: {output_file}")
-            max_retries = 5
+            
+            # Force filesystem sync on output file
+            try:
+                with open(output_file, 'rb') as verify_file:
+                    verify_file.seek(0, 2)  # Seek to end
+                    os.fsync(verify_file.fileno())
+                    logger.info("✅ Forced output file fsync")
+                time.sleep(5)  # Wait for OS buffers to settle
+            except Exception as e:
+                logger.warning(f"⚠️ File fsync warning: {e}")
+            
+            max_retries = 8  # CHANGED: 5 → 8 retries
+            stable_checks = 0
+            prev_size = 0
+            
             for attempt in range(max_retries):
                 if os.path.exists(output_file):
                     file_size = os.path.getsize(output_file)
                     logger.info(f"📊 Attempt {attempt+1}/{max_retries}: File size = {file_size:,} bytes")
                     
                     if file_size > 0:
-                        break
+                        if file_size == prev_size:
+                            stable_checks += 1
+                            logger.info(f"   ✅ Stable check {stable_checks}/2")
+                            if stable_checks >= 2:  # Require 2 consecutive stable reads
+                                break
+                        else:
+                            stable_checks = 0
+                            logger.info(f"   ⚠️ Size changed: {prev_size:,} → {file_size:,}")
+                        
+                        prev_size = file_size
                     
-                logger.info(f"⏳ Waiting for file to be written (attempt {attempt+1}/{max_retries})...")
-                time.sleep(3)
+                logger.info(f"⏳ Waiting for file stability (attempt {attempt+1}/{max_retries})...")
+                time.sleep(5)  # CHANGED: 3 → 5 seconds between checks
             else:
                 if not os.path.exists(output_file):
                     logger.error(f"❌ Output file not found after {max_retries} attempts")
