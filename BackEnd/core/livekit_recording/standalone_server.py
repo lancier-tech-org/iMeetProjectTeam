@@ -4,15 +4,30 @@ Standalone HTTP server for LiveKit recording service.
 Runs independently from Django/Gunicorn to avoid max-requests limits.
 """
 
+# ============================================
+# CRITICAL: Initialize Django BEFORE any imports
+# ============================================
+import os
+import sys
+
+# Set Django settings module
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'SampleDB.settings')
+
+# Initialize Django
+import django
+django.setup()
+
+# ============================================
+# Now safe to import everything else
+# ============================================
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import logging
 import uvicorn
-import os
 
-# Import the existing recording service
+# Import the existing recording service (now Django is ready)
 from core.livekit_recording.recording_service import stream_recording_service
 
 # Configure logging
