@@ -486,10 +486,11 @@ class ProductionLiveKitService:
                 
                 # OPTIMIZATION: Large group optimizations (no limit)
                 'simulcast_enabled': True,
-                'preferred_codec': 'vp8',
-                'max_bitrate': 2000000,
+                'preferred_codec': 'vp9',
+                'max_bitrate': 6000000,
                 'enable_redundant_encoding': True,
-                'subscriber_bandwidth_limit': 1500000
+                'subscriber_bandwidth_limit': 0,
+                'simulcast_enabled': True,
             }
             
             room_result = self._create_room_via_api(room_name, enhanced_config)
