@@ -3322,6 +3322,51 @@ def Get_User_Full_Profile(request, user_id):
         logger.error(f"Error getting user profile: {e}")
         return JsonResponse({"Error": "Failed to get user profile"}, status=500)
 
+@require_http_methods(["GET"])
+@csrf_exempt
+def Get_Company_Logo(request):
+    """
+    Get company logo from S3 logo/ folder
+    GET /api/company/logo/
+    GET /api/company/logo/?filename=company_logo.png
+    """
+    try:
+        filename = request.GET.get('filename', 'ImeetPro.png')
+        s3_key = f"logo/{filename}"
+        
+        logger.info(f"Fetching logo from S3: {s3_key}")
+        
+        # Check if logo exists in S3
+        try:
+            s3_client.head_object(Bucket=AWS_S3_BUCKET, Key=s3_key)
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                return JsonResponse({"Error": "Logo not found", "s3_key": s3_key}, status=404)
+            raise
+        
+        # Generate presigned URL (expires in 1 hour)
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': AWS_S3_BUCKET, 'Key': s3_key},
+            ExpiresIn=3600
+        )
+        
+        logger.info(f"✅ Logo URL generated: {s3_key}")
+        
+        return JsonResponse({
+            "success": True,
+            "logo_url": presigned_url,
+            "filename": filename
+        }, status=200)
+        
+    except ClientError as e:
+        logger.error(f"S3 error fetching logo: {e}")
+        return JsonResponse({"Error": "Failed to fetch logo"}, status=500)
+    except Exception as e:
+        logger.error(f"Error in Get_Company_Logo: {e}")
+        return JsonResponse({"Error": "Failed to get logo"}, status=500)
+
+
 urlpatterns = [
     path('api/auth/validate-email/', validate_email, name='validate_email'),
     path('api/auth/register', Register_User, name='Register_User'),
@@ -3349,4 +3394,5 @@ urlpatterns = [
     path('api/user/regenerate-embedding/<int:user_id>/', Regenerate_User_Embedding, name='regenerate_embedding'),
     path('api/admin/embedding-stats/', Get_Embedding_Statistics, name='embedding_stats'),
     path('api/user/profile/<int:user_id>/', Get_User_Full_Profile, name='get_user_full_profile'),
+    path('api/company/logo/', Get_Company_Logo, name='get_company_logo'),
 ]
