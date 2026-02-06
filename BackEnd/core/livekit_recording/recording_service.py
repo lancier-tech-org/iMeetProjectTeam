@@ -872,12 +872,21 @@ class StreamingRecordingWithChunks:
                 '-f', 'rawvideo',
                 '-pix_fmt', 'bgr24',
                 '-s', '1280x720',
-                '-r', str(self.target_fps),
+                '-r', str(self.target_fps),  # Input framerate
                 '-i', 'pipe:0',
                 '-c:v', 'libx264',
                 '-preset', 'ultrafast',
+                '-tune', 'zerolatency',
+                '-r', str(self.target_fps),  # ✅ FORCE output framerate (CFR)
+                '-vsync', 'cfr',  # ✅ FORCE constant frame rate
+                '-g', str(self.target_fps * 2),  # ✅ Keyframe every 2 seconds
+                '-keyint_min', str(self.target_fps * 2),  # ✅ Min keyframe interval
+                '-sc_threshold', '0',  # ✅ Disable scene detection
                 '-crf', '23',
                 '-pix_fmt', 'yuv420p',
+                '-profile:v', 'baseline',  # ✅ Maximum compatibility
+                '-level', '3.1',  # ✅ Compatible with all devices
+                '-movflags', '+faststart',  # ✅ Fast web playback
                 '-an',  # No audio
                 self.temp_video_path
             ]
