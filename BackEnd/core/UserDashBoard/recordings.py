@@ -91,7 +91,11 @@ from core.WebSocketConnection.notifications import (
 )
 import pytz  # For timezone handling in notifications
 
-
+# Add this configuration after imports
+RECORDING_SERVICE_URL = os.getenv(
+    "RECORDING_SERVICE_URL", 
+    "http://recording-service.imeetpro.svc.cluster.local:8080"
+)
 
 # === SSL CERTIFICATE FIX FOR HUGGINGFACE & GOOGLE TRANSLATE ===
 import ssl
@@ -3801,15 +3805,312 @@ def process_meeting_recording(video_blob, meeting_id, user_id):
         logger.error(f"❌ Failed to process meeting recording: {e}")
         raise e
 
-# === 15. START RECORDING (LEGACY) ===
+# # === 15. START RECORDING (LEGACY) ===
+# @require_http_methods(["POST"])
+# @csrf_exempt
+# def Start_Recording(request, id):
+#     """Start LiveKit stream recording - UPDATED with duplicate prevention"""
+#     create_meetings_table()
+
+#     try:
+#         # Parse request body for additional settings
+#         recording_settings = {}
+#         if request.body:
+#             try:
+#                 recording_settings = json.loads(request.body)
+#             except json.JSONDecodeError:
+#                 pass
+
+#         with connection.cursor() as cursor:
+#             select_query = f"""
+#             SELECT Host_ID, Is_Recording_Enabled, Meeting_Name
+#             FROM {TBL_MEETINGS}
+#             WHERE ID = %s
+#             """
+#             cursor.execute(select_query, [id])
+#             row = cursor.fetchone()
+#             if not row:
+#                 logging.error(f"Meeting ID {id} not found")
+#                 return JsonResponse({"Error": "Meeting not found"}, status=404)
+
+#             host_id, is_recording_enabled, meeting_name = row
+            
+#             # Check if recording is already active in DATABASE
+#             if is_recording_enabled:
+#                 logging.info(f"Recording is already active in database for meeting {id}")
+#                 return JsonResponse({
+#                     "Message": "Recording is already active",
+#                     "success": True,
+#                     "already_recording": True,
+#                     "is_recording": True,
+#                     "meeting_id": id,
+#                     "recording_type": "livekit_stream"
+#                 }, status=200)
+
+#             # CLEAN UP ANY OLD FAILED RECORDINGS (older than 2 hours)
+#             try:
+#                 cutoff_time = datetime.now() - timedelta(hours=2)
+#                 cleanup_result = collection.update_many(
+#                     {
+#                         "meeting_id": id,
+#                         "recording_status": {"$in": ["starting", "active", "uploading"]},
+#                         "start_time": {"$lt": cutoff_time}
+#                     },
+#                     {
+#                         "$set": {
+#                             "recording_status": "failed",
+#                             "error": "Auto-cleaned up - stuck recording",
+#                             "cleanup_timestamp": datetime.now()
+#                         }
+#                     }
+#                 )
+                
+#                 if cleanup_result.modified_count > 0:
+#                     logging.info(f"Auto-cleaned {cleanup_result.modified_count} old recordings for meeting {id}")
+                    
+#             except Exception as cleanup_error:
+#                 logging.warning(f"Recording cleanup failed: {cleanup_error}")
+
+#             # Start LiveKit stream recording
+#             try:
+#                 from core.livekit_recording.recording_service import stream_recording_service
+                
+#                 room_name = recording_settings.get('room_name', f"meeting_{id}")
+#                 result = stream_recording_service.start_stream_recording(id, str(host_id), room_name)
+                
+#                 if result.get("status") == "success":
+#                     # Update database to reflect recording state
+#                     started_at = timezone.now()
+#                     update_query = f"""
+#                     UPDATE {TBL_MEETINGS}
+#                     SET Is_Recording_Enabled = 1, Started_At = %s
+#                     WHERE ID = %s
+#                     """
+#                     cursor.execute(update_query, [started_at, id])
+                    
+#                     logging.info(f"Stream recording started for meeting {id}")
+                    
+#                     return JsonResponse({
+#                         "Message": "Stream recording started - capturing all participant streams",
+#                         "success": True,
+#                         "already_recording": False,
+#                         "is_recording": True,
+#                         "meeting_id": id,
+#                         "recording_id": result.get("recording_id"),
+#                         "recording_type": "livekit_stream",
+#                         "screen_share_required": False,
+#                         "user_interaction_required": False,
+#                         "bot_joining": True,
+#                         "captures": "all_video_audio_streams_and_screen_shares",
+#                         "room_name": room_name,
+#                         "recorder_identity": result.get("recorder_identity"),
+#                         "like_google_meet": True,
+#                         "records_all_participants": True,
+#                         "settings": recording_settings
+#                     })
+                    
+#                 elif result.get("status") in ["already_active", "already_exists"]:
+#                     # Recording already exists - sync database
+#                     started_at = timezone.now()
+#                     cursor.execute(update_query, [started_at, id])
+                    
+#                     return JsonResponse({
+#                         "Message": "Recording was already active",
+#                         "success": True,
+#                         "already_recording": True,
+#                         "is_recording": True,
+#                         "meeting_id": id,
+#                         "recording_id": result.get("recording_id"),
+#                         "recording_type": "livekit_stream"
+#                     })
+                    
+#                 else:
+#                     return JsonResponse({
+#                         "Error": result.get("message", "Failed to start stream recording"),
+#                         "success": False,
+#                         "meeting_id": id,
+#                         "recording_type": "livekit_stream"
+#                     }, status=500)
+                    
+#             except Exception as e:
+#                 logging.error(f"Error starting stream recording: {e}")
+#                 return JsonResponse({
+#                     "Error": f"Stream recording failed: {str(e)}",
+#                     "success": False,
+#                     "meeting_id": id
+#                 }, status=500)
+            
+#     except Exception as e:
+#         logging.error(f"Database error starting recording for meeting {id}: {e}")
+#         return JsonResponse({
+#             "Error": f"Database error: {str(e)}",
+#             "success": False,
+#             "meeting_id": id
+#         }, status=500)
+
+# # === 16. STOP RECORDING (LEGACY) ===
+# @require_http_methods(["POST"])
+# @csrf_exempt
+# def Stop_Recording(request, id):
+#     """Stop LiveKit stream recording - UPDATED with processing integration"""
+#     create_meetings_table()
+
+#     try:
+#         # Get meeting info BEFORE updating
+#         with connection.cursor() as cursor:
+#             cursor.execute(f"""
+#             SELECT Host_ID, Is_Recording_Enabled, Meeting_Name
+#             FROM {TBL_MEETINGS}
+#             WHERE ID = %s
+#             """, [id])
+            
+#             row = cursor.fetchone()
+#             if not row:
+#                 logging.error(f"Meeting ID {id} not found")
+#                 return JsonResponse({"Error": "Meeting not found"}, status=404)
+
+#             host_id, is_recording_enabled, meeting_name = row
+            
+#             if not is_recording_enabled:
+#                 return JsonResponse({
+#                     "Message": "Recording was not active",
+#                     "meeting_id": id,
+#                     "is_recording": False,
+#                     "success": True,
+#                     "recording_type": "livekit_stream"
+#                 }, status=200)
+
+#         # Stop LiveKit stream recording
+#         try:
+#             from core.livekit_recording.recording_service import stream_recording_service
+            
+#             result = stream_recording_service.stop_stream_recording(id)
+            
+#             # Update database to reflect stopped state FIRST
+#             ended_at = timezone.now()
+#             with connection.cursor() as cursor:
+#                 cursor.execute(f"""
+#                 UPDATE {TBL_MEETINGS}
+#                 SET Is_Recording_Enabled = 0, Ended_At = %s
+#                 WHERE ID = %s
+#                 """, [ended_at, id])
+            
+#             # Handle processing based on result
+#             if result and result.get("status") == "success":
+#                 # Check if processing was completed
+#                 processing_result = result.get("processing_result", {})
+                
+#                 if processing_result.get("status") == "success":
+#                     logging.info(f"Stream recording stopped AND PROCESSED for meeting {id}")
+                    
+#                     return JsonResponse({
+#                         "Message": "Stream recording stopped and processed successfully",
+#                         "success": True,
+#                         "meeting_id": id,
+#                         "meeting_name": meeting_name,
+#                         "is_recording": False,
+#                         "recording_type": "livekit_stream",
+#                         "processing_completed": True,
+#                         "video_url": processing_result.get("video_url"),
+#                         "transcript_url": processing_result.get("transcript_url"),
+#                         "summary_url": processing_result.get("summary_url"),
+#                         "subtitle_urls": processing_result.get("subtitle_urls", {}),
+#                         "image_url": processing_result.get("image_url"),
+#                         "file_size": result.get("file_size", 0),
+#                         "transcription_available": bool(processing_result.get("transcript_url")),
+#                         "summary_available": bool(processing_result.get("summary_url")),
+#                         "streams_captured": "all_participant_streams",
+#                         "like_google_meet": True,
+#                         "captured_all_participants": True
+#                     })
+#                 else:
+#                     # Recording stopped but processing failed
+#                     return JsonResponse({
+#                         "Message": "Recording stopped but processing failed",
+#                         "success": True,
+#                         "meeting_id": id,
+#                         "meeting_name": meeting_name,
+#                         "is_recording": False,
+#                         "recording_type": "livekit_stream",
+#                         "recording_stopped": True,
+#                         "processing_failed": True,
+#                         "processing_error": processing_result.get("error"),
+#                         "file_path": result.get("file_path"),
+#                         "file_size": result.get("file_size", 0),
+#                         "suggestion": "Raw file available for manual processing"
+#                     })
+                    
+#             elif result and result.get("status") == "partial_success":
+#                 return JsonResponse({
+#                     "Message": "Stream recording stopped but had processing issues",
+#                     "success": True,
+#                     "meeting_id": id,
+#                     "meeting_name": meeting_name,
+#                     "is_recording": False,
+#                     "recording_type": "livekit_stream",
+#                     "recording_stopped": True,
+#                     "processing_issues": True,
+#                     "error": result.get("error"),
+#                     "file_path": result.get("file_path")
+#                 })
+#             else:
+#                 error_msg = "Stream recording failed to produce valid output"
+#                 if result:
+#                     error_msg = result.get("message", error_msg)
+                
+#                 logging.warning(f"Stream recording failed for meeting {id}: {error_msg}")
+                
+#                 return JsonResponse({
+#                     "Message": "Recording stopped but stream recording failed",
+#                     "success": True,
+#                     "meeting_id": id,
+#                     "meeting_name": meeting_name,
+#                     "is_recording": False,
+#                     "recording_type": "livekit_stream",
+#                     "recording_stopped": True,
+#                     "stream_recording_failed": True,
+#                     "error": error_msg,
+#                     "reason": "Stream recording bot failed to capture meeting content"
+#                 })
+                
+#         except Exception as e:
+#             logging.error(f"Error stopping stream recording: {e}")
+            
+#             # Still update database to show recording stopped
+#             try:
+#                 ended_at = timezone.now()
+#                 with connection.cursor() as cursor:
+#                     cursor.execute(f"""
+#                     UPDATE {TBL_MEETINGS}
+#                     SET Is_Recording_Enabled = 0, Ended_At = %s
+#                     WHERE ID = %s
+#                     """, [ended_at, id])
+#             except Exception:
+#                 pass
+            
+#             return JsonResponse({
+#                 "Error": f"Failed to stop stream recording: {str(e)}",
+#                 "success": False,
+#                 "meeting_id": id,
+#                 "recording_type": "livekit_stream"
+#             }, status=500)
+
+#     except Exception as e:
+#         logging.error(f"Critical failure for meeting {id}: {e}")
+        
+#         return JsonResponse({
+#             "Error": f"Critical error: {str(e)}", 
+#             "success": False,
+#             "meeting_id": id
+#         }, status=500)
+
+# Replace the existing Start_Recording function with this:
 @require_http_methods(["POST"])
 @csrf_exempt
 def Start_Recording(request, id):
-    """Start LiveKit stream recording - UPDATED with duplicate prevention"""
-    create_meetings_table()
-
+    """Start LiveKit stream recording - calls recording service via HTTP"""
     try:
-        # Parse request body for additional settings
+        # Parse request body
         recording_settings = {}
         if request.body:
             try:
@@ -3818,9 +4119,9 @@ def Start_Recording(request, id):
                 pass
 
         with connection.cursor() as cursor:
-            select_query = f"""
+            select_query = """
             SELECT Host_ID, Is_Recording_Enabled, Meeting_Name
-            FROM {TBL_MEETINGS}
+            FROM tbl_Meetings
             WHERE ID = %s
             """
             cursor.execute(select_query, [id])
@@ -3831,9 +4132,9 @@ def Start_Recording(request, id):
 
             host_id, is_recording_enabled, meeting_name = row
             
-            # Check if recording is already active in DATABASE
+            # Check if recording is already active
             if is_recording_enabled:
-                logging.info(f"Recording is already active in database for meeting {id}")
+                logging.info(f"Recording is already active for meeting {id}")
                 return JsonResponse({
                     "Message": "Recording is already active",
                     "success": True,
@@ -3843,126 +4144,95 @@ def Start_Recording(request, id):
                     "recording_type": "livekit_stream"
                 }, status=200)
 
-            # CLEAN UP ANY OLD FAILED RECORDINGS (older than 2 hours)
+            # ✅ NEW: Call recording service via HTTP
             try:
-                cutoff_time = datetime.now() - timedelta(hours=2)
-                cleanup_result = collection.update_many(
-                    {
+                room_name = recording_settings.get('room_name', f"meeting_{id}")
+                
+                # Make HTTP request to recording service
+                response = requests.post(
+                    f"{RECORDING_SERVICE_URL}/start",
+                    json={
                         "meeting_id": id,
-                        "recording_status": {"$in": ["starting", "active", "uploading"]},
-                        "start_time": {"$lt": cutoff_time}
+                        "host_user_id": str(host_id),
+                        "room_name": room_name
                     },
-                    {
-                        "$set": {
-                            "recording_status": "failed",
-                            "error": "Auto-cleaned up - stuck recording",
-                            "cleanup_timestamp": datetime.now()
-                        }
-                    }
+                    timeout=30
                 )
                 
-                if cleanup_result.modified_count > 0:
-                    logging.info(f"Auto-cleaned {cleanup_result.modified_count} old recordings for meeting {id}")
+                if response.status_code == 200:
+                    result = response.json()
                     
-            except Exception as cleanup_error:
-                logging.warning(f"Recording cleanup failed: {cleanup_error}")
-
-            # Start LiveKit stream recording
-            try:
-                from core.livekit_recording.recording_service import stream_recording_service
-                
-                room_name = recording_settings.get('room_name', f"meeting_{id}")
-                result = stream_recording_service.start_stream_recording(id, str(host_id), room_name)
-                
-                if result.get("status") == "success":
-                    # Update database to reflect recording state
+                    # Update database
                     started_at = timezone.now()
-                    update_query = f"""
-                    UPDATE {TBL_MEETINGS}
-                    SET Is_Recording_Enabled = 1, Started_At = %s
-                    WHERE ID = %s
-                    """
-                    cursor.execute(update_query, [started_at, id])
+                    cursor.execute(
+                        "UPDATE tbl_Meetings SET Is_Recording_Enabled = 1, Started_At = %s WHERE ID = %s",
+                        [started_at, id]
+                    )
                     
                     logging.info(f"Stream recording started for meeting {id}")
                     
                     return JsonResponse({
-                        "Message": "Stream recording started - capturing all participant streams",
+                        "Message": "Stream recording started successfully",
                         "success": True,
-                        "already_recording": False,
                         "is_recording": True,
                         "meeting_id": id,
                         "recording_id": result.get("recording_id"),
                         "recording_type": "livekit_stream",
-                        "screen_share_required": False,
-                        "user_interaction_required": False,
-                        "bot_joining": True,
-                        "captures": "all_video_audio_streams_and_screen_shares",
-                        "room_name": room_name,
-                        "recorder_identity": result.get("recorder_identity"),
-                        "like_google_meet": True,
-                        "records_all_participants": True,
-                        "settings": recording_settings
+                        "service_mode": "standalone",
+                        **result
                     })
-                    
-                elif result.get("status") in ["already_active", "already_exists"]:
-                    # Recording already exists - sync database
-                    started_at = timezone.now()
-                    cursor.execute(update_query, [started_at, id])
-                    
-                    return JsonResponse({
-                        "Message": "Recording was already active",
-                        "success": True,
-                        "already_recording": True,
-                        "is_recording": True,
-                        "meeting_id": id,
-                        "recording_id": result.get("recording_id"),
-                        "recording_type": "livekit_stream"
-                    })
-                    
                 else:
+                    error_msg = response.json().get("message", "Recording service error")
                     return JsonResponse({
-                        "Error": result.get("message", "Failed to start stream recording"),
+                        "Error": error_msg,
                         "success": False,
-                        "meeting_id": id,
-                        "recording_type": "livekit_stream"
+                        "meeting_id": id
                     }, status=500)
                     
-            except Exception as e:
-                logging.error(f"Error starting stream recording: {e}")
+            except requests.exceptions.Timeout:
                 return JsonResponse({
-                    "Error": f"Stream recording failed: {str(e)}",
+                    "Error": "Recording service timeout",
+                    "success": False,
+                    "meeting_id": id
+                }, status=504)
+            except requests.exceptions.ConnectionError:
+                return JsonResponse({
+                    "Error": "Cannot connect to recording service",
+                    "success": False,
+                    "meeting_id": id
+                }, status=503)
+            except Exception as e:
+                logging.error(f"Error calling recording service: {e}")
+                return JsonResponse({
+                    "Error": f"Recording service error: {str(e)}",
                     "success": False,
                     "meeting_id": id
                 }, status=500)
             
     except Exception as e:
-        logging.error(f"Database error starting recording for meeting {id}: {e}")
+        logging.error(f"Database error: {e}")
         return JsonResponse({
             "Error": f"Database error: {str(e)}",
             "success": False,
             "meeting_id": id
         }, status=500)
 
-# === 16. STOP RECORDING (LEGACY) ===
+# Replace the existing Stop_Recording function with this:
 @require_http_methods(["POST"])
 @csrf_exempt
 def Stop_Recording(request, id):
-    """Stop LiveKit stream recording - UPDATED with processing integration"""
-    create_meetings_table()
-
+    """Stop LiveKit stream recording - calls recording service via HTTP"""
     try:
-        # Get meeting info BEFORE updating
+        # Get meeting info
         with connection.cursor() as cursor:
-            cursor.execute(f"""
+            cursor.execute("""
             SELECT Host_ID, Is_Recording_Enabled, Meeting_Name
-            FROM {TBL_MEETINGS}
+            FROM tbl_Meetings
             WHERE ID = %s
             """, [id])
             
             row = cursor.fetchone()
             if not row:
-                logging.error(f"Meeting ID {id} not found")
                 return JsonResponse({"Error": "Meeting not found"}, status=404)
 
             host_id, is_recording_enabled, meeting_name = row
@@ -3972,134 +4242,75 @@ def Stop_Recording(request, id):
                     "Message": "Recording was not active",
                     "meeting_id": id,
                     "is_recording": False,
-                    "success": True,
-                    "recording_type": "livekit_stream"
+                    "success": True
                 }, status=200)
 
-        # Stop LiveKit stream recording
+        # ✅ NEW: Call recording service via HTTP
         try:
-            from core.livekit_recording.recording_service import stream_recording_service
+            response = requests.post(
+                f"{RECORDING_SERVICE_URL}/stop",
+                json={"meeting_id": id},
+                timeout=60  # Longer timeout for stopping
+            )
             
-            result = stream_recording_service.stop_stream_recording(id)
-            
-            # Update database to reflect stopped state FIRST
+            # Update database immediately
             ended_at = timezone.now()
             with connection.cursor() as cursor:
-                cursor.execute(f"""
-                UPDATE {TBL_MEETINGS}
+                cursor.execute("""
+                UPDATE tbl_Meetings
                 SET Is_Recording_Enabled = 0, Ended_At = %s
                 WHERE ID = %s
                 """, [ended_at, id])
             
-            # Handle processing based on result
-            if result and result.get("status") == "success":
-                # Check if processing was completed
-                processing_result = result.get("processing_result", {})
+            if response.status_code == 200:
+                result = response.json()
+                logging.info(f"Recording stopped for meeting {id}")
                 
-                if processing_result.get("status") == "success":
-                    logging.info(f"Stream recording stopped AND PROCESSED for meeting {id}")
-                    
-                    return JsonResponse({
-                        "Message": "Stream recording stopped and processed successfully",
-                        "success": True,
-                        "meeting_id": id,
-                        "meeting_name": meeting_name,
-                        "is_recording": False,
-                        "recording_type": "livekit_stream",
-                        "processing_completed": True,
-                        "video_url": processing_result.get("video_url"),
-                        "transcript_url": processing_result.get("transcript_url"),
-                        "summary_url": processing_result.get("summary_url"),
-                        "subtitle_urls": processing_result.get("subtitle_urls", {}),
-                        "image_url": processing_result.get("image_url"),
-                        "file_size": result.get("file_size", 0),
-                        "transcription_available": bool(processing_result.get("transcript_url")),
-                        "summary_available": bool(processing_result.get("summary_url")),
-                        "streams_captured": "all_participant_streams",
-                        "like_google_meet": True,
-                        "captured_all_participants": True
-                    })
-                else:
-                    # Recording stopped but processing failed
-                    return JsonResponse({
-                        "Message": "Recording stopped but processing failed",
-                        "success": True,
-                        "meeting_id": id,
-                        "meeting_name": meeting_name,
-                        "is_recording": False,
-                        "recording_type": "livekit_stream",
-                        "recording_stopped": True,
-                        "processing_failed": True,
-                        "processing_error": processing_result.get("error"),
-                        "file_path": result.get("file_path"),
-                        "file_size": result.get("file_size", 0),
-                        "suggestion": "Raw file available for manual processing"
-                    })
-                    
-            elif result and result.get("status") == "partial_success":
                 return JsonResponse({
-                    "Message": "Stream recording stopped but had processing issues",
+                    "Message": "Recording stopped successfully",
                     "success": True,
                     "meeting_id": id,
                     "meeting_name": meeting_name,
                     "is_recording": False,
-                    "recording_type": "livekit_stream",
-                    "recording_stopped": True,
-                    "processing_issues": True,
-                    "error": result.get("error"),
-                    "file_path": result.get("file_path")
+                    "service_mode": "standalone",
+                    **result
                 })
             else:
-                error_msg = "Stream recording failed to produce valid output"
-                if result:
-                    error_msg = result.get("message", error_msg)
-                
-                logging.warning(f"Stream recording failed for meeting {id}: {error_msg}")
-                
+                error_msg = response.json().get("message", "Recording service error")
                 return JsonResponse({
-                    "Message": "Recording stopped but stream recording failed",
-                    "success": True,
-                    "meeting_id": id,
-                    "meeting_name": meeting_name,
-                    "is_recording": False,
-                    "recording_type": "livekit_stream",
-                    "recording_stopped": True,
-                    "stream_recording_failed": True,
-                    "error": error_msg,
-                    "reason": "Stream recording bot failed to capture meeting content"
-                })
+                    "Error": error_msg,
+                    "success": False,
+                    "meeting_id": id
+                }, status=500)
                 
-        except Exception as e:
-            logging.error(f"Error stopping stream recording: {e}")
-            
-            # Still update database to show recording stopped
-            try:
-                ended_at = timezone.now()
-                with connection.cursor() as cursor:
-                    cursor.execute(f"""
-                    UPDATE {TBL_MEETINGS}
-                    SET Is_Recording_Enabled = 0, Ended_At = %s
-                    WHERE ID = %s
-                    """, [ended_at, id])
-            except Exception:
-                pass
-            
+        except requests.exceptions.Timeout:
             return JsonResponse({
-                "Error": f"Failed to stop stream recording: {str(e)}",
+                "Error": "Recording service timeout",
                 "success": False,
-                "meeting_id": id,
-                "recording_type": "livekit_stream"
+                "meeting_id": id
+            }, status=504)
+        except requests.exceptions.ConnectionError:
+            return JsonResponse({
+                "Error": "Cannot connect to recording service",
+                "success": False,
+                "meeting_id": id
+            }, status=503)
+        except Exception as e:
+            logging.error(f"Error calling recording service: {e}")
+            return JsonResponse({
+                "Error": f"Recording service error: {str(e)}",
+                "success": False,
+                "meeting_id": id
             }, status=500)
 
     except Exception as e:
-        logging.error(f"Critical failure for meeting {id}: {e}")
-        
+        logging.error(f"Critical failure: {e}")
         return JsonResponse({
             "Error": f"Critical error: {str(e)}", 
             "success": False,
             "meeting_id": id
         }, status=500)
-              
+           
 # === 17. NEW: UPLOAD SINGLE FILE (FROM FASTAPI) ===
 @require_http_methods(["POST"])
 @csrf_exempt

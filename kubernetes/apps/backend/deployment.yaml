@@ -208,6 +208,10 @@ spec:
                   key: GROQ_API_KEY
                   optional: true
             
+            # Recording Service URL
+            - name: RECORDING_SERVICE_URL
+              value: "http://recording-service.imeetpro.svc.cluster.local:8080"
+            
             # ============================================
             # EMAIL CONFIGURATION
             # ============================================

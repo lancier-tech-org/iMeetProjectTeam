@@ -1,4 +1,4 @@
-# core/stream_recording/urls.py
+# core/livekit_recording/urls.py
 
 from django.urls import path
 from . import views

@@ -1,0 +1,94 @@
+# =============================================================================
+# iMeetPro Recording Service - Standalone Dockerfile
+# =============================================================================
+# Lightweight deployment for long-running recording bots
+# No Gunicorn limits - can run 5+ hour recordings
+# =============================================================================
+
+FROM python:3.11-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    APP_HOME=/app
+
+WORKDIR $APP_HOME
+
+# ============================================
+# Install System Dependencies
+# ============================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # FFmpeg for video processing
+    ffmpeg \
+    # Build tools
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    # Database clients
+    default-mysql-client \
+    libmariadb3 \
+    # Network tools
+    curl \
+    # Cleanup
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# ============================================
+# Install Python Dependencies
+# ============================================
+# Copy only requirements first (cache-friendly)
+COPY requirements.txt .
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir -r requirements.txt && \
+    # Install FastAPI and Uvicorn for standalone server
+    pip install --no-cache-dir fastapi==0.115.14 uvicorn==0.34.3
+
+# ============================================
+# Copy Application Code
+# ============================================
+# Only copy necessary directories for recording service
+COPY core/livekit_recording ./core/livekit_recording
+COPY core/UserDashBoard ./core/UserDashBoard
+COPY core/scheduler ./core/scheduler
+COPY core/__init__.py ./core/__init__.py
+COPY SampleDB ./SampleDB
+COPY manage.py .
+
+# ============================================
+# Create Non-Root User
+# ============================================
+RUN groupadd -r recordergroup && \
+    useradd -r -g recordergroup recorderuser && \
+    mkdir -p /tmp /app/logs && \
+    chmod -R 777 /tmp /app/logs && \
+    chown -R recorderuser:recordergroup /app
+
+# ============================================
+# Environment Variables
+# ============================================
+ENV DJANGO_SETTINGS_MODULE=SampleDB.settings \
+    SERVICE_MODE=standalone \
+    RECORDING_SERVICE_PORT=8080 \
+    RECORDING_SERVICE_WORKERS=1
+
+# Switch to non-root user
+USER recorderuser
+
+EXPOSE 8080
+
+# ============================================
+# Health Check
+# ============================================
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# ============================================
+# Start Command
+# ============================================
+CMD ["python", "-m", "uvicorn", \
+     "core.livekit_recording.standalone_server:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8080", \
+     "--workers", "1", \
+     "--log-level", "info"]
