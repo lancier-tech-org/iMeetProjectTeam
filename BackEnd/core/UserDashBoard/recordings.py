@@ -157,12 +157,30 @@ except Exception as e:
     client = None
     print(f"Warning: OpenAI client not initialized: {e}")
     
-try:
-    groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-except Exception as e:
-    groq_client = None
-    print(f"Warning: Groq client not initialized: {e}")
+# try:
+#     groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# except Exception as e:
+#     groq_client = None
+#     print(f"Warning: Groq client not initialized: {e}")
+
+# ============================================
+# GROQ CLIENT INITIALIZATION - ENHANCED
+# ============================================
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+groq_client = None
+
+if GROQ_API_KEY:
+    try:
+        groq_client = Groq(api_key=GROQ_API_KEY)
+        print(f"✅ Groq client initialized successfully (key: {GROQ_API_KEY[:8]}...)")
+    except Exception as e:
+        groq_client = None
+        print(f"❌ Groq client initialization FAILED: {e}")
+else:
+    print(f"❌ GROQ_API_KEY is EMPTY or NOT SET in environment")
+    print(f"❌ Transcription, summary, and trainer evaluation will NOT work!")
     
+
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # === FIXED FUNCTION 1: Enhanced S3 Key Extraction ===
@@ -1308,7 +1326,13 @@ async def transcribe_chunk(chunk_file: str, offset: float):
             "text": "[Transcription failed]"
         }]
 
+
 def summarize_segment(transcript: str, context: str = ""):
+    # ✅ CRITICAL: Check if Groq client is available
+    if groq_client is None:
+        logger.error("❌ Cannot generate summary - groq_client is None!")
+        logger.error(f"❌ GROQ_API_KEY value: '{os.getenv('GROQ_API_KEY', 'NOT_SET')[:10]}...'")
+        return "Summary unavailable - Groq API not configured. Please check GROQ_API_KEY environment variable."
     prompt = f"""
 You are a senior documentation and technical writing expert. Your task is to convert the following raw transcript segment into a comprehensive, highly accurate, and formal implementation or study guide based on the subject matter discussed.
 
@@ -1565,7 +1589,20 @@ def analyze_trainer_performance(transcript: str) -> dict:
             "friendliness": 0,
             "communication": 0,
             "overall_feedback": "No speech detected for evaluation."
-        } 
+        }
+    
+    # ✅ CRITICAL: Check if Groq client is available
+    if groq_client is None:
+        logger.error("❌ Cannot evaluate trainer - groq_client is None!")
+        logger.error(f"❌ GROQ_API_KEY value: '{os.getenv('GROQ_API_KEY', 'NOT_SET')[:10]}...'")
+        return {
+            "technical_content": 0,
+            "explanation_clarity": 0,
+            "friendliness": 0,
+            "communication": 0,
+            "overall_feedback": "Evaluation unavailable - Groq API not configured.",
+            "error": "groq_client is None"
+        }
 
     prompt = f"""
 You are an expert communication and training evaluator.
@@ -1967,49 +2004,61 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             # ========== TRANSCRIPTION ==========
             transcript_text = ""
             segments = []
+            # ✅ CRITICAL: Check if Groq client is available BEFORE attempting transcription
+            if groq_client is None:
+                logging.error("❌ GROQ CLIENT IS NONE - Cannot transcribe!")
+                logging.error(f"❌ GROQ_API_KEY in environment: '{os.getenv('GROQ_API_KEY', 'NOT_SET')[:10]}...'")
+                transcript_text = "Transcription unavailable - Groq API not configured. Please check GROQ_API_KEY environment variable."
+                segments = [{
+                    "start": 0.0,
+                    "end": max(5.0, video_duration),
+                    "text": "Transcription unavailable - Groq API not configured."
+                }]
+            else:
+                logging.info("✅ Groq client is available, starting transcription...")
 
-            try:
-                from pydub import AudioSegment
+                try:
+                    from pydub import AudioSegment
 
-                audio_file = AudioSegment.from_file(audio)
-                chunk_ms = 5 * 60 * 1000
-                offset = 0.0
+                    audio_file = AudioSegment.from_file(audio)
+                    chunk_ms = 5 * 60 * 1000
+                    offset = 0.0
 
-                for i in range(0, len(audio_file), chunk_ms):
-                    chunk = audio_file[i:i + chunk_ms]
-                    chunk_path = os.path.join(workdir, f"chunk_{i}.wav")
-                    chunk.export(chunk_path, format="wav")
+                    for i in range(0, len(audio_file), chunk_ms):
+                        chunk = audio_file[i:i + chunk_ms]
+                        chunk_path = os.path.join(workdir, f"chunk_{i}.wav")
+                        chunk.export(chunk_path, format="wav")
 
-                    with open(chunk_path, "rb") as f:
-                        result = groq_client.audio.transcriptions.create(
-                            model="whisper-large-v3-turbo",
-                            file=f,
-                            response_format="verbose_json"
-                        )
+                        with open(chunk_path, "rb") as f:
+                            result = groq_client.audio.transcriptions.create(
+                                model="whisper-large-v3-turbo",
+                                file=f,
+                                response_format="verbose_json"
+                            )
 
-                    if hasattr(result, "segments") and result.segments:
-                        for seg in result.segments:
+                        if hasattr(result, "segments") and result.segments:
+                            for seg in result.segments:
+                                segments.append({
+                                    "start": offset + float(seg["start"]),
+                                    "end": offset + float(seg["end"]),
+                                    "text": seg["text"].strip()
+                                })
+                        else:
+                            text = (result.text or "[No speech detected]").strip()
                             segments.append({
-                                "start": offset + float(seg["start"]),
-                                "end": offset + float(seg["end"]),
-                                "text": seg["text"].strip()
+                                "start": offset,
+                                "end": offset + 5,
+                                "text": text
                             })
-                    else:
-                        text = (result.text or "[No speech detected]").strip()
-                        segments.append({
-                            "start": offset,
-                            "end": offset + 5,
-                            "text": text
-                        })
 
-                    offset += len(chunk) / 1000
-                    os.remove(chunk_path)
+                        offset += len(chunk) / 1000
+                        os.remove(chunk_path)
 
-            except Exception as transcription_error:
-                logging.error(f"❌ Transcription failed: {transcription_error}")
-                segments = []
-                transcript_text = "Transcription failed."
-
+                except Exception as transcription_error:
+                    logging.error(f"❌ Transcription failed: {transcription_error}")
+                    segments = []
+                    transcript_text = "Transcription failed."
+            # ========== POST-TRANSCRIPTION FALLBACK ==========
             if not segments:
                 segments = [{
                     "start": 0.0,
