@@ -1175,7 +1175,6 @@ const Dashboard = () => {
                   value={userStats.meetingsThisWeek}
                   subtitle="Meetings attended"
                   color="#1A8A8A"
-                  trend={userStats.percentageChange !== 0 ? `${userStats.percentageChange > 0 ? '+' : ''}${userStats.percentageChange}%` : null}
                 />
               </Grid>
               <Grid item xs={6} sm={6} md={3}>
