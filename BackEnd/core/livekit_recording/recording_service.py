@@ -1475,7 +1475,7 @@ class StreamingRecordingWithChunks:
             except Exception as e:
                 logger.error(f"❌ Audio FFmpeg error: {e}")
                 self.ffmpeg_audio_process.kill()
-                
+
         # Phase 6: Verify file stability
         logger.info("🛑 Phase 6: Verifying file stability...")
         time.sleep(2.0)  # Let files settle
