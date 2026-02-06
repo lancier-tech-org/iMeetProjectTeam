@@ -2962,13 +2962,26 @@ class FixedGoogleMeetRecorder:
             try:
                 logger.info(f"📤 Uploading merged file to S3: {final_s3_key}")
                 
+                # with open(output_file, 'rb') as f:
+                #     s3_client.upload_fileobj(f, AWS_S3_BUCKET, final_s3_key)
+
                 with open(output_file, 'rb') as f:
-                    s3_client.upload_fileobj(f, AWS_S3_BUCKET, final_s3_key)
+                    s3_client.upload_fileobj(
+                        f, AWS_S3_BUCKET, final_s3_key,
+                        ExtraArgs={'ContentType': 'video/mp4'}
+                    )
+                
+                # Generate presigned URL so browser can play the video
+                video_url = s3_client.generate_presigned_url(
+                    'get_object',
+                    Params={'Bucket': AWS_S3_BUCKET, 'Key': final_s3_key},
+                    ExpiresIn=604800  # 7 days
+                )
                 
                 logger.info(f"✅ Uploaded to S3: {final_s3_key}")
                 
                 # Build video URL
-                video_url = f"https://{AWS_S3_BUCKET}.s3.amazonaws.com/{final_s3_key}"
+                # video_url = f"https://{AWS_S3_BUCKET}.s3.amazonaws.com/{final_s3_key}"
                 logger.info(f"🔗 Video URL: {video_url}")
                 
                 # Clean up temp files
@@ -3235,7 +3248,14 @@ class FixedGoogleMeetRecorder:
             logger.info(f"✅ Celery task dispatched successfully for meeting={meeting_id}")
             
             # ✅ DON'T delete here - Celery worker will delete after processing
-            logger.info(f"📝 Temp file will be deleted by Celery worker after processing: {temp_video_path}")
+            # logger.info(f"📝 Temp file will be deleted by Celery worker after processing: {temp_video_path}")
+            # Clean up local temp file since Celery will download from S3
+            try:
+                if os.path.exists(temp_video_path):
+                    os.remove(temp_video_path)
+                    logger.info(f"🧹 Cleaned up temp processing file")
+            except Exception as e:
+                logger.warning(f"⚠️ Temp file cleanup failed: {e}")
             
             return {
                 "status": "success",
