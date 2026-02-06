@@ -3240,29 +3240,65 @@ class FixedGoogleMeetRecorder:
                 logger.error(f"❌ Failed to download video from S3: {download_error}")
                 raise Exception(f"S3 download failed: {str(download_error)}")
             
-            from core.UserDashBoard.recordings import process_video_sync
-            from core.scheduler.tasks import process_video_task
+            # from core.UserDashBoard.recordings import process_video_sync
+            # from core.scheduler.tasks import process_video_task
 
-            logger.info(f"🚀 Dispatching Celery background task for meeting={meeting_id}")
-            process_video_task.delay(temp_video_path, meeting_id, host_user_id)
-            logger.info(f"✅ Celery task dispatched successfully for meeting={meeting_id}")
+            # logger.info(f"🚀 Dispatching Celery background task for meeting={meeting_id}")
+            # process_video_task.delay(temp_video_path, meeting_id, host_user_id)
+            # logger.info(f"✅ Celery task dispatched successfully for meeting={meeting_id}")
             
-            # ✅ DON'T delete here - Celery worker will delete after processing
-            # logger.info(f"📝 Temp file will be deleted by Celery worker after processing: {temp_video_path}")
-            # Clean up local temp file since Celery will download from S3
+            # # ✅ DON'T delete here - Celery worker will delete after processing
+            # # logger.info(f"📝 Temp file will be deleted by Celery worker after processing: {temp_video_path}")
+            # # Clean up local temp file since Celery will download from S3
+            # try:
+            #     if os.path.exists(temp_video_path):
+            #         os.remove(temp_video_path)
+            #         logger.info(f"🧹 Cleaned up temp processing file")
+            # except Exception as e:
+            #     logger.warning(f"⚠️ Temp file cleanup failed: {e}")
+            
+            # return {
+            #     "status": "success",
+            #     "message": "Background task dispatched",
+            #     "processing_completed": False
+            # }
+                
+            from core.UserDashBoard.recordings import process_video_sync
+
+            logger.info(f"🚀 Starting direct video processing for meeting={meeting_id}")
+            
+            # Process video directly (synchronous)
+            result = process_video_sync(temp_video_path, meeting_id, host_user_id)
+            
+            # Log results
+            if result.get("status") == "success":
+                logger.info(f"✅ Video processing completed for meeting={meeting_id}")
+                logger.info(f"   📹 Video: {result.get('video_url')}")
+                logger.info(f"   📝 Transcript: {result.get('transcript_url')}")
+                logger.info(f"   📊 Summary: {result.get('summary_url')}")
+                logger.info(f"   🌐 Subtitles: {list(result.get('subtitle_urls', {}).keys())}")
+            else:
+                logger.error(f"❌ Video processing failed: {result.get('error')}")
+            
+            # Clean up temp file after processing
             try:
                 if os.path.exists(temp_video_path):
                     os.remove(temp_video_path)
-                    logger.info(f"🧹 Cleaned up temp processing file")
-            except Exception as e:
-                logger.warning(f"⚠️ Temp file cleanup failed: {e}")
+                    logger.info(f"🧹 Cleaned up temp file: {temp_video_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Temp file cleanup failed: {cleanup_error}")
             
             return {
-                "status": "success",
-                "message": "Background task dispatched",
-                "processing_completed": False
+                "status": result.get("status", "error"),
+                "message": "Video processing completed",
+                "processing_completed": True,
+                "video_url": result.get("video_url"),
+                "transcript_url": result.get("transcript_url"),
+                "summary_url": result.get("summary_url"),
+                "subtitle_urls": result.get("subtitle_urls", {}),
+                "processing_result": result
             }
-                
+        
         except Exception as e:
             logger.error(f"❌ Processing pipeline error: {e}")
             import traceback
