@@ -61,12 +61,12 @@ const PERFORMANCE_CONFIG = {
       height: { ideal: 480 },
       frameRate: 24,
     },
-    SCREEN_SHARE: {
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-      frameRate: 30,
-      codec: "vp8",
-    },
+  SCREEN_SHARE: {
+  width: { ideal: 1920 },
+  height: { ideal: 1080 },
+  frameRate: 24,
+  codec: "vp9",
+},
   },
   // ✅ NEW: Large group specific settings for 500+ participants
   LARGE_GROUP: {
@@ -1775,10 +1775,20 @@ const useLiveKit = (meetingEndedProp = false) => {
           setIsScreenSharing(true);
 
           // Auto-subscribe to screen share video
-          if (!publication.isSubscribed && publication.isEnabled) {
-            console.log("📺 Auto-subscribing to screen share VIDEO track");
-            publication.setSubscribed(true);
-          }
+           if (!publication.isSubscribed && publication.isEnabled) {
+    console.log("📺 Auto-subscribing to screen share VIDEO track");
+    publication.setSubscribed(true);
+  }
+  
+  // ✅ CRITICAL: Request highest quality for screen share
+  if (publication.setVideoQuality) {
+    publication.setVideoQuality(2);  // 2 = HIGH in LiveKit
+    console.log("📺 Set screen share video quality to HIGH");
+  }
+  if (publication.setVideoDimensions) {
+    publication.setVideoDimensions({ width: 1920, height: 1080 });
+    console.log("📺 Set screen share preferred dimensions to 1080p");
+  }
         }
 
         // ✅ CRITICAL FIX: Handle screen share AUDIO - AUTO SUBSCRIBE
@@ -1793,6 +1803,13 @@ const useLiveKit = (meetingEndedProp = false) => {
             console.log("🔊 Auto-subscribing to screen share AUDIO track");
             publication.setSubscribed(true);
           }
+            // ✅ ADD: Request highest quality
+  if (publication.setVideoQuality) {
+    publication.setVideoQuality(2);
+  }
+  if (publication.setVideoDimensions) {
+    publication.setVideoDimensions({ width: 1920, height: 1080 });
+  }
         }
 
         // Subscribe to other tracks as well
@@ -3529,18 +3546,23 @@ const useLiveKit = (meetingEndedProp = false) => {
               options.isHost
             );
 
-            const newRoom = new Room({
-              adaptiveStream: true,
-              dynacast: true,
-              publishDefaults: {
+          const newRoom = new Room({
+  adaptiveStream: true,
+  dynacast: true,
+  videoCaptureDefaults: {
+    resolution: { width: 1280, height: 720 },  // ← Use explicit values instead
+  },
+  publishDefaults: {
                 audioPreset: "speech",
-                videoCodec: "h264",
+                videoCodec: "vp9",                    // ← Changed from h264 to vp9
                 stopMicTrackOnMute: false,
                 stopVideoTrackOnMute: false,
                 dtx: false,
                 red: true,
                 simulcast: true,
                 screenShareSimulcast: true,
+                degradationPreference: "maintain-framerate",  // ← ADD THIS LINE
+                backupCodec: { codec: "h264" },              // ← ADD THIS LINE
               },
               audioCaptureDefaults: {
                 echoCancellation: true,
@@ -4951,18 +4973,81 @@ const useLiveKit = (meetingEndedProp = false) => {
     }
   }, []);
 
-  // Screen share with permission system - UPDATED for co-host direct access
+  // ✅ NEW: Detect available upload bandwidth before screen sharing
+const detectUploadBandwidth = useCallback(async () => {
+  try {
+    console.log("🌐 Testing upload bandwidth...");
+    
+    // Create test blob (1MB)
+    const testData = new Blob([new ArrayBuffer(1024 * 1024)]);
+    const startTime = Date.now();
+    
+    // Upload to your backend (adjust URL)
+    const response = await fetch(`${API_BASE_URL}/api/bandwidth-test/`, {
+      method: 'POST',
+      body: testData,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+      },
+    });
+    
+    const endTime = Date.now();
+    const durationSeconds = (endTime - startTime) / 1000;
+    const uploadSpeedMbps = (8 / durationSeconds); // 1MB = 8Mb
+    
+    console.log(`📊 Upload speed: ${uploadSpeedMbps.toFixed(2)} Mbps`);
+    
+    return uploadSpeedMbps;
+  } catch (error) {
+    console.error("Bandwidth test failed:", error);
+    return 5; // Default assumption: 5 Mbps
+  }
+}, []);
+
   const startScreenShare = useCallback(async () => {
-    // Prevent multiple simultaneous attempts
-    if (screenShareStateRef.current.isPublishing) {
-      return { success: false, error: "Already publishing" };
+  // Prevent multiple simultaneous attempts
+  if (screenShareStateRef.current.isPublishing) {
+    return { success: false, error: "Already publishing" };
+  }
+
+  try {
+    const activeRoom = roomRef.current;
+    if (!activeRoom?.localParticipant) {
+      throw new Error("Not connected to room");
     }
 
-    try {
-      const activeRoom = roomRef.current;
-      if (!activeRoom?.localParticipant) {
-        throw new Error("Not connected to room");
+    // ✅ NEW: Test bandwidth first
+    const uploadSpeed = await detectUploadBandwidth();
+    
+    // ✅ Warn if bandwidth is insufficient
+    if (uploadSpeed < 2) {
+      if (window.showNotificationMessage) {
+        window.showNotificationMessage(
+          `Your upload speed (${uploadSpeed.toFixed(1)} Mbps) may cause poor screen share quality. Consider closing other uploads.`,
+          "warning"
+        );
       }
+    }
+    
+ let targetWidth = 1920;
+let targetHeight = 1080;
+let targetFramerate = 24;        // ← Smooth for video content
+let targetBitrate = 5_000_000;   // ← 5 Mbps default
+
+if (uploadSpeed < 2) {
+  targetWidth = 1280;
+  targetHeight = 720;
+  targetFramerate = 15;
+  targetBitrate = 2_000_000;
+} else if (uploadSpeed < 4) {
+  targetWidth = 1920;
+  targetHeight = 1080;
+  targetFramerate = 20;
+  targetBitrate = 3_500_000;
+}
+// else: keep defaults (1080p @ 24fps @ 5Mbps)
+    
+    console.log(`📺 Screen share config: ${targetWidth}x${targetHeight} @ ${targetFramerate}fps, ${(targetBitrate/1_000_000).toFixed(1)} Mbps`);
 
       screenShareStateRef.current.isPublishing = true;
 
@@ -5034,14 +5119,15 @@ const useLiveKit = (meetingEndedProp = false) => {
       try {
         console.log("🖥️ Requesting screen share...");
 
-        screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            mediaSource: "screen",
-            width: { ideal: 1920, max: 1920 },
-            height: { ideal: 1080, max: 1080 },
-            frameRate: { ideal: 30, max: 60 },
-            cursor: "always",
-          },
+ screenStream = await navigator.mediaDevices.getDisplayMedia({
+  video: {
+    mediaSource: "screen",
+    width: { ideal: targetWidth, max: 1920 },
+    height: { ideal: targetHeight, max: 1080 },
+    frameRate: { ideal: 30, max: 30 },               // ← Always request 30fps from OS
+    cursor: "always",
+    displaySurface: "monitor",
+  },
           audio: {
             echoCancellation: false,
             noiseSuppression: false,
@@ -5082,30 +5168,24 @@ const useLiveKit = (meetingEndedProp = false) => {
 
         console.log("📺 Publishing screen share VIDEO track...");
 
-        const videoPublishPromise = activeRoom.localParticipant.publishTrack(
-          liveKitScreenTrack,
-          {
-            name: "screen_share",
-            source: Track.Source.ScreenShare,
-            // ✅ FIX 1: Disable simulcast completely - prevents layer switching
-            simulcast: false,
-            screenShareSimulcast: false,
-            // ✅ FIX 2: Use H.264 for stability
-            videoCodec: "h264",
-            priority: "high",
-            // ✅ FIX 3: Stable bitrate settings
-            videoBitrate: 4_000_000,
-            videoEncoding: {
-              maxBitrate: 6_000_000,
-              maxFramerate: 30,
-            },
-            // ✅ FIX 4: CRITICAL - Prevent track from being stopped on mute
-            stopVideoTrackOnMute: false,
-            stopMicTrackOnMute: false,
-            // ✅ FIX 5: Keep track always active
-            degradationPreference: "maintain-resolution",
-          }
-        );
+      const videoPublishPromise = activeRoom.localParticipant.publishTrack(
+  liveKitScreenTrack,
+  {
+    name: "screen_share",
+    source: Track.Source.ScreenShare,
+    simulcast: false,                                    // No simulcast with SVC
+    videoCodec: "vp9",
+    priority: "high",
+    videoEncoding: {
+      maxBitrate: uploadSpeed >= 5 ? 6_000_000 : uploadSpeed >= 3 ? 4_000_000 : 2_000_000,
+      maxFramerate: 24,                                  // Smooth video playback
+    },
+    scalabilityMode: "L1T3",                             // Full resolution always, only fps adapts
+    degradationPreference: "maintain-resolution",        // Never drop resolution
+    stopVideoTrackOnMute: false,
+    stopMicTrackOnMute: false,
+  }
+);
 
         screenShareStateRef.current.publishingPromises.set(
           "video",
