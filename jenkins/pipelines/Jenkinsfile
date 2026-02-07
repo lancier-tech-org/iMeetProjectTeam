@@ -515,7 +515,7 @@ pipeline {
                                 
                                 # Wait for rollout
                                 kubectl rollout status deployment/frontend \
-                                    -n ${env.NAMESPACE} --timeout=180s
+                                    -n ${env.NAMESPACE} --timeout=5m
                             """
                         }
                         echo "✅ Frontend deployed!"
@@ -540,7 +540,7 @@ pipeline {
                                 
                                 # Wait for rollout
                                 kubectl rollout status deployment/backend \
-                                    -n ${env.NAMESPACE} --timeout=180s
+                                    -n ${env.NAMESPACE} --timeout=5m
                             """
                         }
                         echo "✅ Backend deployed!"
@@ -563,7 +563,7 @@ pipeline {
                                     -n ${env.NAMESPACE}
                                 
                                 kubectl rollout status deployment/celery-worker \
-                                    -n ${env.NAMESPACE} --timeout=180s
+                                    -n ${env.NAMESPACE} --timeout=5m
                             """
                         }
                         echo "✅ Celery deployed!"
@@ -586,7 +586,7 @@ pipeline {
                                     -n ${env.NAMESPACE}
                                 
                                 kubectl rollout status deployment/gpu-worker \
-                                    -n ${env.NAMESPACE} --timeout=300s
+                                    -n ${env.NAMESPACE} --timeout=10m
                             """
                         }
                         echo "✅ GPU Worker deployed!"
@@ -609,7 +609,7 @@ pipeline {
                                     -n ${env.NAMESPACE}
                                 
                                 kubectl rollout status deployment/recording-service \
-                                    -n ${env.NAMESPACE} --timeout=360s
+                                    -n ${env.NAMESPACE} --timeout=10m
                             """
                         }
                         echo "✅ Recording Service deployed!"
