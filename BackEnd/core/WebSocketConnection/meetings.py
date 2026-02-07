@@ -2184,28 +2184,80 @@ Meet Pro Team"""
             for i in range(0, len(guest_emails), batch_size):
                 batch = guest_emails[i:i + batch_size]
                 
+                # ==========================================================
+                # TRY 1: Django EmailMessage → EMAIL_BACKEND (SES)
+                # ==========================================================
                 try:
                     email_message = EmailMessage(
                         subject=subject,
                         body=message,
-                        from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@meetpro.com'),
+                        from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@lancieretech.com'),
                         to=batch,
                     )
                     
                     email_message.send(fail_silently=False)
                     successful_sends += len(batch)
-                    logging.info(f"Successfully sent batch of {len(batch)} emails")
+                    logging.info(f"✅ [DJANGO] Batch sent: {len(batch)} emails to {batch}")
                     time.sleep(0.5)
+                    continue  # Success — skip to next batch
                     
                 except Exception as e:
                     import traceback
-                    logging.error(f"Failed to send email batch: {e}")
-                    logging.error(f"Failed to send email batch: {e}")
-                    logging.error(f"Email traceback: {traceback.format_exc()}")
-                    logging.error(f"Backend: {settings.EMAIL_BACKEND}")
-                    logging.error(f"From: {getattr(settings, 'DEFAULT_FROM_EMAIL', 'NOT SET')}")
-                    logging.error(f"Fallback USER: {getattr(settings, 'EMAIL_FALLBACK', {}).get('USER', 'NOT SET')}")
-                    failed_emails.extend(batch)
+                    logging.error(f"[DJANGO] Batch failed: {e}")
+                    logging.error(f"[DJANGO] Traceback: {traceback.format_exc()}")
+                    logging.error(f"[DJANGO] Backend: {settings.EMAIL_BACKEND}")
+                    logging.info(f"Trying LAST RESORT smtplib for batch: {batch}")
+                
+                # ==========================================================
+                # TRY 2: Direct smtplib Gmail (LAST RESORT)
+                # Same approach as your working send_OTP_email function
+                # ==========================================================
+                try:
+                    import smtplib
+                    from email.mime.text import MIMEText
+                    from email.mime.multipart import MIMEMultipart
+                    
+                    fallback = getattr(settings, 'EMAIL_FALLBACK', {})
+                    smtp_host = fallback.get('HOST', '')
+                    smtp_port = fallback.get('PORT', 587)
+                    smtp_user = fallback.get('USER', '')
+                    smtp_password = fallback.get('PASSWORD', '')
+                    smtp_from = fallback.get('FROM_EMAIL', '') or smtp_user
+                    
+                    if not smtp_user or not smtp_password:
+                        logging.error(f"[SMTP] No Gmail credentials in EMAIL_FALLBACK")
+                        logging.error(f"[SMTP] USER={smtp_user}, PASSWORD={'SET' if smtp_password else 'EMPTY'}")
+                        failed_emails.extend(batch)
+                        continue
+                    
+                    server = smtplib.SMTP(smtp_host, smtp_port)
+                    server.starttls()
+                    server.login(smtp_user, smtp_password)
+                    
+                    batch_sent = 0
+                    for recipient in batch:
+                        try:
+                            msg = MIMEMultipart()
+                            msg['From'] = smtp_from
+                            msg['To'] = recipient
+                            msg['Subject'] = subject
+                            msg.attach(MIMEText(message, 'plain'))
+                            
+                            server.sendmail(smtp_from, recipient, msg.as_string())
+                            batch_sent += 1
+                            logging.info(f"[SMTP] Sent to {recipient}")
+                        except Exception as individual_err:
+                            logging.error(f"[SMTP] Failed to send to {recipient}: {individual_err}")
+                            failed_emails.append(recipient)
+                    
+                    server.quit()
+                    successful_sends += batch_sent
+                    logging.info(f"[SMTP] Batch complete: {batch_sent}/{len(batch)} sent via Gmail")
+                    
+                except Exception as smtp_err:
+                    import traceback
+                    logging.error(f"[SMTP] Gmail ALSO FAILED: {smtp_err}")
+                    logging.error(f"[SMTP] Traceback: {traceback.format_exc()}")
                     failed_emails.extend(batch)
             
             logging.info(f"Email sending completed: {successful_sends}/{len(guest_emails)} emails sent")
