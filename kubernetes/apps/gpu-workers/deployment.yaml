@@ -111,7 +111,6 @@ spec:
                 secretKeyRef:
                   name: backend-secrets
                   key: LIVEKIT_API_SECRET
-              value: /tmp/logs
           resources:
             requests:
               memory: "4Gi"
