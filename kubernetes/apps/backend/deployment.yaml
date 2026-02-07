@@ -83,6 +83,12 @@ spec:
           # ENVIRONMENT VARIABLES
           # ============================================
           env:
+            # ============================================
+            # CRITICAL: Enable APScheduler in backend pods
+            # ============================================
+            - name: CELERY_WORKER_TYPE
+              value: "backend"
+            
             # Python/Django settings
             - name: PYTHONUNBUFFERED
               value: "1"

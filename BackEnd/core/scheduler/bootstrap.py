@@ -31,6 +31,16 @@ def acquire_scheduler_lock():
 def start_scheduler_safely():
     global _scheduler
 
+    # ✅ CRITICAL FIX: Don't start scheduler in celery-worker pods
+    if os.getenv("CELERY_WORKER_TYPE") == "worker":
+        logger.info("⏭️ Skipping scheduler startup - running in celery-worker")
+        return
+    
+    # ✅ CRITICAL FIX: Don't start scheduler if this is a Celery process
+    if "celery" in os.getenv("CELERY_BIN", "").lower() or os.getenv("CELERY_LOADER"):
+        logger.info("⏭️ Skipping scheduler startup - Celery process detected")
+        return
+
     # Small delay so Gunicorn can finish startup
     time.sleep(5)
 

@@ -31,6 +31,12 @@ spec:
             - INFO
             - --concurrency=4
           env:
+            # ============================================
+            # CRITICAL: Prevent APScheduler from starting
+            # ============================================
+            - name: CELERY_WORKER_TYPE
+              value: "worker"
+            
             - name: INSIGHTFACE_HOME
               value: /tmp/.insightface
             - name: MPLCONFIGDIR
