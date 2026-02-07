@@ -121,6 +121,34 @@ spec:
                 secretKeyRef:
                   name: backend-secrets
                   key: LIVEKIT_API_SECRET
+            # ============================================
+            # MySQL Database Configuration
+            # ============================================
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DB_HOST
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DB_NAME
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DB_PASSWORD
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DB_PORT
           resources:
             requests:
               memory: "4Gi"
