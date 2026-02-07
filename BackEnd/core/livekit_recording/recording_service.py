@@ -3230,10 +3230,12 @@ class FixedGoogleMeetRecorder:
 
             # ✅ CRITICAL FIX: Pass S3 key, not local temp file path
             # Celery worker will download from S3 using this key
-            logger.info(f"🚀 Dispatching Celery background task for meeting={meeting_id}")
-            process_video_task.delay(s3_key, meeting_id, host_user_id)
-            logger.info(f"✅ Celery task dispatched successfully for meeting={meeting_id}")
-            
+            logger.info(f"🚀 Dispatching Celery background task to GPU worker for meeting={meeting_id}")
+            process_video_task.apply_async(
+                args=[s3_key, meeting_id, host_user_id],
+                queue='gpu_tasks'
+            )
+            logger.info(f"✅ Celery task dispatched to GPU queue successfully for meeting={meeting_id}")
             return {
                 "status": "success",
                 "message": "Background task dispatched",
