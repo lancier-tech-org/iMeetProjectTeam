@@ -609,7 +609,7 @@ pipeline {
                                     -n ${env.NAMESPACE}
                                 
                                 kubectl rollout status deployment/recording-service \
-                                    -n ${env.NAMESPACE} --timeout=180s
+                                    -n ${env.NAMESPACE} --timeout=360s
                             """
                         }
                         echo "✅ Recording Service deployed!"
