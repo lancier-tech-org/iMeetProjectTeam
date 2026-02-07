@@ -50,6 +50,8 @@ spec:
             - gpu_tasks,default
             - --concurrency=2
           env:
+            - name: CELERY_WORKER_TYPE
+              value: "worker"
             - name: NVIDIA_VISIBLE_DEVICES
               value: "all"
             - name: NVIDIA_DRIVER_CAPABILITIES
