@@ -413,22 +413,7 @@ const PERFORMANCE_CONFIG = {
   ATTENDANCE_SYNC_INTERVAL: 30000,
 };
 
-// ============================================================================
-// STYLED COMPONENTS
-// ============================================================================
-// const MeetingContainer = styled(Box)(({ theme }) => ({
-//   height: "100vh",
-//   width: "100vw",
-//   padding: 0,
-//   margin: 0,
-//   display: "flex",
-//   flexDirection: "column",
-//   background: "linear-gradient(135deg, #0f1419 0%, #1a202c 50%, #2d3748 100%)",
-//   color: "white",
-//   overflow: "hidden",
-//   position: "relative",
-//   fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
-// }));
+
 
 // ============================================================================
 // MAIN COMPONENT
@@ -997,6 +982,37 @@ const [forceStopTargetParticipant, setForceStopTargetParticipant] = useState(nul
   });
 
 
+  // ==========================================================================
+  // CAMERA SYNC HANDLER FOR ATTENDANCE TRACKER
+  // ==========================================================================
+  const handleCameraToggleForAttendance = useCallback(async (enable) => {
+    if (typeof enable !== 'boolean') return;
+
+    const currentlyEnabled = livekitVideoEnabled ?? videoEnabled ?? false;
+
+    // No change needed — already in desired state
+    if (enable === currentlyEnabled) return;
+
+    try {
+      if (enable) {
+        // Enable video — prefer enableVideo (publishes track), fallback to toggle
+        if (enableVideo && typeof enableVideo === 'function') {
+          await enableVideo();
+        } else if (livekitToggleVideo && typeof livekitToggleVideo === 'function') {
+          await livekitToggleVideo();
+        }
+        setVideoEnabled(true);
+      } else {
+        // Disable video
+        if (livekitToggleVideo && typeof livekitToggleVideo === 'function') {
+          await livekitToggleVideo();
+        }
+        setVideoEnabled(false);
+      }
+    } catch (error) {
+      console.error('Camera toggle for attendance sync failed:', error);
+    }
+  }, [livekitVideoEnabled, videoEnabled, enableVideo, livekitToggleVideo, setVideoEnabled]);
   // ==========================================================================
   // COMPUTED VALUES
   // ==========================================================================
@@ -4767,16 +4783,15 @@ return (
         userId={currentUser?.id}
         userName={getParticipantDisplayName(currentUser)}
         isActive={actualIsConnected}
-        cameraEnabled={videoEnabled}
-        onViolation={handleAttendanceViolation}
+ cameraEnabled={livekitVideoEnabled ?? videoEnabled}     
+    onViolation={handleAttendanceViolation}
         onStatusChange={handleAttendanceStatusChange}
         onSessionTerminated={handleAttendanceSessionTerminated}
         onToggleMinimized={() => setAttendanceMinimized(!attendanceMinimized)}
         isHost={isHost}
         isCoHost={isCoHost || coHostPrivilegesActive}
         effectiveRole={effectiveRole}
-        onCameraToggle={handleCameraToggle}
-      />
+ onCameraToggle={handleCameraToggleForAttendance}      />
 
       {/* ── Body below tabs ────────────────────────────────────────── */}
       <Box

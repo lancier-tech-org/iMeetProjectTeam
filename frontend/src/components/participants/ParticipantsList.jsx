@@ -1,4 +1,4 @@
-// src/components/participants/ParticipantsList.jsx - REDESIGNED UI
+// src/components/participants/ParticipantsList.jsx - WHITE THEME + CONTROLS FOR HOST/CO-HOST ONLY
 import React, { useState, useMemo, useCallback } from 'react';
 import {
   Box,
@@ -36,43 +36,41 @@ const fadeIn = keyframes`
 `;
 
 const livePulse = keyframes`
-  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45); }
-  50%      { box-shadow: 0 0 0 4px rgba(52, 211, 153, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+  50%      { box-shadow: 0 0 0 4px rgba(16, 185, 129, 0); }
 `;
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   STYLED COMPONENTS — Simple · Clean · Responsive
+   STYLED COMPONENTS — White · Clean · Responsive
    ═══════════════════════════════════════════════════════════════════════════ */
 
 const Panel = styled(Box)(() => ({
   display: 'flex',
   flexDirection: 'column',
   height: '100%',
-  background: '#0f1117',
-  color: '#c9cdd4',
+  background: '#ffffff',
+  color: '#1e293b',
   overflow: 'hidden',
   fontFamily: "'Nunito Sans', 'Segoe UI', system-ui, sans-serif",
 
   '& ::-webkit-scrollbar':      { width: 4 },
   '& ::-webkit-scrollbar-track': { background: 'transparent' },
   '& ::-webkit-scrollbar-thumb': {
-    background: 'rgba(255,255,255,0.07)',
+    background: 'rgba(0,0,0,0.08)',
     borderRadius: 4,
-    '&:hover': { background: 'rgba(255,255,255,0.13)' },
+    '&:hover': { background: 'rgba(0,0,0,0.15)' },
   },
 }));
 
-/* ── Header ─────────────────────────────────────────────────────────────── */
 const Header = styled(Box)(() => ({
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
   padding: '14px 16px 10px',
-  borderBottom: '1px solid rgba(255,255,255,0.06)',
+  borderBottom: '1px solid #f1f5f9',
   flexShrink: 0,
 }));
 
-/* ── Search ─────────────────────────────────────────────────────────────── */
 const SearchWrap = styled(Box)(() => ({
   padding: '6px 12px 10px',
   flexShrink: 0,
@@ -84,12 +82,13 @@ const SearchBar = styled(Box)(() => ({
   gap: 8,
   padding: '8px 12px',
   borderRadius: 8,
-  background: 'rgba(255,255,255,0.04)',
-  border: '1px solid rgba(255,255,255,0.06)',
-  transition: 'border-color 0.2s, background 0.2s',
+  background: '#f8fafc',
+  border: '1px solid #e2e8f0',
+  transition: 'border-color 0.2s, background 0.2s, box-shadow 0.2s',
   '&:focus-within': {
-    background: 'rgba(255,255,255,0.06)',
-    borderColor: 'rgba(255,255,255,0.14)',
+    background: '#ffffff',
+    borderColor: '#93c5fd',
+    boxShadow: '0 0 0 3px rgba(59,130,246,0.08)',
   },
 }));
 
@@ -97,15 +96,14 @@ const SearchInput = styled('input')(() => ({
   border: 'none',
   outline: 'none',
   background: 'transparent',
-  color: '#c9cdd4',
+  color: '#1e293b',
   fontSize: 13,
   fontWeight: 500,
   width: '100%',
   fontFamily: 'inherit',
-  '&::placeholder': { color: 'rgba(255,255,255,0.25)' },
+  '&::placeholder': { color: '#94a3b8' },
 }));
 
-/* ── Section Row ────────────────────────────────────────────────────────── */
 const SectionRow = styled(Box)(() => ({
   display: 'flex',
   alignItems: 'center',
@@ -113,7 +111,7 @@ const SectionRow = styled(Box)(() => ({
   padding: '10px 16px 6px',
   cursor: 'pointer',
   userSelect: 'none',
-  '&:hover': { background: 'rgba(255,255,255,0.015)' },
+  '&:hover': { background: '#f8fafc' },
 }));
 
 const SectionTitle = styled(Typography)(() => ({
@@ -121,10 +119,9 @@ const SectionTitle = styled(Typography)(() => ({
   fontWeight: 700,
   letterSpacing: '0.06em',
   textTransform: 'uppercase',
-  color: 'rgba(255,255,255,0.28)',
+  color: '#94a3b8',
 }));
 
-/* ── Participant Card ───────────────────────────────────────────────────── */
 const Card = styled(Box, {
   shouldForwardProp: (p) => !['isMe', 'role', 'removing'].includes(p),
 })(({ isMe, role, removing }) => ({
@@ -140,23 +137,23 @@ const Card = styled(Box, {
   filter: removing ? 'grayscale(1)' : 'none',
 
   background:
-    isMe            ? 'rgba(99,179,237,0.06)' :
-    role === 'host' ? 'rgba(251,191,36,0.04)' :
+    isMe            ? 'rgba(59,130,246,0.04)' :
+    role === 'host' ? 'rgba(245,158,11,0.04)' :
     'transparent',
 
   borderLeft: isMe
-    ? '3px solid rgba(99,179,237,0.5)'
+    ? '3px solid rgba(59,130,246,0.45)'
     : role === 'host'
-      ? '3px solid rgba(251,191,36,0.35)'
+      ? '3px solid rgba(245,158,11,0.35)'
       : role === 'co-host'
-        ? '3px solid rgba(251,146,60,0.3)'
+        ? '3px solid rgba(234,88,12,0.3)'
         : '3px solid transparent',
 
   '&:hover': {
     background:
-      isMe            ? 'rgba(99,179,237,0.09)' :
-      role === 'host' ? 'rgba(251,191,36,0.07)' :
-      'rgba(255,255,255,0.025)',
+      isMe            ? 'rgba(59,130,246,0.06)' :
+      role === 'host' ? 'rgba(245,158,11,0.06)' :
+      '#f8fafc',
   },
 
   '@media (max-width: 380px)': {
@@ -166,7 +163,6 @@ const Card = styled(Box, {
   },
 }));
 
-/* ── Avatar ─────────────────────────────────────────────────────────────── */
 const UserAvatar = styled(Avatar, {
   shouldForwardProp: (p) => p !== 'role',
 })(({ role }) => ({
@@ -176,11 +172,11 @@ const UserAvatar = styled(Avatar, {
   fontWeight: 700,
   flexShrink: 0,
   background:
-    role === 'host'    ? '#d97706' :
-    role === 'co-host' ? '#c2410c' :
-    '#2563eb',
+    role === 'host'    ? '#f59e0b' :
+    role === 'co-host' ? '#ea580c' :
+    '#3b82f6',
   color: '#fff',
-  border: '2px solid rgba(255,255,255,0.1)',
+  border: '2px solid #f1f5f9',
 
   '@media (max-width: 380px)': {
     width: 32,
@@ -189,7 +185,6 @@ const UserAvatar = styled(Avatar, {
   },
 }));
 
-/* ── Status Dot ─────────────────────────────────────────────────────────── */
 const StatusDot = styled(Box, {
   shouldForwardProp: (p) => p !== 'status',
 })(({ status }) => ({
@@ -199,16 +194,15 @@ const StatusDot = styled(Box, {
   position: 'absolute',
   bottom: -1,
   right: -1,
-  border: '2px solid #0f1117',
+  border: '2px solid #ffffff',
   background:
-    status === 'live'       ? '#34d399' :
-    status === 'connecting' ? '#fbbf24' :
-    status === 'online'     ? '#60a5fa' :
-    '#475569',
+    status === 'live'       ? '#10b981' :
+    status === 'connecting' ? '#f59e0b' :
+    status === 'online'     ? '#3b82f6' :
+    '#cbd5e1',
   animation: status === 'live' ? `${livePulse} 2s ease-in-out infinite` : 'none',
 }));
 
-/* ── Role Badge ─────────────────────────────────────────────────────────── */
 const RoleBadge = styled(Box, {
   shouldForwardProp: (p) => p !== 'role',
 })(({ role }) => ({
@@ -224,20 +218,19 @@ const RoleBadge = styled(Box, {
   flexShrink: 0,
 
   ...(role === 'host' && {
-    background: 'rgba(217,119,6,0.15)',
-    color: '#fbbf24',
+    background: '#fef3c7',
+    color: '#b45309',
   }),
   ...(role === 'co-host' && {
-    background: 'rgba(194,65,12,0.15)',
-    color: '#fb923c',
+    background: '#ffedd5',
+    color: '#c2410c',
   }),
   ...(role === 'participant' && {
-    background: 'rgba(37,99,235,0.12)',
-    color: 'rgba(96,165,250,0.7)',
+    background: '#eff6ff',
+    color: '#2563eb',
   }),
 }));
 
-/* ── Media Icon ─────────────────────────────────────────────────────────── */
 const MediaIcon = styled(Box, {
   shouldForwardProp: (p) => p !== 'active',
 })(({ active }) => ({
@@ -248,8 +241,8 @@ const MediaIcon = styled(Box, {
   justifyContent: 'center',
   borderRadius: 6,
   flexShrink: 0,
-  background: active ? 'rgba(52,211,153,0.1)' : 'rgba(255,255,255,0.03)',
-  color: active ? '#34d399' : 'rgba(255,255,255,0.2)',
+  background: active ? 'rgba(16,185,129,0.08)' : '#f8fafc',
+  color: active ? '#059669' : '#94a3b8',
   transition: 'all 0.15s',
   '& .MuiSvgIcon-root': { fontSize: 14 },
 
@@ -260,7 +253,6 @@ const MediaIcon = styled(Box, {
   },
 }));
 
-/* ── Empty State ────────────────────────────────────────────────────────── */
 const Empty = styled(Box)(() => ({
   display: 'flex',
   flexDirection: 'column',
@@ -438,11 +430,13 @@ const ParticipantsList = ({
     const videoOn   = participant.video_enabled || participant.isVideoEnabled;
     const uniqueKey = participant.key || participant.participant_id || pid || participant.connection_id || `p-${Math.random()}`;
 
+    // ✅ Show controls ONLY if current user is host or co-host, and target is not themselves
+    const showControls = (isHost || isCoHost) && !isMe && !removing;
+
     return (
       <Slide direction="up" in={!removing} key={uniqueKey} timeout={200} mountOnEnter unmountOnExit>
         <Card isMe={isMe} role={role} removing={removing}>
 
-          {/* ── Avatar + status dot ── */}
           <Box sx={{ position: 'relative', flexShrink: 0 }}>
             <UserAvatar role={role} src={participant.profile_picture || participant.avatar}>
               {name.charAt(0).toUpperCase()}
@@ -450,7 +444,6 @@ const ParticipantsList = ({
             <StatusDot status={status} />
           </Box>
 
-          {/* ── Name / email ── */}
           <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flexWrap: 'wrap' }}>
               <Typography
@@ -458,7 +451,7 @@ const ParticipantsList = ({
                 sx={{
                   fontSize: 13,
                   fontWeight: 600,
-                  color: '#e2e8f0',
+                  color: '#1e293b',
                   lineHeight: 1.3,
                   maxWidth: { xs: 90, sm: 130, md: 170, lg: 200 },
                 }}
@@ -472,8 +465,8 @@ const ParticipantsList = ({
                   sx={{
                     fontSize: 10,
                     fontWeight: 700,
-                    color: '#60a5fa',
-                    background: 'rgba(96,165,250,0.1)',
+                    color: '#2563eb',
+                    background: '#eff6ff',
                     padding: '1px 5px',
                     borderRadius: 3,
                     lineHeight: 1.5,
@@ -494,7 +487,7 @@ const ParticipantsList = ({
                 noWrap
                 sx={{
                   fontSize: 11,
-                  color: 'rgba(255,255,255,0.25)',
+                  color: '#94a3b8',
                   lineHeight: 1.3,
                   maxWidth: { xs: 110, sm: 150, md: 190, lg: 220 },
                 }}
@@ -504,7 +497,6 @@ const ParticipantsList = ({
             )}
           </Box>
 
-          {/* ── Media icons + controls ── */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
             <Tooltip title={audioOn ? 'Mic on' : 'Mic off'} arrow placement="top">
               <MediaIcon active={audioOn}>
@@ -526,7 +518,8 @@ const ParticipantsList = ({
               </Tooltip>
             )}
 
-            {!isMe && !removing && (
+            {/* ✅ Controls visible ONLY for host / co-host */}
+            {showControls && (
               <ParticipantControls
                 participant={participant}
                 currentUserRole={isHost ? 'host' : isCoHost ? 'co-host' : 'participant'}
@@ -563,7 +556,7 @@ const ParticipantsList = ({
               {title}
               <Typography
                 component="span"
-                sx={{ ml: 0.5, fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.18)' }}
+                sx={{ ml: 0.5, fontSize: 11, fontWeight: 600, color: '#cbd5e1' }}
               >
                 {safe.length}
               </Typography>
@@ -572,7 +565,7 @@ const ParticipantsList = ({
           <KeyboardArrowDown
             sx={{
               fontSize: 16,
-              color: 'rgba(255,255,255,0.18)',
+              color: '#cbd5e1',
               transition: 'transform 0.2s',
               transform: expandedSections[key] ? 'rotate(180deg)' : 'rotate(0)',
             }}
@@ -592,13 +585,12 @@ const ParticipantsList = ({
 
   return (
     <Panel>
-      {/* ── Header ── */}
       <Header>
         <Box>
-          <Typography sx={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0', lineHeight: 1.25 }}>
+          <Typography sx={{ fontSize: 15, fontWeight: 700, color: '#0f172a', lineHeight: 1.25 }}>
             Participants
           </Typography>
-          <Typography sx={{ fontSize: 12, fontWeight: 500, color: 'rgba(255,255,255,0.3)', lineHeight: 1.3, mt: '2px' }}>
+          <Typography sx={{ fontSize: 12, fontWeight: 500, color: '#94a3b8', lineHeight: 1.3, mt: '2px' }}>
             {filteredParticipants.length} active
           </Typography>
         </Box>
@@ -608,8 +600,8 @@ const ParticipantsList = ({
             onClick={onPanelClose}
             size="small"
             sx={{
-              color: 'rgba(255,255,255,0.25)',
-              '&:hover': { color: '#e2e8f0', background: 'rgba(255,255,255,0.06)' },
+              color: '#94a3b8',
+              '&:hover': { color: '#1e293b', background: '#f1f5f9' },
             }}
           >
             <Close sx={{ fontSize: 18 }} />
@@ -617,10 +609,9 @@ const ParticipantsList = ({
         )}
       </Header>
 
-      {/* ── Search ── */}
       <SearchWrap>
         <SearchBar>
-          <Search sx={{ fontSize: 16, color: 'rgba(255,255,255,0.2)', flexShrink: 0 }} />
+          <Search sx={{ fontSize: 16, color: '#94a3b8', flexShrink: 0 }} />
           <SearchInput
             placeholder="Search…"
             value={searchTerm}
@@ -630,7 +621,7 @@ const ParticipantsList = ({
             <IconButton
               size="small"
               onClick={() => setSearchTerm('')}
-              sx={{ p: '2px', color: 'rgba(255,255,255,0.25)', '&:hover': { color: '#e2e8f0' } }}
+              sx={{ p: '2px', color: '#94a3b8', '&:hover': { color: '#1e293b' } }}
             >
               <Close sx={{ fontSize: 14 }} />
             </IconButton>
@@ -638,41 +629,40 @@ const ParticipantsList = ({
         </SearchBar>
       </SearchWrap>
 
-      {/* ── Scrollable List ── */}
       <Box sx={{ flex: 1, overflowY: 'auto', pt: 0.5, pb: 2 }}>
         {renderSection(
           'Host',
           groupedParticipants.host,
           'host',
-          <AdminPanelSettings sx={{ fontSize: 14, color: '#fbbf24' }} />,
+          <AdminPanelSettings sx={{ fontSize: 14, color: '#f59e0b' }} />,
         )}
         {renderSection(
           'Co-Hosts',
           groupedParticipants.coHosts,
           'coHosts',
-          <SupervisedUserCircle sx={{ fontSize: 14, color: '#fb923c' }} />,
+          <SupervisedUserCircle sx={{ fontSize: 14, color: '#ea580c' }} />,
         )}
         {renderSection(
           'Participants',
           groupedParticipants.participants,
           'participants',
-          <Person sx={{ fontSize: 14, color: '#60a5fa' }} />,
+          <Person sx={{ fontSize: 14, color: '#3b82f6' }} />,
         )}
         {renderSection(
           'Offline',
           groupedParticipants.offline,
           'offline',
-          <Person sx={{ fontSize: 14, color: '#475569' }} />,
+          <Person sx={{ fontSize: 14, color: '#cbd5e1' }} />,
         )}
 
         {filteredParticipants.length === 0 && (
           <Empty>
-            <People sx={{ fontSize: 36, color: 'rgba(255,255,255,0.1)' }} />
-            <Typography sx={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.3)' }}>
+            <People sx={{ fontSize: 36, color: '#e2e8f0' }} />
+            <Typography sx={{ fontSize: 13, fontWeight: 600, color: '#94a3b8' }}>
               {searchTerm ? 'No matches found' : 'No participants yet'}
             </Typography>
             {!searchTerm && (
-              <Typography sx={{ fontSize: 11, color: 'rgba(255,255,255,0.18)' }}>
+              <Typography sx={{ fontSize: 11, color: '#cbd5e1' }}>
                 They'll appear here when they join
               </Typography>
             )}
