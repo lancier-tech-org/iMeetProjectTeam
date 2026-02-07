@@ -4844,15 +4844,34 @@ export const createInstantMeetingAPI = async (userData) => {
     };
   }
 };
+// Company/Branding APIs
 export const companyAPI = {
-  getCompanyLogo: async (filename = 'ImeetPro.png') => {
+  getCompanyLogo: async (filename = 'IMeetPro.png') => {
     try {
+      console.log('🖼️ Fetching company logo, filename:', filename);
+      
       const response = await api.get('/api/company/logo/', {
         params: { filename }
       });
-      return response.logo_url || null;
+
+      console.log('🖼️ Logo API raw response:', JSON.stringify(response));
+
+      // CRITICAL FIX: Dev mode validateStatus passes 404/500 through success handler
+      // So response could be { Error: "Logo not found" } instead of throwing
+      if (response && response.success && response.logo_url) {
+        console.log('✅ Logo URL retrieved successfully');
+        return response.logo_url;
+      }
+
+      if (response && response.Error) {
+        console.error('❌ Logo API error:', response.Error, '| S3 key:', response.s3_key || 'unknown');
+        return null;
+      }
+
+      console.warn('⚠️ Unexpected logo response format:', response);
+      return null;
     } catch (error) {
-      console.error('❌ Failed to get company logo:', error);
+      console.error('❌ Failed to get company logo:', error?.message || error);
       return null;
     }
   },
