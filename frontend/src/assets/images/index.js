@@ -15,19 +15,19 @@ export { default as ReactionsIcon } from './reactions.svg';
 export { default as SettingsIcon } from './settings.svg';
 // export { default as LogoIcon } from './logo.svg';
 import { useCompanyLogo } from '../hooks/useCompanyLogo';
-import { LogoIcon } from '@assets/icons'; // keep as fallback
+// import { LogoIcon } from '@assets/icons'; // keep as fallback
 
-function MyComponent() {
-  const { logoUrl, loading } = useCompanyLogo();
+// function MyComponent() {
+//   const { logoUrl, loading } = useCompanyLogo();
 
-  return (
-    <img 
-      src={logoUrl || LogoIcon} 
-      alt="iMeetPro Logo"
-      style={{ height: 40 }} // adjust as needed
-    />
-  );
-}
+//   return (
+//     <img 
+//       src={logoUrl || LogoIcon} 
+//       alt="iMeetPro Logo"
+//       style={{ height: 40 }} // adjust as needed
+//     />
+//   );
+// }
 
 // Usage example:
 // import { MeetingIcon, VideoIcon } from '@assets/icons';

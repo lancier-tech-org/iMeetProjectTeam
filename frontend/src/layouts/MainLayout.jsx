@@ -190,20 +190,21 @@ const { logoUrl } = useCompanyLogo();
                 {/* Logo Image */}
                 <Box
                   component="img"
-                  // src='/public/assests/images/IMeetPro.png'
                   src={logoUrl || '/public/assests/images/IMeetPro.png'}
                   alt="IMeetPro Logo"
+                  loading="eager"
                   sx={{
                     height: { xs: 180, sm: 200, md: 120 },
                     width: "auto",
                     objectFit: "contain",
                     filter: "drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2))",
+                    // Smooth fade-in instead of jarring pop
+                    opacity: logoUrl ? 1 : 0.9,
+                    transition: 'opacity 0.2s ease',
                   }}
                   onError={(e) => {
-                    e.target.style.display = 'none';
-                    if (e.target.nextSibling) {
-                      e.target.nextSibling.style.display = 'flex';
-                    }
+                    // If S3 URL fails, fall back to local
+                    e.target.src = '/public/assests/images/IMeetPro.png';
                   }}
                 />
                 
