@@ -276,7 +276,7 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
 # ---------------------------------------------------------------------
 
 # Primary: AWS SES (noreply@lancieretech.com)
-EMAIL_BACKEND = 'django_ses.SESBackend'
+EMAIL_BACKEND = 'core.email_backend.SESWithFallbackBackend'
 AWS_SES_REGION_NAME = os.getenv('AWS_REGION', 'ap-south-1')
 AWS_SES_REGION_ENDPOINT = f'email.{AWS_SES_REGION_NAME}.amazonaws.com'
 DEFAULT_FROM_EMAIL = 'noreply@lancieretech.com'

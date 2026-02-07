@@ -2198,7 +2198,14 @@ Meet Pro Team"""
                     time.sleep(0.5)
                     
                 except Exception as e:
+                    import traceback
                     logging.error(f"Failed to send email batch: {e}")
+                    logging.error(f"Failed to send email batch: {e}")
+                    logging.error(f"Email traceback: {traceback.format_exc()}")
+                    logging.error(f"Backend: {settings.EMAIL_BACKEND}")
+                    logging.error(f"From: {getattr(settings, 'DEFAULT_FROM_EMAIL', 'NOT SET')}")
+                    logging.error(f"Fallback USER: {getattr(settings, 'EMAIL_FALLBACK', {}).get('USER', 'NOT SET')}")
+                    failed_emails.extend(batch)
                     failed_emails.extend(batch)
             
             logging.info(f"Email sending completed: {successful_sends}/{len(guest_emails)} emails sent")
@@ -2526,15 +2533,37 @@ def Create_Calendar_Meeting(request):
         }
 
         import threading
+        # def async_email_send():
+        #     try:
+        #         send_meeting_invitations(email_data)
+        #         logging.info(f"Background email thread completed for {len(guest_emails)} participants")
+        #     except Exception as e:
+        #         logging.error(f"Async email send error: {e}")
+
+        # threading.Thread(target=async_email_send, daemon=True).start()
+        # logging.info(f"📧 Started background email sending for {len(guest_emails)} participants")
+
         def async_email_send():
             try:
-                send_meeting_invitations(email_data)
-                logging.info(f"Background email thread completed for {len(guest_emails)} participants")
+                import traceback
+                logging.info(f"📧 [CALENDAR] Starting email send to {len(guest_emails)} participants...")
+                logging.info(f"📧 [CALENDAR] Backend: {settings.EMAIL_BACKEND}")
+                logging.info(f"📧 [CALENDAR] From: {getattr(settings, 'DEFAULT_FROM_EMAIL', 'NOT SET')}")
+                logging.info(f"📧 [CALENDAR] Fallback USER: {getattr(settings, 'EMAIL_FALLBACK', {}).get('USER', 'NOT SET')}")
+
+                sent_count, failed_list = send_meeting_invitations(email_data)
+
+                logging.info(f"📧 [CALENDAR] Done: {sent_count} sent, {len(failed_list)} failed")
+                if failed_list:
+                    logging.error(f"❌ [CALENDAR] Failed emails: {failed_list}")
             except Exception as e:
-                logging.error(f"Async email send error: {e}")
+                import traceback
+                logging.error(f"❌ [CALENDAR] Email send CRASHED: {e}")
+                logging.error(f"❌ [CALENDAR] Traceback:\n{traceback.format_exc()}")
 
         threading.Thread(target=async_email_send, daemon=True).start()
         logging.info(f"📧 Started background email sending for {len(guest_emails)} participants")
+
 
     # --- Final Response ---
     return JsonResponse({
@@ -2974,14 +3003,41 @@ def Create_Schedule_Meeting(request):
                 
                 # Start email sending in background thread
                 import threading
+                # email_thread = threading.Thread(
+                #     target=send_meeting_invitations,
+                #     args=(email_data,),
+                #     daemon=True
+                # )
+                # email_thread.start()
+                
+                # logging.info(f"Started background email sending for {participant_count} participants")
+
+                def async_schedule_email_send():
+                    try:
+                        import traceback
+                        logging.info(f"📧 [SCHEDULE] Starting email send to {participant_count} participants...")
+                        logging.info(f"📧 [SCHEDULE] Backend: {settings.EMAIL_BACKEND}")
+                        logging.info(f"📧 [SCHEDULE] From: {getattr(settings, 'DEFAULT_FROM_EMAIL', 'NOT SET')}")
+                        logging.info(f"📧 [SCHEDULE] Fallback USER: {getattr(settings, 'EMAIL_FALLBACK', {}).get('USER', 'NOT SET')}")
+
+                        sent_count, failed_list = send_meeting_invitations(email_data)
+
+                        logging.info(f"📧 [SCHEDULE] Done: {sent_count} sent, {len(failed_list)} failed")
+                        if failed_list:
+                            logging.error(f"[SCHEDULE] Failed emails: {failed_list}")
+                    except Exception as e:
+                        import traceback
+                        logging.error(f"[SCHEDULE] Email send CRASHED: {e}")
+                        logging.error(f"[SCHEDULE] Traceback:\n{traceback.format_exc()}")
+
                 email_thread = threading.Thread(
-                    target=send_meeting_invitations,
-                    args=(email_data,),
+                    target=async_schedule_email_send,
                     daemon=True
                 )
                 email_thread.start()
-                
+
                 logging.info(f"Started background email sending for {participant_count} participants")
+
             else:
                 logging.info("No valid participant emails found")
 

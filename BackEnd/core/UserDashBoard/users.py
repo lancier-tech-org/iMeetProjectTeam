@@ -412,37 +412,105 @@ def generate_OTP():
     """Generate a 6-digit OTP"""
     return ''.join([str(random.randint(0, 9)) for _ in range(6)])
 
-# def send_OTP_email(email, OTP):
-#     """Send OTP to the provided email address"""
-#     try:
-#         msg = MIMEMultipart()
-#         msg['From'] = FROM_EMAIL
-#         msg['To'] = email
-#         msg['Subject'] = 'Your Password Reset OTP'
-        
-#         body = f"Your OTP for password reset is: {OTP}\nThis OTP is valid for 10 minutes."
-#         msg.attach(MIMEText(body, 'plain'))
 
-#         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-#         server.starttls()
-#         server.login(SMTP_USERNAME, SMTP_PASSWORD)
-#         server.sendmail(FROM_EMAIL, email, msg.as_string())
-#         server.quit()
-#         logging.debug(f"OTP {OTP} sent to {email}")
+# def send_OTP_email(email, OTP):
+#     """
+#     Send OTP to the provided email address
+#     Primary: AWS SES (noreply@lancieretech.com)
+#     Fallback: Gmail SMTP (prathigudupuj@gmail.com)
+    
+#     Values come from:
+#     - settings.DEFAULT_FROM_EMAIL = 'noreply@lancieretech.com'
+#     - settings.EMAIL_FALLBACK = {HOST, PORT, USER, PASSWORD, FROM_EMAIL}
+#     """
+#     subject = 'Your Password Reset OTP - iMeetPro'
+#     body = f"""Hello,
+
+# Your OTP for password reset is: {OTP}
+
+# This OTP is valid for 10 minutes.
+
+# If you did not request this, please ignore this email.
+
+# Best regards,
+# iMeetPro Team
+# """
+    
+#     # ============================================================
+#     # TRY 1: AWS SES (Primary)
+#     # Uses: settings.EMAIL_BACKEND = 'django_ses.SESBackend'
+#     # From: settings.DEFAULT_FROM_EMAIL = 'noreply@lancieretech.com'
+#     # ============================================================
+#     try:
+#         from django.core.mail import send_mail
+#         from django.conf import settings
+        
+#         logging.info(f"📧 Attempting AWS SES: {settings.DEFAULT_FROM_EMAIL} → {email}")
+        
+#         send_mail(
+#             subject=subject,
+#             message=body,
+#             from_email=settings.DEFAULT_FROM_EMAIL,
+#             recipient_list=[email],
+#             fail_silently=False,
+#         )
+#         logging.info(f"✅ OTP sent via AWS SES to {email} from {settings.DEFAULT_FROM_EMAIL}")
 #         return True
-#     except Exception as e:
-#         logging.error(f"Failed to send OTP to {email}: {e}")
-#         return False
+        
+#     except Exception as ses_error:
+#         logging.error(f"❌ AWS SES failed: {ses_error}")
+        
+#         # ============================================================
+#         # TRY 2: Gmail SMTP (Fallback)
+#         # Uses: settings.EMAIL_FALLBACK dictionary
+#         # HOST = os.getenv('EMAIL_HOST') = 'smtp.gmail.com'
+#         # PORT = os.getenv('EMAIL_PORT') = 587
+#         # USER = os.getenv('EMAIL_HOST_USER') = 'prathigudupuj@gmail.com'
+#         # PASSWORD = os.getenv('EMAIL_HOST_PASSWORD') = 'yzgf urwr iprf dvwn'
+#         # FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL')
+#         # ============================================================
+#         try:
+#             from django.conf import settings
+            
+#             fallback = getattr(settings, 'EMAIL_FALLBACK', {})
+            
+#             logging.info(f"📧 EMAIL_FALLBACK config: HOST={fallback.get('HOST')}, USER={fallback.get('USER')}")
+            
+#             if fallback.get('USER') and fallback.get('PASSWORD'):
+#                 logging.info(f"🔄 Trying Gmail SMTP fallback: {fallback['USER']} → {email}")
+                
+#                 msg = MIMEMultipart()
+#                 msg['From'] = fallback.get('FROM_EMAIL') or fallback['USER']
+#                 msg['To'] = email
+#                 msg['Subject'] = subject
+#                 msg.attach(MIMEText(body, 'plain'))
+
+#                 server = smtplib.SMTP(fallback['HOST'], fallback['PORT'])
+#                 server.starttls()
+#                 server.login(fallback['USER'], fallback['PASSWORD'])
+#                 server.sendmail(msg['From'], email, msg.as_string())
+#                 server.quit()
+                
+#                 logging.info(f"✅ OTP sent via Gmail SMTP to {email} from {msg['From']}")
+#                 return True
+#             else:
+#                 logging.error("❌ Gmail fallback credentials not found in settings.EMAIL_FALLBACK")
+#                 logging.error(f"   EMAIL_FALLBACK = {fallback}")
+#                 return False
+                
+#         except Exception as gmail_error:
+#             logging.error(f"❌ Gmail SMTP fallback also failed: {gmail_error}")
+#             return False
 
 def send_OTP_email(email, OTP):
     """
     Send OTP to the provided email address
-    Primary: AWS SES (noreply@lancieretech.com)
-    Fallback: Gmail SMTP (prathigudupuj@gmail.com)
     
-    Values come from:
-    - settings.DEFAULT_FROM_EMAIL = 'noreply@lancieretech.com'
-    - settings.EMAIL_FALLBACK = {HOST, PORT, USER, PASSWORD, FROM_EMAIL}
+    Flow:
+    1. Django send_mail() → uses EMAIL_BACKEND (SESWithFallbackBackend)
+       → Tries SES (noreply@lancieretech.com)
+       → If SES fails → tries Gmail SMTP (prathigudupuj@gmail.com)
+    2. If Django send_mail() completely fails → manual smtplib as last resort
     """
     subject = 'Your Password Reset OTP - iMeetPro'
     body = f"""Hello,
@@ -458,15 +526,14 @@ iMeetPro Team
 """
     
     # ============================================================
-    # TRY 1: AWS SES (Primary)
-    # Uses: settings.EMAIL_BACKEND = 'django_ses.SESBackend'
-    # From: settings.DEFAULT_FROM_EMAIL = 'noreply@lancieretech.com'
+    # TRY 1: Django send_mail() → SESWithFallbackBackend
+    # This automatically tries SES first, then Gmail SMTP fallback
     # ============================================================
     try:
         from django.core.mail import send_mail
         from django.conf import settings
         
-        logging.info(f"📧 Attempting AWS SES: {settings.DEFAULT_FROM_EMAIL} → {email}")
+        logging.info(f"[OTP] Sending OTP to {email} via Django send_mail (backend: {settings.EMAIL_BACKEND})")
         
         send_mail(
             subject=subject,
@@ -475,53 +542,55 @@ iMeetPro Team
             recipient_list=[email],
             fail_silently=False,
         )
-        logging.info(f"✅ OTP sent via AWS SES to {email} from {settings.DEFAULT_FROM_EMAIL}")
+        logging.info(f"[OTP] OTP sent successfully to {email}")
         return True
         
-    except Exception as ses_error:
-        logging.error(f"❌ AWS SES failed: {ses_error}")
+    except Exception as django_error:
+        logging.error(f"[OTP] Django send_mail failed: {django_error}")
+        import traceback
+        logging.error(f"[OTP] Traceback: {traceback.format_exc()}")
+    
+    # ============================================================
+    # TRY 2: Direct smtplib as LAST RESORT
+    # Only reaches here if Django backend completely failed
+    # ============================================================
+    try:
+        from django.conf import settings
         
-        # ============================================================
-        # TRY 2: Gmail SMTP (Fallback)
-        # Uses: settings.EMAIL_FALLBACK dictionary
-        # HOST = os.getenv('EMAIL_HOST') = 'smtp.gmail.com'
-        # PORT = os.getenv('EMAIL_PORT') = 587
-        # USER = os.getenv('EMAIL_HOST_USER') = 'prathigudupuj@gmail.com'
-        # PASSWORD = os.getenv('EMAIL_HOST_PASSWORD') = 'yzgf urwr iprf dvwn'
-        # FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL')
-        # ============================================================
-        try:
-            from django.conf import settings
-            
-            fallback = getattr(settings, 'EMAIL_FALLBACK', {})
-            
-            logging.info(f"📧 EMAIL_FALLBACK config: HOST={fallback.get('HOST')}, USER={fallback.get('USER')}")
-            
-            if fallback.get('USER') and fallback.get('PASSWORD'):
-                logging.info(f"🔄 Trying Gmail SMTP fallback: {fallback['USER']} → {email}")
-                
-                msg = MIMEMultipart()
-                msg['From'] = fallback.get('FROM_EMAIL') or fallback['USER']
-                msg['To'] = email
-                msg['Subject'] = subject
-                msg.attach(MIMEText(body, 'plain'))
-
-                server = smtplib.SMTP(fallback['HOST'], fallback['PORT'])
-                server.starttls()
-                server.login(fallback['USER'], fallback['PASSWORD'])
-                server.sendmail(msg['From'], email, msg.as_string())
-                server.quit()
-                
-                logging.info(f"✅ OTP sent via Gmail SMTP to {email} from {msg['From']}")
-                return True
-            else:
-                logging.error("❌ Gmail fallback credentials not found in settings.EMAIL_FALLBACK")
-                logging.error(f"   EMAIL_FALLBACK = {fallback}")
-                return False
-                
-        except Exception as gmail_error:
-            logging.error(f"❌ Gmail SMTP fallback also failed: {gmail_error}")
+        fallback = getattr(settings, 'EMAIL_FALLBACK', {})
+        smtp_user = fallback.get('USER', '')
+        smtp_password = fallback.get('PASSWORD', '')
+        smtp_host = fallback.get('HOST', 'smtp.gmail.com')
+        smtp_port = fallback.get('PORT', 587)
+        smtp_from = fallback.get('FROM_EMAIL', '') or smtp_user
+        
+        if not smtp_user or not smtp_password:
+            logging.error("[OTP] LAST RESORT also failed — no SMTP credentials in EMAIL_FALLBACK")
+            logging.error(f"[OTP] EMAIL_FALLBACK = HOST={smtp_host}, USER={smtp_user}, PASSWORD={'SET' if smtp_password else 'EMPTY'}")
             return False
+        
+        logging.info(f"[OTP] Trying LAST RESORT direct smtplib: {smtp_user}@{smtp_host}:{smtp_port} → {email}")
+        
+        msg = MIMEMultipart()
+        msg['From'] = smtp_from
+        msg['To'] = email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+
+        server = smtplib.SMTP(smtp_host, smtp_port)
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.sendmail(smtp_from, email, msg.as_string())
+        server.quit()
+        
+        logging.info(f"[OTP] OTP sent via LAST RESORT smtplib to {email} from {smtp_from}")
+        return True
+        
+    except Exception as smtp_error:
+        logging.error(f"[OTP] LAST RESORT smtplib ALSO failed: {smtp_error}")
+        import traceback
+        logging.error(f"[OTP] Traceback: {traceback.format_exc()}")
+        return False
 
 def create_user_table():
     """Create tbl_Users table with all required columns"""
@@ -3331,7 +3400,7 @@ def Get_Company_Logo(request):
     GET /api/company/logo/?filename=company_logo.png
     """
     try:
-        filename = request.GET.get('filename', 'ImeetPro.png')
+        filename = request.GET.get('filename', 'IMeetPro.png')
         s3_key = f"logo/{filename}"
         
         logger.info(f"Fetching logo from S3: {s3_key}")
