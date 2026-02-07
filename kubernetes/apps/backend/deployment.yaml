@@ -200,12 +200,20 @@ spec:
                   name: backend-secrets
                   key: LIVEKIT_API_SECRET
                   optional: true
-            # ADD THIS BLOCK - Groq API Key for transcription
+            # Groq API Key for transcription
             - name: GROQ_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: backend-secrets
                   key: GROQ_API_KEY
+                  optional: true
+            
+            # OpenAI API Key (fallback)
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: OPENAI_API_KEY
                   optional: true
             
             # Recording Service URL
