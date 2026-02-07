@@ -3199,14 +3199,12 @@ class FixedGoogleMeetRecorder:
             logger.error(f"Error deleting S3 folder: {e}")
             
     def _trigger_processing_pipeline(self, video_file_path: str, meeting_id: str,
-                       host_user_id: str, recording_doc_id: str) -> Dict:
+                   host_user_id: str, recording_doc_id: str) -> Dict:
         """Trigger the video processing pipeline"""
         try:
-            import tempfile
-            import os
-            
             logger.info(f"🎬 Processing pipeline triggered for FAST video: {meeting_id}")
             
+            # Extract S3 key from video_file_path
             if video_file_path.startswith('s3://'):
                 s3_key = video_file_path.replace('s3://' + AWS_S3_BUCKET + '/', '')
             elif video_file_path.startswith('recordings_temp/'):
@@ -3216,46 +3214,14 @@ class FixedGoogleMeetRecorder:
             
             logger.info(f"📍 S3 Key: {s3_key}")
             
-            # Download from S3
-            temp_fd, temp_video_path = tempfile.mkstemp(
-                suffix='.mp4',
-                prefix=f'process_fast_video_{meeting_id}_'
-            )
-            os.close(temp_fd)
-            
-            try:
-                s3_client.download_file(
-                    Bucket=AWS_S3_BUCKET,
-                    Key=s3_key,
-                    Filename=temp_video_path
-                )
-                
-                file_size = os.path.getsize(temp_video_path)
-                logger.info(f"✅ Downloaded FAST video: {file_size:,} bytes from S3")
-                
-                if file_size == 0:
-                    raise Exception("Downloaded video file is empty")
-                
-            except Exception as download_error:
-                logger.error(f"❌ Failed to download video from S3: {download_error}")
-                raise Exception(f"S3 download failed: {str(download_error)}")
-            
-            from core.UserDashBoard.recordings import process_video_sync
+            # Import Celery task
             from core.scheduler.tasks import process_video_task
 
+            # ✅ CRITICAL FIX: Pass S3 key, not local temp file path
+            # Celery worker will download from S3 using this key
             logger.info(f"🚀 Dispatching Celery background task for meeting={meeting_id}")
-            process_video_task.delay(temp_video_path, meeting_id, host_user_id)
+            process_video_task.delay(s3_key, meeting_id, host_user_id)
             logger.info(f"✅ Celery task dispatched successfully for meeting={meeting_id}")
-            
-            # ✅ DON'T delete here - Celery worker will delete after processing
-            # logger.info(f"📝 Temp file will be deleted by Celery worker after processing: {temp_video_path}")
-            # Clean up local temp file since Celery will download from S3
-            try:
-                if os.path.exists(temp_video_path):
-                    os.remove(temp_video_path)
-                    logger.info(f"🧹 Cleaned up temp processing file")
-            except Exception as e:
-                logger.warning(f"⚠️ Temp file cleanup failed: {e}")
             
             return {
                 "status": "success",
