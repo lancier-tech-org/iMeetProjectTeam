@@ -764,46 +764,58 @@ class StreamingRecordingWithChunks:
                     logger.error(f"Audio clock error: {e}")
                     time.sleep(0.1)
 
-            # FINAL FLUSH: Write silence and wait for FFmpeg to catch up
+            # FINAL FLUSH: Write EXACT deficit to match timeline
             logger.info("🎵 Audio clock: Final flush sequence starting...")
             try:
                 with self.audio_lock:
                     if self.audio_enabled and self.audio_fifo_writer:
-                        # ✅ NEW: Write 2 seconds of silence to ensure FFmpeg processes everything
-                        silence_duration = 2.0  # seconds
-                        total_silence_samples = int(48000 * 2 * silence_duration)
+                        # ✅ CRITICAL FIX: Calculate EXACT audio deficit
+                        final_timeline_pts = self.timeline.get_current_pts()
+                        expected_total_samples = int(final_timeline_pts * 48000 * 2)
+                        samples_deficit = expected_total_samples - self.audio_samples_written
                         
-                        logger.info(f"📝 Writing {silence_duration}s of silence to ensure FFmpeg catches up...")
+                        logger.info(f"📊 Final audio analysis:")
+                        logger.info(f"   Timeline: {final_timeline_pts:.2f}s")
+                        logger.info(f"   Expected samples: {expected_total_samples}")
+                        logger.info(f"   Actual samples: {self.audio_samples_written}")
+                        logger.info(f"   Deficit: {samples_deficit} samples ({samples_deficit / (48000 * 2):.2f}s)")
                         
-                        # Write in chunks
-                        remaining = total_silence_samples
-                        while remaining > 0:
-                            chunk_size = min(samples_per_chunk, remaining)
-                            silence = np.zeros(chunk_size, dtype=np.int16)
-                            self.audio_fifo_writer.write(silence.tobytes())
-                            remaining -= chunk_size
+                        # ✅ FIX: Write EXACT deficit, not fixed 2 seconds
+                        if samples_deficit > 0:
+                            logger.info(f"📝 Writing {samples_deficit / (48000 * 2):.2f}s of compensating silence...")
+                            
+                            remaining = samples_deficit
+                            while remaining > 0:
+                                chunk_size = min(samples_per_chunk, remaining)
+                                silence = np.zeros(chunk_size, dtype=np.int16)
+                                self.audio_fifo_writer.write(silence.tobytes())
+                                self.audio_samples_written += chunk_size
+                                remaining -= chunk_size
+                            
+                            logger.info(f"✅ Wrote {samples_deficit} deficit samples")
+                        else:
+                            logger.info(f"✅ No deficit - audio matches timeline")
                         
-                        # ✅ NEW: Extended flush with longer delays
-                        for i in range(10):  # CHANGED: 5 → 10 iterations
+                        # Extended flush
+                        for i in range(10):
                             self.audio_fifo_writer.flush()
-                            time.sleep(0.5)  # CHANGED: 0.2 → 0.5 seconds
+                            time.sleep(0.5)
                         
-                        # Force sync if possible
                         if hasattr(self.audio_fifo_writer, 'fileno'):
                             try:
                                 os.fsync(self.audio_fifo_writer.fileno())
-                                time.sleep(1.0)  # ✅ NEW: Extra delay after fsync
+                                time.sleep(1.0)
                             except:
                                 pass
                         
-                        logger.info("✅ Audio FIFO flushed with 2s silence buffer")
+                        logger.info(f"✅ Audio FIFO flushed - Final sample count: {self.audio_samples_written}")
                 
                 self.audio_drain_complete = True
                 logger.info("⏰ Audio master clock thread stopped - drain complete")
 
             except Exception as e:
                 logger.error(f"❌ Final flush error: {e}")
-                self.audio_drain_complete = True  # Mark complete anyway to unblock
+                self.audio_drain_complete = True
 
         self.audio_clock_thread = threading.Thread(
             target=audio_clock_loop,
@@ -1226,8 +1238,17 @@ class StreamingRecordingWithChunks:
             logger.warning(f"Audio enqueue error ({source_type}): {e}")
 
     def _mix_and_write_audio_chunk(self, target_samples: int = 960):  # 10 ms @ 48 kHz stereo
-        """Mix whatever is available and ALWAYS write a full chunk (pad silence if needed) — called only by clock"""
+        """Mix whatever is available and ALWAYS write a full chunk — CRITICAL: writes silence when no sources active"""
         try:
+            # ✅ FIX: Calculate how many samples we SHOULD have written by now
+            current_pts = self.timeline.get_current_pts()
+            expected_samples_total = int(current_pts * 48000 * 2)  # Timeline-based expectation
+            samples_behind = expected_samples_total - self.audio_samples_written
+            
+            # ✅ FIX: If we're falling behind timeline, log warning
+            if samples_behind > 48000:  # More than 0.5 seconds behind
+                logger.warning(f"⚠️ Audio falling behind timeline by {samples_behind / (48000 * 2):.2f}s")
+            
             with self.audio_mixer_lock:
                 mixed = np.zeros(target_samples, dtype=np.float32)
                 active_count = 0
@@ -1237,20 +1258,16 @@ class StreamingRecordingWithChunks:
                     avail = len(buffer)
                     if avail > 0:
                         has_any_data = True
-                        # CRITICAL: Take EXACTLY target_samples, pad with zeros if needed
                         if avail >= target_samples:
-                            # Enough samples - take exactly target_samples
                             source_samples = np.array(
                                 [buffer.popleft() for _ in range(target_samples)],
                                 dtype=np.float32
                             )
                         else:
-                            # Not enough - take all and zero-pad to target_samples
                             source_samples = np.array(
                                 [buffer.popleft() for _ in range(avail)],
                                 dtype=np.float32
                             )
-                            # Pad to exactly target_samples
                             source_samples = np.pad(
                                 source_samples, 
                                 (0, target_samples - len(source_samples)),
@@ -1258,24 +1275,19 @@ class StreamingRecordingWithChunks:
                                 constant_values=0
                             )
                         
-                        # Verify length (safety check)
                         assert len(source_samples) == target_samples, \
                             f"Expected {target_samples} samples, got {len(source_samples)}"
                         
                         mixed += source_samples
                         active_count += 1
 
-                if not has_any_data:
-                    # No data at all — log and write silence to keep FFmpeg happy
-                    # logger.debug("Audio clock: No data in any buffer — writing silence chunk")
-                    pass
-                else:
-                    if active_count > 1:
-                        mixed /= active_count
-                    # logger.debug(f"Audio clock: Mixed {active_count} sources, chunk length: {len(mixed)} samples, non-zero: {np.count_nonzero(mixed)}")
-                # Always clip and prepare full chunk
+                # ✅ FIX: ALWAYS write samples, even if no data (silence maintains timeline sync)
+                if active_count > 1:
+                    mixed /= active_count
+                
                 mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
 
+            # ✅ FIX: ALWAYS write, regardless of has_any_data
             with self.audio_lock:
                 if self.audio_enabled and self.audio_fifo_writer and self.ffmpeg_audio_process.poll() is None:
                     try:
@@ -1283,13 +1295,12 @@ class StreamingRecordingWithChunks:
                         self.audio_fifo_writer.flush()
                         self.audio_samples_written += len(mixed)
                         
-                        # Periodic logging
-                        if self.audio_samples_written % (48000 * 2 * 5) == 0:  # every 5 sec
-                            current_pts = self.timeline.get_current_pts()
+                        if self.audio_samples_written % (48000 * 2 * 5) == 0:
                             logger.info(
                                 f"🎵 Audio: {self.audio_samples_written} samples | "
                                 f"Timeline: {current_pts:.1f}s | "
-                                f"Sources active: {active_count}"
+                                f"Sources active: {active_count} | "
+                                f"Behind: {samples_behind / (48000 * 2):.2f}s"
                             )
                     except (BrokenPipeError, IOError) as e:
                         logger.error(f"❌ Audio write error: {e}")
