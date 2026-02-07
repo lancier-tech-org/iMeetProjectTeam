@@ -30,6 +30,8 @@ spec:
             - -l
             - INFO
             - --concurrency=4
+            - -Q
+            - celery
           env:
             # ============================================
             # CRITICAL: Prevent APScheduler from starting
