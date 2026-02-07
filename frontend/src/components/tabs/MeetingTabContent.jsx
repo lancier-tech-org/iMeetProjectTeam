@@ -47,10 +47,12 @@ const MeetingTabContent = ({
       overflow: 'hidden', 
       minHeight: 0,
       height: '100%',
+      width: '100%',
       position: 'relative',
-      transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-      borderRadius: '12px',
+      // ✅ REMOVED: borderRadius, transition — video must fill edge-to-edge
+      borderRadius: 0,
       margin: 0,
+      padding: 0,
     }}>
       {actualIsConnected || allParticipants.length > 0 ? (
         <VideoGrid
@@ -63,7 +65,6 @@ const MeetingTabContent = ({
           remoteStreams={combinedStreams}
           onMuteParticipant={() => {}}
           onRemoveParticipant={onRemoveParticipant}
-          // onRemoveParticipant={handleRemoveParticipant}
           onPromoteToHost={onPromoteToCoHost}
           onRemoveCoHost={onRemoveCoHost}
           onParticipantRemoved={(removedUserId) => {

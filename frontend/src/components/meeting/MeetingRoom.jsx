@@ -1,4 +1,4 @@
-  // src/components/meeting/MeetingRoom.jsx - COMPLETE REFACTORED VERSION
+// src/components/meeting/MeetingRoom.jsx - COMPLETE REFACTORED VERSION
 import React, {
   useState,
   useEffect,
@@ -25,6 +25,289 @@ import {
   PlayArrow,    // ADD THIS
 } from "@mui/icons-material";
 
+// / ─────────────────────────────────────────────────────────────────────────────
+// NEW IMPORTS — add these alongside your existing imports
+// ─────────────────────────────────────────────────────────────────────────────
+import { Typography, useMediaQuery, useTheme, Fade, Slide, Grow } from "@mui/material";
+import { keyframes } from "@mui/system";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ANIMATIONS
+// ─────────────────────────────────────────────────────────────────────────────
+const pulseGlow = keyframes`
+  0%, 100% { box-shadow: 0 0 8px rgba(239, 68, 68, 0.4); }
+  50% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.8), 0 0 40px rgba(239, 68, 68, 0.3); }
+`;
+
+const shimmer = keyframes`
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+`;
+
+const floatIn = keyframes`
+  0% { opacity: 0; transform: translateY(12px) scale(0.97); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+`;
+
+const subtlePulse = keyframes`
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+`;
+
+const slideUp = keyframes`
+  0% { opacity: 0; transform: translateY(24px); }
+  100% { opacity: 1; transform: translateY(0); }
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STYLED COMPONENTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MeetingContainer = styled(Box)(() => ({
+  height: "100vh",
+  width: "100vw",
+  padding: 0,
+  margin: 0,
+  display: "flex",
+  flexDirection: "column",
+  background: `
+    radial-gradient(ellipse 80% 60% at 50% -10%, rgba(30, 58, 95, 0.5) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 80% 100%, rgba(30, 64, 80, 0.3) 0%, transparent 50%),
+    linear-gradient(180deg, #0a0e17 0%, #101820 40%, #0d1218 100%)
+  `,
+  color: "#e8ecf1",
+  overflow: "hidden",
+  position: "relative",
+  fontFamily: "'DM Sans', 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif",
+  "&::before": {
+    content: '""',
+    position: "absolute",
+    inset: 0,
+    backgroundImage: `
+      radial-gradient(circle at 20% 30%, rgba(56, 189, 248, 0.03) 0%, transparent 40%),
+      radial-gradient(circle at 80% 70%, rgba(168, 85, 247, 0.02) 0%, transparent 40%)
+    `,
+    pointerEvents: "none",
+    zIndex: 0,
+  },
+}));
+
+const ContentShell = styled(Box)(() => ({
+  position: "relative",
+  zIndex: 1,
+  flex: 1,
+  display: "flex",
+  flexDirection: "column",
+  height: "100vh",
+  overflow: "hidden",
+}));
+
+// ── The full-height row that holds VideoColumn + Panels side-by-side ────────
+const MainStage = styled(Box)(({ theme }) => ({
+  flex: 1,
+  display: "flex",
+  flexDirection: "row",
+  position: "relative",
+  overflow: "hidden",
+  minHeight: 0,
+  gap: 0,  // ✅ No gap
+  padding: 0,
+  [theme.breakpoints.down("sm")]: {
+    flexDirection: "column",
+  },
+}));
+
+// ── Column that wraps VideoArea + ControlBar
+const VideoColumn = styled(Box)(({ theme }) => ({
+  flex: 1,
+  display: "flex",
+  flexDirection: "column",
+  minWidth: 0,
+  minHeight: 0,
+  overflow: "hidden",
+  position: "relative",
+  // ✅ GPU-accelerated smooth width transition
+  transition: "flex 0.35s cubic-bezier(0.4, 0, 0.2, 1), margin 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
+  willChange: "flex",
+}));
+
+// ============================================================
+// REPLACE these styled components in MeetingRoom.jsx
+// ============================================================
+
+// ── VideoArea — NO margins, borders, or border-radius so video fills the tab ──
+const VideoArea = styled(Box)(({ theme }) => ({
+  flex: 1,
+  position: "relative",
+  overflow: "hidden",
+  // ✅ REMOVED: borderRadius, margin, background, border, backdropFilter, animation
+  // Video should fill the entire available space with ZERO gaps
+  borderRadius: 0,
+  margin: 0,
+  padding: 0,
+  background: "transparent",
+  border: "none",
+  minHeight: 0,           // allow shrink in flex column
+}));
+
+// ── ControlBar now sits inside VideoColumn, inheriting its width ────────────
+const ControlBarWrapper = styled(Box)(({ theme }) => ({
+  position: "relative",
+  zIndex: 50,
+  flexShrink: 0,          // never collapse
+  padding: "6px 8px 10px 8px",
+  animation: `${slideUp} 0.4s ease-out 0.2s both`,
+  // smooth width sync with parent column
+  transition: "padding 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+  [theme.breakpoints.down("md")]: {
+    padding: "4px 6px 8px 6px",
+  },
+  [theme.breakpoints.down("sm")]: {
+    padding: "2px 4px 6px 4px",
+  },
+}));
+
+const RecordingBadge = styled(Box)(({ isPaused }) => ({
+  position: "fixed",
+  top: 14,
+  left: 384,
+  zIndex: 999,
+  animation: isPaused ? "none" : `${pulseGlow} 2s ease-in-out infinite`,
+  borderRadius: "12px",
+  overflow: "hidden",
+  "@media (max-width: 960px)": {
+    left: "50%",
+    transform: "translateX(-50%)",
+    top: 10,
+  },
+  "@media (max-width: 600px)": {
+    left: 12,
+    transform: "none",
+    top: 8,
+  },
+}));
+
+const HandRaiseBadgeContainer = styled(Box)(() => ({
+  position: "fixed",
+  top: 80,
+  right: 24,
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  zIndex: 999,
+  animation: `${slideUp} 0.35s ease-out`,
+  "@media (max-width: 960px)": {
+    top: 64,
+    right: 16,
+  },
+  "@media (max-width: 600px)": {
+    top: 52,
+    right: 8,
+  },
+}));
+
+// ── Side panels: inline on desktop, overlay on mobile ───────────────────────
+const PanelSlot = styled(Box, {
+  shouldForwardProp: (prop) => prop !== "isOpen" && prop !== "side",
+})(({ theme, isOpen, side = "right" }) => ({
+  position: "relative",
+  // ✅ Use width + transform for smooth GPU-accelerated animation
+  width: isOpen ? 380 : 0,
+  minWidth: isOpen ? 380 : 0,
+  maxWidth: isOpen ? 380 : 0,
+  opacity: isOpen ? 1 : 0,
+  flexShrink: 0,
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
+  // ✅ Smooth multi-property transition
+  transition: `
+    width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+    min-width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+    max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1) ${isOpen ? '0.1s' : '0s'},
+    transform 0.35s cubic-bezier(0.4, 0, 0.2, 1)
+  `,
+  willChange: "width, min-width, max-width, opacity, transform",
+  // ✅ Slide content in from the right
+  transform: isOpen ? "translateX(0)" : "translateX(20px)",
+  // ✅ No border/margin gap
+  margin: 0,
+  padding: 0,
+  borderLeft: isOpen ? "1px solid rgba(255,255,255,0.06)" : "none",
+
+  [theme.breakpoints.down("lg")]: {
+    width: isOpen ? 320 : 0,
+    minWidth: isOpen ? 320 : 0,
+    maxWidth: isOpen ? 320 : 0,
+  },
+  // On tablet / mobile: absolute overlay so VideoColumn stays full width
+  [theme.breakpoints.down("md")]: {
+    position: "absolute",
+    top: 0,
+    [side === "right" ? "right" : "left"]: 0,
+    bottom: 0,
+    width: isOpen ? "100%" : 0,
+    minWidth: isOpen ? "100%" : 0,
+    maxWidth: isOpen ? 420 : 0,
+    zIndex: 100,
+    background: "rgba(10, 14, 23, 0.97)",
+    backdropFilter: "blur(20px)",
+    borderLeft: isOpen ? "1px solid rgba(255,255,255,0.06)" : "none",
+    // ✅ Slide from right on mobile
+    transform: isOpen ? "translateX(0)" : "translateX(100%)",
+    opacity: 1, // always opaque on mobile, let transform handle it
+    // ✅ Override width to not be 0 so transform works
+    ...(isOpen ? {} : {
+      width: 420,
+      minWidth: 420,
+      maxWidth: 420,
+    }),
+  },
+  [theme.breakpoints.down("sm")]: {
+    maxWidth: isOpen ? "100%" : 0,
+    ...(isOpen ? {} : {
+      width: "100%",
+      minWidth: "100%",
+      maxWidth: "100%",
+    }),
+  },
+}));
+
+const ThankYouOverlay = styled(Box)(() => ({
+  position: "fixed",
+  inset: 0,
+  backgroundColor: "rgba(6, 10, 18, 0.97)",
+  backdropFilter: "blur(24px)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  zIndex: 20001,
+  flexDirection: "column",
+  gap: 16,
+  animation: `${floatIn} 0.6s ease-out`,
+}));
+
+const GlassCard = styled(Box)(() => ({
+  background: "rgba(255,255,255,0.04)",
+  backdropFilter: "blur(12px)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: 20,
+  padding: "40px 48px",
+  textAlign: "center",
+  maxWidth: 480,
+  width: "90%",
+}));
+
+const ProgressDot = styled(Box, {
+  shouldForwardProp: (p) => p !== "delay",
+})(({ delay = 0 }) => ({
+  width: 6,
+  height: 6,
+  borderRadius: "50%",
+  background: "#38bdf8",
+  animation: `${subtlePulse} 1.2s ease-in-out ${delay}s infinite`,
+}));
 // ============================================================================
 // HOOKS
 // ============================================================================
@@ -133,19 +416,19 @@ const PERFORMANCE_CONFIG = {
 // ============================================================================
 // STYLED COMPONENTS
 // ============================================================================
-const MeetingContainer = styled(Box)(({ theme }) => ({
-  height: "100vh",
-  width: "100vw",
-  padding: 0,
-  margin: 0,
-  display: "flex",
-  flexDirection: "column",
-  background: "linear-gradient(135deg, #0f1419 0%, #1a202c 50%, #2d3748 100%)",
-  color: "white",
-  overflow: "hidden",
-  position: "relative",
-  fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
-}));
+// const MeetingContainer = styled(Box)(({ theme }) => ({
+//   height: "100vh",
+//   width: "100vw",
+//   padding: 0,
+//   margin: 0,
+//   display: "flex",
+//   flexDirection: "column",
+//   background: "linear-gradient(135deg, #0f1419 0%, #1a202c 50%, #2d3748 100%)",
+//   color: "white",
+//   overflow: "hidden",
+//   position: "relative",
+//   fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+// }));
 
 // ============================================================================
 // MAIN COMPONENT
@@ -602,75 +885,24 @@ const [forceStopTargetParticipant, setForceStopTargetParticipant] = useState(nul
   // ENHANCED SCREEN SHARE DATA
   // ==========================================================================
   const enhancedScreenShareData = useMemo(() => {
-   if (livekitScreenSharingParticipant || livekitLocalIsScreenSharing) {
-  const screenStream =
-    getScreenShareStream?.() ||
-    createEnhancedStreamMapping.get("screen_share_active");
+    if (livekitScreenSharingParticipant || livekitLocalIsScreenSharing) {
+      const screenStream =
+        getScreenShareStream?.() ||
+        createEnhancedStreamMapping.get("screen_share_active");
 
-  if (screenStream) {
-    // ✅ FIXED: Handle remote screen sharer from livekitScreenSharingParticipant
-    if (livekitScreenSharingParticipant && !livekitScreenSharingParticipant.isLocal) {
-      // This is a REMOTE participant sharing - look up their actual name
-      let sharerUserId = livekitScreenSharingParticipant.userId || 
-                         livekitScreenSharingParticipant.user_id;
-      
-      // Extract from identity if needed
-      if (!sharerUserId && livekitScreenSharingParticipant.identity?.includes("user_")) {
-        sharerUserId = livekitScreenSharingParticipant.identity.split("_")[1];
+      if (screenStream) {
+        return {
+          stream: screenStream,
+          sharer: livekitScreenSharingParticipant || {
+            name: currentUser?.name || currentUser?.full_name || "You",
+            user_id: currentUser?.id,
+            connection_id: currentUser?.id,
+            participant_id: `local_${currentUser?.id}`,
+            isLocal: true,
+          },
+        };
       }
-      
-      // Look up in liveParticipants for accurate name
-      let sharerDisplayName = livekitScreenSharingParticipant.name;
-      
-      if (sharerUserId) {
-        const matchingParticipant = liveParticipants?.find((p) => {
-          const pUserId = (p.User_ID || p.user_id || p.ID)?.toString();
-          return pUserId === sharerUserId?.toString();
-        });
-        
-        if (matchingParticipant) {
-          sharerDisplayName = matchingParticipant.Full_Name || 
-                              matchingParticipant.full_name || 
-                              matchingParticipant.name ||
-                              matchingParticipant.displayName ||
-                              sharerDisplayName;
-        }
-      }
-
-      console.log("📺 LiveKit screen sharer (remote):", {
-        userId: sharerUserId,
-        identity: livekitScreenSharingParticipant.identity,
-        originalName: livekitScreenSharingParticipant.name,
-        resolvedName: sharerDisplayName,
-      });
-
-      return {
-        stream: screenStream,
-        sharer: {
-          ...livekitScreenSharingParticipant,
-          name: sharerDisplayName || livekitScreenSharingParticipant.name,
-          full_name: sharerDisplayName || livekitScreenSharingParticipant.name,
-          displayName: sharerDisplayName || livekitScreenSharingParticipant.name,
-          user_id: sharerUserId || livekitScreenSharingParticipant.user_id,
-        },
-      };
     }
-    
-    // This is LOCAL user sharing
-    return {
-      stream: screenStream,
-      sharer: livekitScreenSharingParticipant || {
-        name: currentUser?.name || currentUser?.full_name || "You",
-        full_name: currentUser?.full_name || currentUser?.name || "You",
-        displayName: currentUser?.full_name || currentUser?.name || "You",
-        user_id: currentUser?.id,
-        connection_id: currentUser?.id,
-        participant_id: `local_${currentUser?.id}`,
-        isLocal: true,
-      },
-    };
-  }
-}
 
     if (remoteParticipants?.size > 0) {
       for (const [participantSid, participant] of remoteParticipants) {
@@ -720,7 +952,6 @@ const [forceStopTargetParticipant, setForceStopTargetParticipant] = useState(nul
     currentUser,
     localParticipant,
     remoteParticipants,
-    liveParticipants,
   ]);
 
   // ==========================================================================
@@ -2204,7 +2435,6 @@ const handleToggleScreenShare = useMemo(
           enhancedScreenShareData.sharer.identity;
 
         // ✅ If someone else is sharing
-        // ✅ If someone else is sharing
         if (sharerUserId !== currentUserId) {
           // ✅ PROTECTION: Only hosts/co-hosts can stop other people's screen shares
           if (!hasHostPrivileges) {
@@ -2215,143 +2445,12 @@ const handleToggleScreenShare = useMemo(
             return;
           }
 
-          // ✅ FIXED: Look up the actual participant name from liveParticipants or allParticipants
-         const getParticipantNameById = (userId) => {
-  console.log("🔍 Looking up participant name for userId:", userId);
-  
-  // Try liveParticipants first - check multiple ID fields
-  const fromLive = liveParticipants.find((p) => {
-    const pUserId = p.User_ID?.toString();
-    const pUserIdLower = p.user_id?.toString();
-    const pId = p.ID?.toString();
-    const targetId = userId?.toString();
-    
-    return pUserId === targetId || pUserIdLower === targetId || pId === targetId;
-  });
-  
-  if (fromLive) {
-    const name = fromLive.Full_Name || fromLive.full_name || fromLive.name || fromLive.displayName;
-    if (name && !name.startsWith('User ') && !name.includes('user_')) {
-      console.log("✅ Found name from liveParticipants:", name);
-      return name;
-    }
-  }
-  
-  // Try allParticipants
-  const fromAll = allParticipants.find((p) => {
-    const pUserId = p.user_id?.toString();
-    const pUserIdUpper = p.User_ID?.toString();
-    const pId = p.id?.toString();
-    const targetId = userId?.toString();
-    
-    return pUserId === targetId || pUserIdUpper === targetId || pId === targetId;
-  });
-  
-  if (fromAll) {
-    const name = fromAll.full_name || fromAll.Full_Name || fromAll.name || fromAll.displayName;
-    if (name && !name.startsWith('User ') && !name.includes('user_')) {
-      console.log("✅ Found name from allParticipants:", name);
-      return name;
-    }
-  }
-  
-  // Try remoteParticipants from LiveKit
- if (remoteParticipants?.size > 0) {
-  for (const [participantSid, participant] of remoteParticipants) {
-    if (typeof participant.getTrackPublication === "function") {
-      const screenSharePub = participant.getTrackPublication(
-        Track.Source.ScreenShare
-      );
-      if (screenSharePub?.track?.mediaStreamTrack) {
-        const screenStream = new MediaStream([
-          screenSharePub.track.mediaStreamTrack,
-        ]);
-        let oduserId = participant.identity;
-        if (participant.identity?.includes("user_")) {
-          userId = participant.identity.split("_")[1];
-        }
-
-        // ✅ FIXED: Look up the actual display name from liveParticipants
-        let sharerDisplayName = null;
-        
-        // Try to find in liveParticipants first (database has accurate names)
-        const matchingLiveParticipant = liveParticipants?.find((p) => {
-          const pUserId = (p.User_ID || p.user_id || p.ID)?.toString();
-          return pUserId === userId?.toString();
-        });
-        
-        if (matchingLiveParticipant) {
-          sharerDisplayName = matchingLiveParticipant.Full_Name || 
-                              matchingLiveParticipant.full_name || 
-                              matchingLiveParticipant.name ||
-                              matchingLiveParticipant.displayName;
-        }
-        
-        // Fallback to LiveKit participant name if it's a real name
-        if (!sharerDisplayName || sharerDisplayName?.includes('user_') || sharerDisplayName?.startsWith('User ')) {
-          if (participant.name && 
-              !participant.name.includes('user_') && 
-              !participant.name.startsWith('User ')) {
-            sharerDisplayName = participant.name;
-          }
-        }
-        
-        // Final fallback
-        if (!sharerDisplayName) {
-          sharerDisplayName = participant.identity || "Remote User";
-        }
-
-        console.log("📺 Screen sharer identified:", {
-          participantSid,
-          identity: participant.identity,
-          userId,
-          liveKitName: participant.name,
-          resolvedName: sharerDisplayName,
-        });
-
-        return {
-          stream: screenStream,
-          sharer: {
-            name: sharerDisplayName,
-            full_name: sharerDisplayName,
-            displayName: sharerDisplayName,
-            user_id: userId,
-            connection_id: participantSid,
-            participant_id: participantSid,
-            identity: participant.identity,
-            isLocal: false,
-          },
-        };
-      }
-    }
-  }
-}
-  
-  // Fallback to sharer data from enhancedScreenShareData
-  const sharerName = enhancedScreenShareData.sharer?.name || 
-                     enhancedScreenShareData.sharer?.full_name || 
-                     enhancedScreenShareData.sharer?.displayName;
-  
-  if (sharerName && 
-      !sharerName.startsWith('User ') && 
-      !sharerName.includes('user_') &&
-      sharerName !== 'Unknown' &&
-      sharerName !== 'Participant') {
-    console.log("✅ Using name from enhancedScreenShareData:", sharerName);
-    return sharerName;
-  }
-  
-  console.warn("⚠️ Could not find proper name for userId:", userId);
-  return "Participant";
-};
-
-          const resolvedParticipantName = getParticipantNameById(sharerUserId);
-
-          console.log(`🛡️ Host/Co-host initiating force stop for ${resolvedParticipantName}`);
+          // ✅ NEW: Show confirmation dialog before force stopping
+          console.log(`🛡️ Host/Co-host initiating force stop for ${enhancedScreenShareData.sharer.name}`);
           
           // Store the participant data for the confirmation dialog
           setForceStopTargetParticipant({
-            name: resolvedParticipantName,
+            name: enhancedScreenShareData.sharer.name || "Participant",
             userId: sharerUserId,
             identity: sharerIdentity,
             data: enhancedScreenShareData.sharer,
@@ -2546,9 +2645,6 @@ const handleToggleScreenShare = useMemo(
     coHostPrivilegesActive,
     currentUser?.id,
     enhancedScreenShareData,
-    liveParticipants,   // ✅ ADDED
-    allParticipants,    // ✅ ADDED
-    remoteParticipants,
   ]
 );
 
@@ -4641,75 +4737,91 @@ useEffect(() => {
   // ==========================================================================
   // RENDER
   // ==========================================================================
-  return (
-    <MeetingContainer ref={meetingContainerRef}>
-      {/* Meeting Ended Overlay */}
-      {/* Meeting Ended Overlay - ONLY show if feedback is NOT active */}
-      {/* Meeting Ended Overlay - ONLY show if feedback dialog should NOT show */}
-      <MeetingEndedOverlay
-        meetingEnded={meetingEnded && !showFeedbackDialog && !feedbackSubmitted} // ✅ FIXED: Changed && to &&
-        onLeaveMeeting={handleLeaveMeeting}
-        meetingId={realMeetingId}
-        userId={currentUser?.id}
-        meetingTitle={meetingData?.title || meetingData?.Title}
-        currentUser={currentUser}
-      />
-      {/* Browser Tabs Header */}
-      <BrowserTabsHeader
+
+
+return (
+  <MeetingContainer ref={meetingContainerRef}>
+
+    {/* ── Meeting Ended Overlay ──────────────────────────────────────── */}
+    <MeetingEndedOverlay
+      meetingEnded={meetingEnded && !showFeedbackDialog && !feedbackSubmitted}
+      onLeaveMeeting={handleLeaveMeeting}
+      meetingId={realMeetingId}
+      userId={currentUser?.id}
+      meetingTitle={meetingData?.title || meetingData?.Title}
+      currentUser={currentUser}
+    />
+
+    {/* ── Content Shell ──────────────────────────────────────────────── */}
+    <ContentShell>
+
+    <BrowserTabsHeader
         availableTabs={availableTabs}
         activeTab={activeTab}
         onTabChange={setActiveTab}
         onTabClose={handleCloseTab}
+        // ✅ Attendance props — moved from overlay to header
+        attendanceEnabled={attendanceEnabled}
+        attendanceData={currentAttendanceData}
+        meetingId={realMeetingId}
+        userId={currentUser?.id}
+        userName={getParticipantDisplayName(currentUser)}
+        isActive={actualIsConnected}
+        cameraEnabled={videoEnabled}
+        onViolation={handleAttendanceViolation}
+        onStatusChange={handleAttendanceStatusChange}
+        onSessionTerminated={handleAttendanceSessionTerminated}
+        onToggleMinimized={() => setAttendanceMinimized(!attendanceMinimized)}
+        isHost={isHost}
+        isCoHost={isCoHost || coHostPrivilegesActive}
+        effectiveRole={effectiveRole}
+        onCameraToggle={handleCameraToggle}
       />
 
-      {/* Tab Content Area */}
+      {/* ── Body below tabs ────────────────────────────────────────── */}
       <Box
         sx={{
-          pt: "64px",
-          height: "100vh",
-          overflow: "hidden",
+          pt: { xs: "52px", sm: "58px", md: "64px" },
+          flex: 1,
           display: "flex",
           flexDirection: "column",
+          overflow: "hidden",
+          position: "relative",
         }}
       >
-        {/* Recording Indicator */}
+
+        {/* ── Recording Indicator (fixed position) ─────────────────── */}
         {recordingState.isRecording && (
-          <Box sx={{ position: "fixed", top: 14, left: 384, zIndex: 999 }}>
-            <RecordingIndicator
-              isRecording={recordingState.isRecording}
-               isPaused={recordingState.isPaused}  // ADD THIS
-              recordingMethod={recordingState.method}
-              duration={recordingState.duration}
-              pausedDuration={recordingState.pausedDuration}  
-              uploading={recordingState.uploading}
-              uploadProgress={recordingState.uploadProgress}
-              onPauseResume={handlePauseResumeRecording}  // ADD THIS
-      hasHostPrivileges={hasHostPrivileges}  // ADD THIS
-            />
-          </Box>
+          <Fade in timeout={400}>
+            <RecordingBadge isPaused={recordingState.isPaused}>
+              <RecordingIndicator
+                isRecording={recordingState.isRecording}
+                isPaused={recordingState.isPaused}
+                recordingMethod={recordingState.method}
+                duration={recordingState.duration}
+                pausedDuration={recordingState.pausedDuration}
+                uploading={recordingState.uploading}
+                uploadProgress={recordingState.uploadProgress}
+                onPauseResume={handlePauseResumeRecording}
+                hasHostPrivileges={hasHostPrivileges}
+              />
+            </RecordingBadge>
+          </Fade>
         )}
 
-        {/* Hand Raise Notification */}
-        <Box
-          sx={{
-            position: "fixed",
-            top: 80,
-            right: 24,
-            display: "flex",
-            flexDirection: "column",
-            gap: 1,
-            zIndex: 999,
-          }}
-        >
-          <HandRaiseNotification
-            hasHostPrivileges={hasHostPrivileges}
-            pendingHandsCount={pendingHandsCount}
-            handRaiseOpen={handRaiseOpen}
-            onClick={() => setHandRaiseOpen(true)}
-          />
-        </Box>
+        {/* ── Hand Raise Badge (fixed position) ────────────────────── */}
+        <Grow in={pendingHandsCount > 0 && hasHostPrivileges} timeout={300}>
+          <HandRaiseBadgeContainer>
+            <HandRaiseNotification
+              hasHostPrivileges={hasHostPrivileges}
+              pendingHandsCount={pendingHandsCount}
+              handRaiseOpen={handRaiseOpen}
+              onClick={() => setHandRaiseOpen(true)}
+            />
+          </HandRaiseBadgeContainer>
+        </Grow>
 
-        {/* Screen Share Request Dialog */}
+        {/* ── Screen Share Request Dialog ───────────────────────────── */}
         <ScreenShareRequestDialog
           open={showScreenShareRequest}
           onClose={() => setShowScreenShareRequest(false)}
@@ -4719,120 +4831,146 @@ useEffect(() => {
           hasHostPrivileges={hasHostPrivileges}
         />
 
-        {/* Main Content Area */}
-        <Box
-          sx={{
-            flex: 1,
-            display: "flex",
-            position: "relative",
-            overflow: "hidden",
-            minHeight: 0,
-            pb: "10px",
-            px: 1,
-          }}
-        >
-          {/* Attendance Tracker Overlay */}
-          <AttendanceTrackerOverlay
-            enabled={attendanceEnabled}
-            minimized={attendanceMinimized}
-            meetingId={realMeetingId}
-            userId={currentUser?.id}
-            userName={getParticipantDisplayName(currentUser)}
-            isActive={actualIsConnected}
-            cameraEnabled={videoEnabled}
-            onViolation={handleAttendanceViolation}
-            onStatusChange={handleAttendanceStatusChange}
-            onSessionTerminated={handleAttendanceSessionTerminated}
-            onToggleMinimized={() =>
-              setAttendanceMinimized(!attendanceMinimized)
-            }
-            isHost={isHost}
-            isCoHost={isCoHost || coHostPrivilegesActive}
-            effectiveRole={effectiveRole}
-            onCameraToggle={handleCameraToggle}
-            chatOpen={chatOpen}
-            participantsOpen={participantsOpen}
-          />
+        {/* ═════════════════════════════════════════════════════════════
+            MAIN STAGE — horizontal row: VideoColumn | PanelSlot(s)
+            ═════════════════════════════════════════════════════════ */}
+        <MainStage>
 
-          {/* Tab Content */}
-          {activeTab === "meeting" && (
-            <MeetingTabContent
-              actualIsConnected={actualIsConnected}
-              isConnecting={isConnecting}
-              connectionAttemptRef={connectionAttemptRef}
-              allParticipants={allParticipants}
-              localStream={localStream}
-              combinedStreams={combinedStreams}
-              enhancedScreenShareData={enhancedScreenShareData}
-              currentUser={currentUser}
-              hasHostPrivileges={hasHostPrivileges}
-              onRemoveParticipant={handleRemoveParticipant}
-              onPromoteToCoHost={handlePromoteToCoHost}
-              onRemoveCoHost={handleRemoveCoHost}
-              handleParticipantsUpdated={handleParticipantsUpdated}
-              establishLiveKitConnection={establishLiveKitConnection}
-              viewMode={viewMode}
-              currentPerformanceMode={currentPerformanceMode}
-              currentMaxParticipants={currentMaxParticipants}
-              coHosts={coHosts}
-              currentAttendanceData={currentAttendanceData}
-            />
-          )}
+          {/* ═══════════════════════════════════════════════════════════
+              VIDEO COLUMN — video grid + control bar in one column
+              Both shrink together when panels open on desktop.
+              ═══════════════════════════════════════════════════════ */}
+          <VideoColumn>
 
-          {activeTab === "whiteboard" &&
-            availableTabs.includes("whiteboard") && (
-              <WhiteboardTabContent
-                meetingId={realMeetingId}
+            {/* ── Video / Whiteboard Area ──────────────────────────── */}
+            <VideoArea>
+              {activeTab === "meeting" && (
+                <MeetingTabContent
+                  actualIsConnected={actualIsConnected}
+                  isConnecting={isConnecting}
+                  connectionAttemptRef={connectionAttemptRef}
+                  allParticipants={allParticipants}
+                  localStream={localStream}
+                  combinedStreams={combinedStreams}
+                  enhancedScreenShareData={enhancedScreenShareData}
+                  currentUser={currentUser}
+                  hasHostPrivileges={hasHostPrivileges}
+                  onRemoveParticipant={handleRemoveParticipant}
+                  onPromoteToCoHost={handlePromoteToCoHost}
+                  onRemoveCoHost={handleRemoveCoHost}
+                  handleParticipantsUpdated={handleParticipantsUpdated}
+                  establishLiveKitConnection={establishLiveKitConnection}
+                  viewMode={viewMode}
+                  currentPerformanceMode={currentPerformanceMode}
+                  currentMaxParticipants={currentMaxParticipants}
+                  coHosts={coHosts}
+                  currentAttendanceData={currentAttendanceData}
+                />
+              )}
+
+              {activeTab === "whiteboard" && availableTabs.includes("whiteboard") && (
+                <WhiteboardTabContent
+                  meetingId={realMeetingId}
+                  currentUser={currentUser}
+                  allParticipants={allParticipants}
+                  hasHostPrivileges={hasHostPrivileges}
+                  room={room}
+                  onClose={() => handleCloseTab("whiteboard")}
+                  onError={handleWhiteboardError}
+                  onSuccess={handleWhiteboardSuccess}
+                />
+              )}
+            </VideoArea>
+
+            {/* ── CONTROL BAR (inside VideoColumn — moves with grid) ── */}
+            <ControlBarWrapper>
+              <MeetingControlBar
+                audioEnabled={livekitAudioEnabled}
+                videoEnabled={livekitVideoEnabled}
+                screenSharing={screenSharing}
+                isScreenSharing={livekitLocalIsScreenSharing}
+                enhancedScreenShareData={enhancedScreenShareData}
                 currentUser={currentUser}
-                allParticipants={allParticipants}
+                isConnected={actualIsConnected}
+                chatOpen={chatOpen}
+                participantsOpen={participantsOpen}
+                reactionsOpen={reactionsOpen}
+                handRaiseOpen={handRaiseOpen}
+                showToggleMenu={showToggleMenu}
+                attendanceMinimized={attendanceMinimized}
+                onToggleAudio={livekitToggleAudio}
+                onToggleVideo={livekitToggleVideo}
+                onToggleScreenShare={handleScreenShareClick}
+                onToggleChat={handleToggleChat}
+                onToggleParticipants={handleParticipantsButtonClick}
+                onToggleReactions={handleToggleReactions}
+                onToggleHandRaise={handleToggleHandRaiseAction}
+                onToggleMenu={handleToggleMenu}
+                onToggleAttendance={handleToggleAttendance}
+                onLeaveMeeting={() => setShowLeaveDialog(true)}
+                meetingSettings={meetingSettings}
+                participantCount={allParticipants.length}
+                chatUnreadCount={chatStats.unread}
+                pendingHandsCount={pendingHandsCount}
+                isHandRaised={isHandRaised}
                 hasHostPrivileges={hasHostPrivileges}
-                room={room}
-                onClose={() => handleCloseTab("whiteboard")}
-                onError={handleWhiteboardError}
-                onSuccess={handleWhiteboardSuccess}
+                attendanceEnabled={attendanceEnabled}
+                currentAttendanceData={currentAttendanceData}
+                meetingId={realMeetingId}
+  meetingCode={meetingData?.meeting_code || meetingData?.Meeting_Code || realMeetingId}
+  meetingLink={meetingLink}
               />
-            )}
+            </ControlBarWrapper>
 
-          {/* Chat Panel */}
-          <ChatPanelWrapper
-            isOpen={chatOpen}
-            onClose={handleToggleChat}
-            meetingId={realMeetingId}
-            currentUser={currentUser}
-            participants={allParticipants}
-            hasHostPrivileges={hasHostPrivileges}
-            chatPermissions={{
-              canSendMessages: meetingSettings.chatEnabled,
-              canUploadFiles: true,
-            }}
-            onUnreadCountChange={handleChatUnreadCountChange}
-            onTotalMessagesChange={handleChatTotalMessagesChange}
-            onMessageReceived={handleChatMessageReceived}
-            onChatOpened={handleChatOpened}
-          />
+          </VideoColumn>
+          {/* ═══ END VideoColumn ═══ */}
 
-          {/* Participants Panel */}
-          <ParticipantsPanelWrapper
-            isOpen={participantsOpen}
-            onClose={() => setParticipantsOpen(false)}
-            participants={allParticipants}
-            currentUser={currentUser}
-            isHost={isHost}
-            isCoHost={isCoHost}
-            coHosts={coHosts}
-            hasHostPrivileges={hasHostPrivileges}
-            onMuteParticipant={handleMuteParticipant}
-            onUnmuteParticipant={handleUnmuteParticipant}
-            onMuteVideo={handleMuteVideo}
-            onUnmuteVideo={handleUnmuteVideo}
-            onRemoveParticipant={handleRemoveParticipant}
-            onPromoteToCoHost={handlePromoteToCoHost}
-            onRemoveCoHost={handleRemoveCoHost}
-            onParticipantsUpdated={handleParticipantsUpdated}
-          />
-        </Box>
+{/* ═══ SINGLE PANEL SLOT — eliminates gap from dual empty slots ═══ */}
+<PanelSlot isOpen={chatOpen || participantsOpen} side="right">
+  {chatOpen && (
+    <ChatPanelWrapper
+      isOpen={chatOpen}
+      onClose={handleToggleChat}
+      meetingId={realMeetingId}
+      currentUser={currentUser}
+      participants={allParticipants}
+      hasHostPrivileges={hasHostPrivileges}
+      chatPermissions={{
+        canSendMessages: meetingSettings.chatEnabled,
+        canUploadFiles: true,
+      }}
+      onUnreadCountChange={handleChatUnreadCountChange}
+      onTotalMessagesChange={handleChatTotalMessagesChange}
+      onMessageReceived={handleChatMessageReceived}
+      onChatOpened={handleChatOpened}
+    />
+  )}
+  {participantsOpen && (
+    <ParticipantsPanelWrapper
+      isOpen={participantsOpen}
+      onClose={() => setParticipantsOpen(false)}
+      participants={allParticipants}
+      currentUser={currentUser}
+      isHost={isHost}
+      isCoHost={isCoHost}
+      coHosts={coHosts}
+      hasHostPrivileges={hasHostPrivileges}
+      onMuteParticipant={handleMuteParticipant}
+      onUnmuteParticipant={handleUnmuteParticipant}
+      onMuteVideo={handleMuteVideo}
+      onUnmuteVideo={handleUnmuteVideo}
+      onRemoveParticipant={handleRemoveParticipant}
+      onPromoteToCoHost={handlePromoteToCoHost}
+      onRemoveCoHost={handleRemoveCoHost}
+      onParticipantsUpdated={handleParticipantsUpdated}
+    />
+  )}
+</PanelSlot>
 
-        {/* Hand Raise Panel */}
+        </MainStage>
+        {/* ═══ END MainStage ═══ */}
+
+        {/* ── Hand Raise Panel (absolute overlay) ──────────────────── */}
         <HandRaisePanelWrapper
           isOpen={handRaiseOpen}
           onClose={() => setHandRaiseOpen(false)}
@@ -4847,43 +4985,7 @@ useEffect(() => {
           onClearAllHands={handleClearAllHands}
         />
 
-        {/* Meeting Control Bar */}
-        <MeetingControlBar
-          audioEnabled={livekitAudioEnabled}
-          videoEnabled={livekitVideoEnabled}
-          screenSharing={screenSharing}
-          isScreenSharing={livekitLocalIsScreenSharing}
-          enhancedScreenShareData={enhancedScreenShareData} // ✅ ADD THIS
-          currentUser={currentUser} // ✅ ADD THIS
-          isConnected={actualIsConnected}
-          chatOpen={chatOpen}
-          participantsOpen={participantsOpen}
-          reactionsOpen={reactionsOpen}
-          handRaiseOpen={handRaiseOpen}
-          showToggleMenu={showToggleMenu}
-          attendanceMinimized={attendanceMinimized}
-          onToggleAudio={livekitToggleAudio}
-          onToggleVideo={livekitToggleVideo}
-          // onToggleScreenShare={handleToggleScreenShare}
-          onToggleScreenShare={handleScreenShareClick}
-          onToggleChat={handleToggleChat}
-          onToggleParticipants={handleParticipantsButtonClick}
-          onToggleReactions={handleToggleReactions}
-          onToggleHandRaise={handleToggleHandRaiseAction}
-          onToggleMenu={handleToggleMenu}
-          onToggleAttendance={handleToggleAttendance}
-          onLeaveMeeting={() => setShowLeaveDialog(true)}
-          meetingSettings={meetingSettings}
-          participantCount={allParticipants.length}
-          chatUnreadCount={chatStats.unread}
-          pendingHandsCount={pendingHandsCount}
-          isHandRaised={isHandRaised}
-          hasHostPrivileges={hasHostPrivileges}
-          attendanceEnabled={attendanceEnabled}
-          currentAttendanceData={currentAttendanceData}
-        />
-
-        {/* Reactions Manager */}
+        {/* ── Reactions ────────────────────────────────────────────── */}
         <ReactionsManager
           meetingId={realMeetingId}
           currentUser={currentUser}
@@ -4897,17 +4999,17 @@ useEffect(() => {
           isCoHost={isCoHost}
           onNotification={showNotificationMessage}
           onError={(error) => console.error("Reactions error:", error)}
-          showSoundControl={true}
-          soundEnabled={true}
+          showSoundControl
+          soundEnabled
           showDebugInfo={false}
-          enableReactionHistory={true}
-          enableReactionStats={true}
-          autoHideReactions={true}
+          enableReactionHistory
+          enableReactionStats
+          autoHideReactions
           reactionDisplayDuration={5000}
           maxVisibleReactions={10}
         />
 
-        {/* Meeting Actions Menu */}
+        {/* ── Actions Menu ─────────────────────────────────────────── */}
         <MeetingActionsMenu
           open={showToggleMenu}
           onClose={() => setShowToggleMenu(false)}
@@ -4923,153 +5025,161 @@ useEffect(() => {
           onItemClick={(action) => action()}
         />
       </Box>
+    </ContentShell>
 
-      {/* Dialogs */}
-      <LeaveMeetingDialog
-        open={showLeaveDialog}
-        onClose={() => setShowLeaveDialog(false)}
-        onConfirm={handleLeaveMeeting}
-        isHost={isHost}
-        isCoHost={isCoHost}
-        coHostPrivilegesActive={coHostPrivilegesActive}
-        queueStatus={queueStatus}
-      />
+    {/* ═══════════════════════════════════════════════════════════════════
+        DIALOGS & OVERLAYS — unchanged
+        ═══════════════════════════════════════════════════════════════ */}
 
-      <EndMeetingDialog
-        open={showEndMeetingDialog}
-        onClose={() => setShowEndMeetingDialog(false)}
-        onConfirm={handleEndMeeting}
-        coHosts={coHosts}
-        attendanceEnabled={attendanceEnabled}
-      />
+    <LeaveMeetingDialog
+      open={showLeaveDialog}
+      onClose={() => setShowLeaveDialog(false)}
+      onConfirm={handleLeaveMeeting}
+      isHost={isHost}
+      isCoHost={isCoHost}
+      coHostPrivilegesActive={coHostPrivilegesActive}
+      queueStatus={queueStatus}
+    />
 
-      {/* Overlays */}
-      <ScreenShareWaitingOverlay
-        showWaiting={showScreenShareWaiting}
-        onCancel={() => setShowScreenShareWaiting(false)}
-      />
+    <EndMeetingDialog
+      open={showEndMeetingDialog}
+      onClose={() => setShowEndMeetingDialog(false)}
+      onConfirm={handleEndMeeting}
+      coHosts={coHosts}
+      attendanceEnabled={attendanceEnabled}
+    />
 
-      <ConnectionQueueOverlay
-        showQueue={showQueueOverlay}
-        queuePosition={queuePosition}
-        estimatedWaitTime={estimatedWaitTime}
-      />
+    <ScreenShareWaitingOverlay
+      showWaiting={showScreenShareWaiting}
+      onCancel={() => setShowScreenShareWaiting(false)}
+    />
 
-      {/* Meeting Link Popup */}
-      <MeetingLinkPopup
-        open={showMeetingLinkPopup}
-        minimized={meetingLinkMinimized}
-        meetingLink={meetingLink}
-        currentUser={currentUser}
-        onClose={() => setShowMeetingLinkPopup(false)}
-        onCopy={handleCopyMeetingLink}
-        onMinimize={() => setMeetingLinkMinimized(true)}
-        onRestore={() => {
-          setMeetingLinkMinimized(false);
-          setShowMeetingLinkPopup(true);
-        }}
-        getParticipantDisplayName={getParticipantDisplayName}
-      />
+    <ConnectionQueueOverlay
+      showQueue={showQueueOverlay}
+      queuePosition={queuePosition}
+      estimatedWaitTime={estimatedWaitTime}
+    />
 
-      {/* Feedback Dialog - Shows when meeting ends */}
-      <FeedbackDialog
-        open={showFeedbackDialog}
-        onClose={handleFeedbackSkip}
-        meetingId={realMeetingId}
-        userId={currentUser?.id}
-        meetingTitle={
-          meetingData?.title || meetingData?.Title || "Meeting Feedback"
-        }
-        onSubmitSuccess={handleFeedbackSubmitSuccess}
-        onSkip={handleFeedbackSkip}
-      />
-      {/* Recording Name Dialog */}
-      <RecordingNameDialog
-        open={showRecordingNameDialog}
-        onClose={() => {
-          setShowRecordingNameDialog(false);
-          setPendingRecordingData(null);
-        }}
-        onSave={handleSaveRecordingName}
-        defaultName={
-          pendingRecordingData
-            ? `${meetingData?.title || "Meeting"}_${new Date()
+    <MeetingLinkPopup
+      open={showMeetingLinkPopup}
+      minimized={meetingLinkMinimized}
+      meetingLink={meetingLink}
+      currentUser={currentUser}
+      onClose={() => setShowMeetingLinkPopup(false)}
+      onCopy={handleCopyMeetingLink}
+      onMinimize={() => setMeetingLinkMinimized(true)}
+      onRestore={() => {
+        setMeetingLinkMinimized(false);
+        setShowMeetingLinkPopup(true);
+      }}
+      getParticipantDisplayName={getParticipantDisplayName}
+    />
+
+    <FeedbackDialog
+      open={showFeedbackDialog}
+      onClose={handleFeedbackSkip}
+      meetingId={realMeetingId}
+      userId={currentUser?.id}
+      meetingTitle={meetingData?.title || meetingData?.Title || "Meeting Feedback"}
+      onSubmitSuccess={handleFeedbackSubmitSuccess}
+      onSkip={handleFeedbackSkip}
+    />
+
+    <RecordingNameDialog
+      open={showRecordingNameDialog}
+      onClose={() => {
+        setShowRecordingNameDialog(false);
+        setPendingRecordingData(null);
+      }}
+      onSave={handleSaveRecordingName}
+      defaultName={
+        pendingRecordingData
+          ? `${meetingData?.title || "Meeting"}_${new Date()
               .toLocaleDateString("en-US")
               .replace(/\//g, "-")}`
-            : ""
-        }
-      />
-      {/* Thank You Overlay - Shows after feedback submission */}
-      {feedbackSubmitted && !showFeedbackDialog && (
-        <Box
-          sx={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.95)",
-            backdropFilter: "blur(10px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 20001,
-            flexDirection: "column",
-            gap: 2,
-          }}
-        >
-          <Box sx={{ textAlign: "center" }}>
-            <Typography
-              variant="h2"
-              sx={{ color: "white", fontWeight: 700, mb: 2 }}
-            >
-              🙏 Thank You!
-            </Typography>
-            <Typography variant="h5" sx={{ color: "#4caf50", mb: 1 }}>
-              Your feedback has been recorded
-            </Typography>
-            <Typography variant="body1" sx={{ color: "#ccc" }}>
-              Redirecting to dashboard...
-            </Typography>
+          : ""
+      }
+    />
+
+    <ScreenShareStoppedDialog
+      open={showScreenShareStopped}
+      onClose={() => setShowScreenShareStopped(false)}
+      stoppedBy={screenShareStoppedBy}
+      stoppedParticipant={null}
+      isCurrentUser
+      reason="Stopped by host/co-host"
+    />
+
+    <ForceStopScreenShareDialog
+      open={showForceStopDialog}
+      onClose={() => {
+        setShowForceStopDialog(false);
+        setForceStopTargetParticipant(null);
+      }}
+      onConfirm={handleConfirmForceStop}
+      participantName={forceStopTargetParticipant?.name}
+      participantData={forceStopTargetParticipant?.data}
+    />
+
+    {/* ── Upload Progress ──────────────────────────────────────────── */}
+    <UploadProgressBar
+      uploading={recordingState.uploading}
+      uploadProgress={recordingState.uploadProgress}
+    />
+
+    {/* ── Notifications ────────────────────────────────────────────── */}
+    <NotificationManager
+      notification={notification}
+      showNotification={showNotification}
+      onClose={hideNotification}
+    />
+
+    {/* ── Thank You Overlay (post-feedback) ────────────────────────── */}
+    {feedbackSubmitted && !showFeedbackDialog && (
+      <ThankYouOverlay>
+        <GlassCard>
+          <Typography
+            variant="h3"
+            sx={{
+              color: "#f0f4f8",
+              fontWeight: 800,
+              mb: 2,
+              fontFamily: "'DM Sans', sans-serif",
+              letterSpacing: "-0.02em",
+              fontSize: { xs: "1.75rem", sm: "2.25rem", md: "2.75rem" },
+            }}
+          >
+            🙏 Thank You!
+          </Typography>
+          <Typography
+            variant="h6"
+            sx={{
+              background: "linear-gradient(135deg, #38bdf8, #a78bfa)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              fontWeight: 600,
+              mb: 1.5,
+              fontSize: { xs: "0.95rem", sm: "1.1rem", md: "1.25rem" },
+            }}
+          >
+            Your feedback has been recorded
+          </Typography>
+          <Typography
+            variant="body2"
+            sx={{ color: "rgba(255,255,255,0.5)", mb: 3 }}
+          >
+            Redirecting to dashboard…
+          </Typography>
+          <Box sx={{ display: "flex", gap: 1, justifyContent: "center" }}>
+            <ProgressDot delay={0} />
+            <ProgressDot delay={0.2} />
+            <ProgressDot delay={0.4} />
           </Box>
-        </Box>
-      )}
-
-  {/* Screen Share Stopped Dialog - Shows ONLY to affected participant */}
-<ScreenShareStoppedDialog
-  open={showScreenShareStopped}
-  onClose={() => setShowScreenShareStopped(false)}
-  stoppedBy={screenShareStoppedBy}
-  stoppedParticipant={null}
-  isCurrentUser={true}
-  reason="Stopped by host/co-host"
-/>
-
-{/* ✅ NEW: Force Stop Confirmation Dialog - Shows to host/co-host before stopping */}
-<ForceStopScreenShareDialog
-  open={showForceStopDialog}
-  onClose={() => {
-    setShowForceStopDialog(false);
-    setForceStopTargetParticipant(null);
-  }}
-  onConfirm={handleConfirmForceStop}
-  participantName={forceStopTargetParticipant?.name}
-  participantData={forceStopTargetParticipant?.data}
-/>
-      {/* Upload Progress Bar */}
-      <UploadProgressBar
-        uploading={recordingState.uploading}
-        uploadProgress={recordingState.uploadProgress}
-      />
-
-      {/* Notification Manager */}
-      <NotificationManager
-        notification={notification}
-        showNotification={showNotification}
-        onClose={hideNotification}
-      />
-    </MeetingContainer>
-  );
+        </GlassCard>
+      </ThankYouOverlay>
+    )}
+  </MeetingContainer>
+);
 });
 
 export default MeetingRoom;

@@ -1484,7 +1484,7 @@ const filteredEmojis = useMemo(() => {
           top: 0,
           right: 0,
           bottom: 0,
-          width: { xs: "100vw", sm: "400px", md: "450px" },
+          width: { xs: "100vw", sm: "400px", md: "380px" },
           height: "90vh",
           backgroundColor: "#ffffff",
           borderRadius: { xs: 0, sm: "20px" },

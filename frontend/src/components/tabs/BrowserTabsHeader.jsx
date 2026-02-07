@@ -1,13 +1,21 @@
 // src/components/tabs/BrowserTabsHeader.jsx
-import React from 'react';
-import { Box, IconButton } from '@mui/material';
+import React, { useState, useCallback } from 'react';
+import { Box, IconButton, Typography, Tooltip } from '@mui/material';
 import { 
   Close, 
   VideoCall, 
-  Gesture as WhiteboardIcon 
+  Gesture as WhiteboardIcon,
 } from '@mui/icons-material';
-import { styled } from '@mui/material/styles';
+import { styled, keyframes } from '@mui/material/styles';
+import AttendanceTracker from '../attendance/AttendanceTracker';
 
+// ─── Animations ──────────────────────────────────────────────────────────────
+const livePulse = keyframes`
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+`;
+
+// ─── Styled Components ───────────────────────────────────────────────────────
 const TabsContainer = styled(Box)(({ theme }) => ({
   position: 'fixed',
   top: 0,
@@ -42,7 +50,7 @@ const BrowserTab = styled(Box, {
   borderTopLeftRadius: '8px',
   borderTopRightRadius: '8px',
   borderBottomLeftRadius: '8px',
-  borderBottomRightRadius: "8px",
+  borderBottomRightRadius: '8px',
   border: active ? '1px solid rgba(255, 255, 255, 0.12)' : '1px solid transparent',
   borderBottom: active ? '1px solid #2a2d35' : 'none',
 
@@ -84,12 +92,42 @@ const TabCloseButton = styled(IconButton)(({ theme }) => ({
   }
 }));
 
+// ─── Right-side attendance area ──────────────────────────────────────────────
+const AttendanceInlineArea = styled(Box)(() => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  flexShrink: 0,
+  height: 36,
+  paddingRight: 4,
+}));
+
+// =============================================================================
+// COMPONENT
+// =============================================================================
 const BrowserTabsHeader = ({ 
   availableTabs, 
   activeTab, 
   onTabChange, 
-  onTabClose 
+  onTabClose,
+  // ── Attendance props ──
+  attendanceEnabled = false,
+  attendanceData = null,
+  meetingId,
+  userId,
+  userName,
+  isActive,
+  cameraEnabled,
+  onViolation,
+  onStatusChange,
+  onSessionTerminated,
+  onToggleMinimized,
+  isHost,
+  isCoHost,
+  effectiveRole,
+  onCameraToggle,
 }) => {
+
   const getTabIcon = (tab) => {
     switch (tab) {
       case 'meeting':
@@ -106,34 +144,59 @@ const BrowserTabsHeader = ({
   };
 
   return (
-    <TabsContainer>
-      <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 3, flex: 1, overflow: 'hidden' }}>
-        {availableTabs.map((tab) => (
-          <BrowserTab
-            key={tab}
-            active={activeTab === tab}
-            onClick={() => onTabChange(tab)}
-          >
-            <Box className="tab-icon">
-              {getTabIcon(tab)}
-            </Box>
-            <span className="tab-title">{getTabTitle(tab)}</span>
+    <>
+      <TabsContainer>
+        {/* ── Tabs ── */}
+        <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 3, flex: 1, overflow: 'hidden' }}>
+          {availableTabs.map((tab) => (
+            <BrowserTab
+              key={tab}
+              active={activeTab === tab}
+              onClick={() => onTabChange(tab)}
+            >
+              <Box className="tab-icon">
+                {getTabIcon(tab)}
+              </Box>
+              <span className="tab-title">{getTabTitle(tab)}</span>
 
-            {/* Close button - hide for meeting tab */}
-            {tab !== 'meeting' && (
-              <TabCloseButton
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onTabClose(tab);
-                }}
-              >
-                <Close />
-              </TabCloseButton>
-            )}
-          </BrowserTab>
-        ))}
-      </Box>
-    </TabsContainer>
+              {tab !== 'meeting' && (
+                <TabCloseButton
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onTabClose(tab);
+                  }}
+                >
+                  <Close />
+                </TabCloseButton>
+              )}
+            </BrowserTab>
+          ))}
+        </Box>
+
+        {/* ── Attendance Tracker (inline in header) ── */}
+        {attendanceEnabled && meetingId && userId && (
+          <AttendanceInlineArea>
+            <AttendanceTracker
+              meetingId={meetingId}
+              userId={userId}
+              userName={userName}
+              isActive={isActive}
+              cameraEnabled={cameraEnabled}
+              onViolation={onViolation}
+              onStatusChange={onStatusChange}
+              onSessionTerminated={onSessionTerminated}
+              minimized={false}
+              onToggleMinimized={onToggleMinimized}
+              isHost={isHost}
+              isCoHost={isCoHost}
+              effectiveRole={effectiveRole}
+              onCameraToggle={onCameraToggle}
+              inline={true}
+            />
+          </AttendanceInlineArea>
+        )}
+      </TabsContainer>
+    </>
   );
 };
 

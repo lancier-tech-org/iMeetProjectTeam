@@ -1,4 +1,4 @@
-// src/components/video/VideoGrid.jsx - FIXED VERSION - NO BLINKING
+// src/components/video/VideoGrid.jsx - FIXED VERSION - FULL FILL + NO BLINKING
 import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react';
 import {
   Box,
@@ -61,148 +61,120 @@ const PERFORMANCE_CONFIG = {
   STREAM_UPDATE_DELAY: 500
 };
 
-// FIXED: Improved GridContainer with proper spacing
+// ✅ FIXED: GridContainer — zero padding so video fills 100%
 const GridContainer = styled(Box)(({ theme }) => ({
   width: '100%',
   height: '100%',
-  padding: theme.spacing(1),
-  paddingBottom: theme.spacing(12),
+  padding: 0,
   overflow: 'hidden',
   display: 'flex',
   flexDirection: 'column',
   backgroundColor: '#0a0a0a',
   position: 'relative',
-  
-  '@media (max-width: 768px)': {
-    padding: theme.spacing(0.5),
-    paddingBottom: theme.spacing(11),
-  }
 }));
 
-// FIXED: Enhanced RoleBasedGrid with better spacing and border radius
+// ✅ FIXED: RoleBasedGrid — fills 100%, single participant = full cover
 const RoleBasedGrid = styled(Box, {
   shouldForwardProp: (prop) => !['isHost', 'participantCount'].includes(prop)
 })(({ theme, isHost, participantCount }) => {
+  const count = participantCount || 1;
+
   if (isHost) {
-    const cols = Math.min(6, Math.ceil(Math.sqrt(participantCount || 1)));
-    const rows = Math.ceil((participantCount || 1) / cols);
-    
+    // Host view: grid of students
+    const cols = count === 1 ? 1 : Math.min(6, Math.ceil(Math.sqrt(count)));
+    const rows = Math.ceil(count / cols);
+    const gap = count === 1 ? 0 : theme.spacing(0.75);
+    const pad = count === 1 ? 0 : theme.spacing(0.5);
+
     return {
       display: 'grid',
       gridTemplateColumns: `repeat(${cols}, 1fr)`,
       gridTemplateRows: `repeat(${rows}, 1fr)`,
-      gap: theme.spacing(1.5),
+      gap,
       width: '100%',
       height: '100%',
       overflow: 'hidden',
       minHeight: 0,
-      padding: theme.spacing(1),
-    };
-  } else {
-    const count = participantCount || 1;
-    
-    let gridConfig;
-    
-    if (count === 1) {
-      gridConfig = {
-        columns: '1fr',
-        rows: '1fr',
-        maxHeight: '75vh'
-      };
-    } else if (count === 2) {
-      gridConfig = {
-        columns: '1fr 1fr',
-        rows: '1fr',
-        maxHeight: '70vh'
-      };
-    } else if (count === 3) {
-      gridConfig = {
-        columns: 'repeat(3, 1fr)',
-        rows: '1fr',
-        maxHeight: '65vh'
-      };
-    } else if (count === 4) {
-      gridConfig = {
-        columns: 'repeat(2, 1fr)',
-        rows: 'repeat(2, 1fr)',
-        maxHeight: '75vh'
-      };
-    } else if (count <= 6) {
-      gridConfig = {
-        columns: 'repeat(3, 1fr)',
-        rows: 'repeat(2, 1fr)',
-        maxHeight: '80vh'
-      };
-    } else {
-      gridConfig = {
-        columns: 'repeat(auto-fit, minmax(280px, 1fr))',
-        rows: 'repeat(auto-fit, minmax(210px, 1fr))',
-        maxHeight: '85vh'
-      };
-    }
+      padding: pad,
 
-    return {
-      display: 'grid',
-      gridTemplateColumns: gridConfig.columns,
-      gridTemplateRows: gridConfig.rows,
-      gap: theme.spacing(1.5),
-      width: '100%',
-      height: '100%',
-      maxHeight: gridConfig.maxHeight,
-      overflow: 'hidden',
-      minHeight: 0,
-      padding: theme.spacing(1.5),
-      alignItems: 'center',
-      justifyItems: 'center',
-      
-      '& > *': {
-        width: '100%',
-        height: '100%',
-        minHeight: count <= 3 ? '280px' : count <= 6 ? '220px' : '180px',
-        maxHeight: count <= 3 ? '450px' : count <= 6 ? '320px' : '250px',
-        borderRadius: theme.spacing(1.5),
-        overflow: 'hidden',
-        aspectRatio: count <= 2 ? '16/10' : count <= 4 ? '16/9' : '4/3',
-        transition: 'all 0.3s ease',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
-      },
-      
-      '@media (max-width: 1200px)': {
-        gap: theme.spacing(1),
-        padding: theme.spacing(1),
-        
+      // ✅ Single participant fills edge-to-edge
+      ...(count === 1 && {
         '& > *': {
-          minHeight: count <= 3 ? '220px' : count <= 6 ? '180px' : '160px',
-          maxHeight: count <= 3 ? '350px' : count <= 6 ? '250px' : '200px',
-          borderRadius: theme.spacing(1),
-        }
-      },
-      
-      '@media (max-width: 768px)': {
-        gridTemplateColumns: count > 2 ? 'repeat(2, 1fr)' : gridConfig.columns,
-        gap: theme.spacing(0.75),
-        padding: theme.spacing(0.5),
-        
-        '& > *': {
-          minHeight: '140px',
-          maxHeight: '180px',
-          aspectRatio: '16/9',
-          borderRadius: theme.spacing(0.75),
-        }
-      }
+          borderRadius: 0,
+        },
+      }),
     };
   }
+
+  // Participant (student) view
+  let gridConfig;
+
+  if (count === 1) {
+    gridConfig = { columns: '1fr', rows: '1fr' };
+  } else if (count === 2) {
+    gridConfig = { columns: '1fr 1fr', rows: '1fr' };
+  } else if (count === 3) {
+    gridConfig = { columns: 'repeat(3, 1fr)', rows: '1fr' };
+  } else if (count === 4) {
+    gridConfig = { columns: 'repeat(2, 1fr)', rows: 'repeat(2, 1fr)' };
+  } else if (count <= 6) {
+    gridConfig = { columns: 'repeat(3, 1fr)', rows: 'repeat(2, 1fr)' };
+  } else {
+    gridConfig = {
+      columns: 'repeat(auto-fit, minmax(280px, 1fr))',
+      rows: 'repeat(auto-fit, minmax(210px, 1fr))',
+    };
+  }
+
+  const gap = count === 1 ? 0 : theme.spacing(0.75);
+  const pad = count === 1 ? 0 : theme.spacing(0.75);
+
+  return {
+    display: 'grid',
+    gridTemplateColumns: gridConfig.columns,
+    gridTemplateRows: gridConfig.rows,
+    gap,
+    width: '100%',
+    height: '100%',
+    overflow: 'hidden',
+    minHeight: 0,
+    padding: pad,
+    alignItems: 'stretch',
+    justifyItems: 'stretch',
+
+    '& > *': {
+      width: '100%',
+      height: '100%',
+      overflow: 'hidden',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      transition: 'all 0.3s ease',
+      // ✅ Single participant = no border-radius (edge-to-edge)
+      borderRadius: count === 1 ? 0 : theme.spacing(1),
+      // ✅ REMOVED: minHeight, maxHeight, aspectRatio constraints
+      // Let the grid cell dictate the size
+    },
+
+    '@media (max-width: 768px)': {
+      gridTemplateColumns: count > 2 ? 'repeat(2, 1fr)' : gridConfig.columns,
+      gap: count === 1 ? 0 : theme.spacing(0.5),
+      padding: count === 1 ? 0 : theme.spacing(0.25),
+
+      '& > *': {
+        borderRadius: count === 1 ? 0 : theme.spacing(0.5),
+      },
+    },
+  };
 });
 
-// FIXED: ParticipantContainer with removed white borders and transitions
+// ✅ FIXED: ParticipantContainer — single participant = no border-radius
 const ParticipantContainer = styled(Box, {
   shouldForwardProp: (prop) => !['isScreenShare', 'isSpeaker', 'isLocal', 'isMinimized', 'isPinned', 'isHost', 'isCoHost', 'isRemoving'].includes(prop)
 })(({ theme, isScreenShare, isSpeaker, isLocal, isMinimized, isPinned, isHost, isCoHost, isRemoving }) => ({
   position: 'relative',
-  borderRadius: theme.spacing(1.5),
+  // ✅ borderRadius is inherited from the grid child rule (0 for single, 12px for multi)
+  borderRadius: 'inherit',
   overflow: 'hidden',
   backgroundColor: '#1a1a1a',
   border: `2px solid ${
@@ -211,9 +183,9 @@ const ParticipantContainer = styled(Box, {
     isSpeaker ? theme.palette.success.main : 
     'transparent'
   }`,
-  minHeight: isMinimized ? '80px' : isScreenShare ? '400px' : '120px',
   width: '100%',
   height: '100%',
+  minHeight: 0,
   opacity: isRemoving ? 0.5 : 1,
   filter: isRemoving ? 'grayscale(100%)' : 'none',
   
@@ -226,7 +198,7 @@ const ParticipantContainer = styled(Box, {
   boxShadow: 'none',
 }));
 
-// FIXED: Enhanced video labels with better styling
+// Labels (unchanged)
 const StudentVideoLabel = styled(Box)(({ theme }) => ({
   position: 'absolute',
   top: theme.spacing(1),
@@ -272,7 +244,6 @@ const CoHostVideoLabel = styled(Box)(({ theme }) => ({
   boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)',
 }));
 
-// FIXED: Enhanced ParticipantInfo with better background
 const ParticipantInfo = styled(Box)(({ theme }) => ({
   position: 'absolute',
   bottom: theme.spacing(0.75),
@@ -301,20 +272,18 @@ const ViewControls = styled(Box)(({ theme }) => ({
   boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
 }));
 
-// FIXED: Enhanced ScreenShareContainer
+// ✅ FIXED: ScreenShareContainer — fills 100% with no border-radius
 const ScreenShareContainer = styled(Box)(({ theme }) => ({
   width: '100%',
   height: '100%',
   backgroundColor: '#000',
-  borderRadius: theme.spacing(1.5),
+  borderRadius: 0,           // ✅ Edge-to-edge
   overflow: 'hidden',
   position: 'relative',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  minHeight: '100%',
-  maxHeight: '100%',
-  boxShadow: '0 8px 25px rgba(0, 0, 0, 0.4)',
+  minHeight: 0,
 }));
 
 const ParticipantMenuContainer = styled(Box)(({ theme }) => ({
@@ -330,42 +299,28 @@ const ParticipantMenuContainer = styled(Box)(({ theme }) => ({
 }));
 
 // ==========================================================================
-// ✅ HELPER FUNCTION - Check if camera is actually enabled (STABLE - no re-renders)
+// ✅ HELPER FUNCTION - Check if camera is actually enabled
 // ==========================================================================
 const isCameraActuallyEnabled = (participant) => {
   if (!participant) return false;
 
-  // Method 1: Check LiveKit participant directly - MOST RELIABLE
   if (participant.liveKitParticipant) {
     const lkParticipant = participant.liveKitParticipant;
     
-    // Explicit check for isCameraEnabled
-    if (lkParticipant.isCameraEnabled === true) {
-      return true;
-    }
-    if (lkParticipant.isCameraEnabled === false) {
-      return false;
-    }
+    if (lkParticipant.isCameraEnabled === true) return true;
+    if (lkParticipant.isCameraEnabled === false) return false;
     
-    // Check camera track publication
     if (typeof lkParticipant.getTrackPublication === 'function') {
       try {
         const cameraPublication = lkParticipant.getTrackPublication(Track.Source.Camera);
         if (cameraPublication?.track) {
-          if (cameraPublication.track.isMuted) {
-            return false;
-          }
-          if (cameraPublication.track.mediaStreamTrack?.enabled) {
-            return true;
-          }
+          if (cameraPublication.track.isMuted) return false;
+          if (cameraPublication.track.mediaStreamTrack?.enabled) return true;
         }
-      } catch (e) {
-        // Ignore errors
-      }
+      } catch (e) { /* ignore */ }
     }
   }
 
-  // Method 2: Check participant properties (explicit true only)
   if (participant.isCameraEnabled === true) return true;
   if (participant.isVideoEnabled === true) return true;
   if (participant.video_enabled === true) return true;
@@ -374,7 +329,7 @@ const isCameraActuallyEnabled = (participant) => {
 };
 
 // ==========================================================================
-// ✅ PARTICIPANT RENDERER COMPONENT - FIXED TO PREVENT BLINKING
+// ✅ PARTICIPANT RENDERER COMPONENT
 // ==========================================================================
 const ParticipantRenderer = memo(({
   participant,
@@ -400,12 +355,10 @@ const ParticipantRenderer = memo(({
   const videoRef = useRef(null);
   const [menuAnchor, setMenuAnchor] = useState(null);
   
-  // ✅ CRITICAL FIX: Use refs to store stream to prevent re-creation
   const streamRef = useRef(null);
   const lastTrackIdRef = useRef(null);
   const videoAttachedRef = useRef(false);
 
-  // ✅ STABLE: Check if camera is enabled - only update when participant changes
   const cameraIsEnabled = useMemo(() => {
     return isCameraActuallyEnabled(participant);
   }, [
@@ -415,22 +368,17 @@ const ParticipantRenderer = memo(({
     participant.video_enabled,
   ]);
 
-  // ✅ CRITICAL FIX: Get stream ONCE and cache it in ref - DO NOT recreate on every render
   useEffect(() => {
     if (!cameraIsEnabled) {
-      // Camera is OFF - clear stream
       streamRef.current = null;
       lastTrackIdRef.current = null;
       return;
     }
 
-    // Camera is ON - try to get stream
     let newStream = null;
     let trackId = null;
 
-    // For LOCAL participant
     if (participant.isLocal) {
-      // Method 1: Get from liveKitParticipant (MOST RELIABLE)
       if (participant.liveKitParticipant) {
         try {
           const lkParticipant = participant.liveKitParticipant;
@@ -440,23 +388,17 @@ const ParticipantRenderer = memo(({
             const mediaTrack = cameraPublication.track.mediaStreamTrack;
             trackId = mediaTrack.id;
             
-            // ✅ CRITICAL: Only create new stream if track changed
             if (trackId !== lastTrackIdRef.current) {
               if (mediaTrack.readyState === 'live' && !cameraPublication.track.isMuted) {
                 newStream = new MediaStream([mediaTrack]);
-                console.log(`✅ [LOCAL] Created stream from LiveKit, trackId: ${trackId}`);
               }
             } else {
-              // Same track - keep existing stream
               newStream = streamRef.current;
             }
           }
-        } catch (e) {
-          console.warn("⚠️ [LOCAL] Error getting LiveKit stream:", e);
-        }
+        } catch (e) { /* ignore */ }
       }
 
-      // Method 2: Check participant's direct stream property
       if (!newStream && participant.stream instanceof MediaStream) {
         const videoTracks = participant.stream.getVideoTracks();
         if (videoTracks.length > 0 && videoTracks.some(t => t.readyState === 'live')) {
@@ -465,7 +407,6 @@ const ParticipantRenderer = memo(({
         }
       }
       
-      // Method 3: Check localStream prop
       if (!newStream && localStream instanceof MediaStream) {
         const videoTracks = localStream.getVideoTracks();
         if (videoTracks.length > 0 && videoTracks.some(t => t.readyState === 'live')) {
@@ -474,9 +415,6 @@ const ParticipantRenderer = memo(({
         }
       }
     } else {
-      // For REMOTE participants
-      
-      // Method 1: Check participant's direct stream property
       if (participant.stream instanceof MediaStream) {
         const videoTracks = participant.stream.getVideoTracks();
         if (videoTracks.length > 0 && videoTracks.some(t => t.readyState === 'live')) {
@@ -485,7 +423,6 @@ const ParticipantRenderer = memo(({
         }
       }
 
-      // Method 2: Get from liveKitParticipant
       if (!newStream && participant.liveKitParticipant) {
         try {
           const cameraPublication = participant.liveKitParticipant.getTrackPublication?.(Track.Source.Camera);
@@ -501,12 +438,9 @@ const ParticipantRenderer = memo(({
               newStream = streamRef.current;
             }
           }
-        } catch (e) {
-          console.warn("⚠️ [REMOTE] Error getting LiveKit stream:", e);
-        }
+        } catch (e) { /* ignore */ }
       }
 
-      // Method 3: Try remoteStreams
       if (!newStream && remoteStreams && remoteStreams.size > 0) {
         const participantId = participant.user_id || participant.participant_id;
         const possibleKeys = [
@@ -532,11 +466,10 @@ const ParticipantRenderer = memo(({
       }
     }
 
-    // ✅ Update refs only if we have a new stream/track
     if (newStream && trackId && trackId !== lastTrackIdRef.current) {
       streamRef.current = newStream;
       lastTrackIdRef.current = trackId;
-      videoAttachedRef.current = false; // Need to re-attach
+      videoAttachedRef.current = false;
     } else if (!newStream) {
       streamRef.current = null;
       lastTrackIdRef.current = null;
@@ -554,7 +487,6 @@ const ParticipantRenderer = memo(({
     participant.sid,
   ]);
 
-  // ✅ Attach video element - only when stream ref changes
   useEffect(() => {
     const videoElement = videoRef.current;
     const stream = streamRef.current;
@@ -562,20 +494,13 @@ const ParticipantRenderer = memo(({
     if (!videoElement) return;
 
     if (stream && cameraIsEnabled && !videoAttachedRef.current) {
-      console.log(`📹 Attaching stream to video for ${participant.displayName}`);
-      
       try {
         videoElement.srcObject = stream;
-        
         const playPromise = videoElement.play();
         if (playPromise !== undefined) {
           playPromise
-            .then(() => {
-              console.log(`✅ Video playing for ${participant.displayName}`);
-              videoAttachedRef.current = true;
-            })
-            .catch((error) => {
-              console.warn(`⚠️ Autoplay prevented for ${participant.displayName}:`, error);
+            .then(() => { videoAttachedRef.current = true; })
+            .catch(() => {
               videoElement.muted = true;
               videoElement.play().catch(() => {});
             });
@@ -591,30 +516,20 @@ const ParticipantRenderer = memo(({
     }
   });
 
-  // ✅ STABLE: shouldShowVideo - only depends on camera state and stream existence
   const shouldShowVideo = cameraIsEnabled && streamRef.current !== null;
 
-  // Handle menu
   const handleMenuOpen = useCallback((event) => {
     event.stopPropagation();
     setMenuAnchor(event.currentTarget);
-    if (onParticipantMenu) {
-      onParticipantMenu(event, participant);
-    }
+    if (onParticipantMenu) onParticipantMenu(event, participant);
   }, [onParticipantMenu, participant]);
 
-  const handleMenuClose = useCallback(() => {
-    setMenuAnchor(null);
-  }, []);
+  const handleMenuClose = useCallback(() => { setMenuAnchor(null); }, []);
 
-  // Handle pin
   const handlePin = useCallback(() => {
-    if (onPinParticipant) {
-      onPinParticipant(participant.user_id);
-    }
+    if (onPinParticipant) onPinParticipant(participant.user_id);
   }, [onPinParticipant, participant.user_id]);
 
-  // Determine actual video enabled state for display
   const displayVideoEnabled = shouldShowVideo || cameraIsEnabled;
   const displayAudioEnabled = participant.isAudioEnabled || participant.audio_enabled || participant.isMicrophoneEnabled;
 
@@ -630,12 +545,8 @@ const ParticipantRenderer = memo(({
       isRemoving={isRemoving}
     >
       {/* Role Label */}
-      {showLabel && labelType === 'host' && (
-        <HostVideoLabel>HOST VIDEO</HostVideoLabel>
-      )}
-      {showLabel && labelType === 'cohost' && (
-        <CoHostVideoLabel>CO-HOST</CoHostVideoLabel>
-      )}
+      {showLabel && labelType === 'host' && <HostVideoLabel>HOST VIDEO</HostVideoLabel>}
+      {showLabel && labelType === 'cohost' && <CoHostVideoLabel>CO-HOST</CoHostVideoLabel>}
 
       {/* Video display */}
       {shouldShowVideo ? (
@@ -651,6 +562,7 @@ const ParticipantRenderer = memo(({
               objectFit: 'cover',
               transform: participant.isLocal ? 'scaleX(-1)' : 'none',
               display: 'block',
+              // ✅ Inherit border-radius from parent (0 for single, rounded for multi)
               borderRadius: 'inherit',
             }}
           />
@@ -677,7 +589,6 @@ const ParticipantRenderer = memo(({
             </Typography>
 
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              {/* Role badge */}
               {(participant.role === 'host' || participant.isHost) && (
                 <Chip
                   icon={<Star sx={{ fontSize: 12 }} />}
@@ -707,7 +618,6 @@ const ParticipantRenderer = memo(({
                 />
               )}
 
-              {/* Mic indicator */}
               {!displayAudioEnabled && (
                 <Box
                   sx={{
@@ -727,14 +637,7 @@ const ParticipantRenderer = memo(({
 
           {/* Pin button */}
           {onPinParticipant && (
-            <Box
-              sx={{
-                position: 'absolute',
-                top: 8,
-                left: 8,
-                zIndex: 15,
-              }}
-            >
+            <Box sx={{ position: 'absolute', top: 8, left: 8, zIndex: 15 }}>
               <IconButton
                 size="small"
                 onClick={handlePin}
@@ -766,9 +669,7 @@ const ParticipantRenderer = memo(({
               }}
             >
               <VolumeUp sx={{ fontSize: 14, color: '#fff' }} />
-              <Typography variant="caption" sx={{ color: '#fff', fontSize: '0.6rem' }}>
-                Speaking
-              </Typography>
+              <Typography variant="caption" sx={{ color: '#fff', fontSize: '0.6rem' }}>Speaking</Typography>
             </Box>
           )}
         </>
@@ -808,39 +709,18 @@ const ParticipantRenderer = memo(({
             {participant.displayName?.charAt(0)?.toUpperCase() || 'U'}
           </Avatar>
           
-          <Typography
-            variant="body2"
-            sx={{ opacity: isRemoving ? 0.3 : 0.7, fontWeight: 500 }}
-          >
+          <Typography variant="body2" sx={{ opacity: isRemoving ? 0.3 : 0.7, fontWeight: 500 }}>
             {isRemoving ? 'Removing...' : 'Camera off'}
           </Typography>
 
-          {/* Host badge */}
           {(participant.role === 'host' || participant.isHost) && (
-            <Typography
-              variant="caption"
-              sx={{
-                opacity: isRemoving ? 0.3 : 0.8,
-                mt: 0.5,
-                fontWeight: 600,
-                color: '#ff9800',
-              }}
-            >
+            <Typography variant="caption" sx={{ opacity: isRemoving ? 0.3 : 0.8, mt: 0.5, fontWeight: 600, color: '#ff9800' }}>
               Host
             </Typography>
           )}
 
-          {/* Co-Host badge */}
           {participant.isCoHost && (
-            <Typography
-              variant="caption"
-              sx={{
-                opacity: isRemoving ? 0.3 : 0.8,
-                mt: 0.5,
-                fontWeight: 600,
-                color: '#ff5722',
-              }}
-            >
+            <Typography variant="caption" sx={{ opacity: isRemoving ? 0.3 : 0.8, mt: 0.5, fontWeight: 600, color: '#ff5722' }}>
               Co-Host
             </Typography>
           )}
@@ -873,27 +753,14 @@ const ParticipantRenderer = memo(({
               {participant.isLocal && ' (You)'}
             </Typography>
 
-            {/* Audio/Video status indicators */}
             <Box sx={{ display: 'flex', gap: 0.5 }}>
               {!displayAudioEnabled && (
-                <Box
-                  sx={{
-                    backgroundColor: 'rgba(244, 67, 54, 0.9)',
-                    borderRadius: '50%',
-                    padding: '3px',
-                  }}
-                >
+                <Box sx={{ backgroundColor: 'rgba(244, 67, 54, 0.9)', borderRadius: '50%', padding: '3px' }}>
                   <MicOff sx={{ fontSize: 14, color: '#fff' }} />
                 </Box>
               )}
               {!displayVideoEnabled && (
-                <Box
-                  sx={{
-                    backgroundColor: 'rgba(244, 67, 54, 0.9)',
-                    borderRadius: '50%',
-                    padding: '3px',
-                  }}
-                >
+                <Box sx={{ backgroundColor: 'rgba(244, 67, 54, 0.9)', borderRadius: '50%', padding: '3px' }}>
                   <VideocamOff sx={{ fontSize: 14, color: '#fff' }} />
                 </Box>
               )}
@@ -902,24 +769,7 @@ const ParticipantRenderer = memo(({
         </Box>
       )}
 
-      {/* Connection quality indicator */}
-      {participant.connectionQuality && participant.connectionQuality !== 'good' && (
-        <Box
-          sx={{
-            position: 'absolute',
-            top: 8,
-            left: 8,
-            backgroundColor: participant.connectionQuality === 'poor' ? '#f44336' : '#ff9800',
-            borderRadius: '4px',
-            padding: '2px 6px',
-            zIndex: 10,
-          }}
-        >
-          <Typography variant="caption" sx={{ color: '#fff', fontSize: '0.6rem' }}>
-            {participant.connectionQuality}
-          </Typography>
-        </Box>
-      )}
+    
 
       {/* Host controls menu */}
       {isHost && !participant.isLocal && (
@@ -945,7 +795,7 @@ ParticipantRenderer.displayName = 'ParticipantRenderer';
 
 
 // ==========================================================================
-// ✅ HELPER FUNCTION - Get participant stream (for screen share)
+// ✅ HELPER — get participant stream for screen share
 // ==========================================================================
 const getParticipantStreamEnhanced = (participant, localStream, remoteStreams) => {
   if (!participant) return null;
@@ -990,7 +840,7 @@ const getParticipantStreamEnhanced = (participant, localStream, remoteStreams) =
 
 
 // ==========================================================================
-// MAIN VideoGrid COMPONENT - FIXED TO PREVENT BLINKING
+// MAIN VideoGrid COMPONENT
 // ==========================================================================
 function VideoGrid({
   participants = [],
@@ -1023,23 +873,11 @@ function VideoGrid({
 
   const isCurrentUserHost = isHost;
 
-  // ✅ REMOVED: videoStateVersion and localVideoReady states that caused blinking
-  // ✅ REMOVED: Periodic intervals that forced re-renders
-
-  console.log('🎥 VideoGrid render:', {
-    participantsCount: participants.length,
-    remoteStreamsCount: remoteStreams.size,
-    isHost: isCurrentUserHost,
-  });
-
   // Event handling for participant removal
   useEffect(() => {
     const handleParticipantRemovedEvent = (event) => {
       const { removedUserId } = event.detail;
-      console.log('VideoGrid: Received participant removed event:', removedUserId);
-      
       setLocallyRemovedParticipants(prev => new Set([...prev, removedUserId]));
-      
       setTimeout(() => {
         setLocallyRemovedParticipants(prev => {
           const newSet = new Set(prev);
@@ -1051,8 +889,6 @@ function VideoGrid({
 
     const handleParticipantListChanged = (event) => {
       const { action, userId } = event.detail || {};
-      console.log('VideoGrid: Participant list changed:', { action, userId });
-      
       if (action === 'remove' && userId) {
         setLocallyRemovedParticipants(prev => new Set([...prev, userId]));
       } else if (action === 'backend_refresh') {
@@ -1070,92 +906,52 @@ function VideoGrid({
   }, []);
 
   const handleImmediateParticipantRemoval = useCallback((removedUserId) => {
-    console.log('VideoGrid: Immediate participant removal callback:', removedUserId);
-    
     setLocallyRemovedParticipants(prev => new Set([...prev, removedUserId]));
-    
-    if (onParticipantRemoved) {
-      onParticipantRemoved(removedUserId);
-    }
+    if (onParticipantRemoved) onParticipantRemoved(removedUserId);
   }, [onParticipantRemoved]);
 
-const filteredParticipants = useMemo(() => {
-  const isActiveParticipant = (p) => {
-    if (locallyRemovedParticipants.has(p.user_id)) return false;
-    
-    // ✅ FIXED: Check Is_Currently_Active first - a rejoined participant
-    // will have Is_Currently_Active = true even with a previous Leave_Time
-    const isCurrentlyActive = p.Is_Currently_Active === true || 
-                              p.is_currently_active === true ||
-                              p.isLocal === true;
-    
-    // ✅ FIXED: Only filter out if they have Leave_Time AND are NOT currently active
-    if (p.Leave_Time && !isCurrentlyActive) {
-      return false;
-    }
-    
-    // ✅ FIXED: Don't filter out if currently active, even if status says offline
-    if ((p.Status === 'offline' || p.Status === 'removed' || p.Status === 'left') && !isCurrentlyActive) {
-      return false;
-    }
-    
-    if (!p.user_id) return false;
-    return true;
-  };
+  const filteredParticipants = useMemo(() => {
+    const isActiveParticipant = (p) => {
+      if (locallyRemovedParticipants.has(p.user_id)) return false;
+      
+      const isCurrentlyActive = p.Is_Currently_Active === true || 
+                                p.is_currently_active === true ||
+                                p.isLocal === true;
+      
+      if (p.Leave_Time && !isCurrentlyActive) return false;
+      if ((p.Status === 'offline' || p.Status === 'removed' || p.Status === 'left') && !isCurrentlyActive) return false;
+      if (!p.user_id) return false;
+      return true;
+    };
 
-  if (isCurrentUserHost) {
-    // Host view: Show all participants EXCEPT the host themselves
-    const nonHostParticipants = participants.filter(p => {
-      if (!isActiveParticipant(p)) return false;
-      if (p.isLocal || p.user_id === currentUser?.id) return false;
-      return (p.role !== 'host' && !p.isHost);
-    });
-    
-    console.log("🎥 VideoGrid Host View - filtered participants:", {
-      total: participants.length,
-      filtered: nonHostParticipants.length,
-      participants: nonHostParticipants.map(p => ({
-        name: p.displayName || p.name,
-        userId: p.user_id,
-        isActive: p.Is_Currently_Active,
-        leaveTime: p.Leave_Time
-      }))
-    });
-    
-    return nonHostParticipants;
-  } else {
-    // Participant view: Show local participant + hosts/co-hosts
-    const localParticipant = participants.find(p => {
-      if (!isActiveParticipant(p)) return false;
-      return (p.isLocal || p.user_id === currentUser?.id);
-    });
-    
-    const hostsAndCoHosts = participants.filter(p => {
-      if (!isActiveParticipant(p)) return false;
-      if (p.isLocal || p.user_id === currentUser?.id) return false;
-      const isHostUser = (p.role === 'host' || p.isHost === true);
-      const isCoHostUser = (p.isCoHost === true);
-      const isConnected = p.LiveKit_Connected || p.Has_Stream || p.Status === 'live' || p.Is_Currently_Active;
-      return (isHostUser || isCoHostUser) && isConnected;
-    });
-    
-    const result = [
-      ...(localParticipant ? [localParticipant] : []),
-      ...hostsAndCoHosts
-    ];
-    
-    console.log("🎥 VideoGrid Participant View - filtered participants:", {
-      total: participants.length,
-      filtered: result.length,
-      localParticipant: localParticipant?.displayName,
-      hostsAndCoHosts: hostsAndCoHosts.map(p => p.displayName || p.name)
-    });
-    
-    return result;
-  }
-}, [participants, isCurrentUserHost, currentUser?.id, coHosts, locallyRemovedParticipants]);
+    if (isCurrentUserHost) {
+      return participants.filter(p => {
+        if (!isActiveParticipant(p)) return false;
+        if (p.isLocal || p.user_id === currentUser?.id) return false;
+        return (p.role !== 'host' && !p.isHost);
+      });
+    } else {
+      const localParticipant = participants.find(p => {
+        if (!isActiveParticipant(p)) return false;
+        return (p.isLocal || p.user_id === currentUser?.id);
+      });
+      
+      const hostsAndCoHosts = participants.filter(p => {
+        if (!isActiveParticipant(p)) return false;
+        if (p.isLocal || p.user_id === currentUser?.id) return false;
+        const isHostUser = (p.role === 'host' || p.isHost === true);
+        const isCoHostUser = (p.isCoHost === true);
+        const isConnected = p.LiveKit_Connected || p.Has_Stream || p.Status === 'live' || p.Is_Currently_Active;
+        return (isHostUser || isCoHostUser) && isConnected;
+      });
+      
+      return [
+        ...(localParticipant ? [localParticipant] : []),
+        ...hostsAndCoHosts
+      ];
+    }
+  }, [participants, isCurrentUserHost, currentUser?.id, coHosts, locallyRemovedParticipants]);
 
-  // Handle participant menu
   const handleParticipantMenu = useCallback((event, participant) => {
     event.stopPropagation();
     setAnchorEl(event.currentTarget);
@@ -1167,7 +963,6 @@ const filteredParticipants = useMemo(() => {
     setSelectedParticipant(null);
   }, []);
 
-  // Handle pin participant
   const handlePinParticipant = useCallback((participantId) => {
     setPinnedParticipants(prev => {
       const newSet = new Set(prev);
@@ -1184,7 +979,7 @@ const filteredParticipants = useMemo(() => {
     });
   }, []);
 
-  // Screen share rendering
+  // ✅ FIXED: Screen share fills 100% of the tab
   const renderScreenShareView = useCallback(() => {
     const screenShareParticipant = participants.find(p => p.isScreenSharing) || 
                                    (screenSharer ? participants.find(p => p.user_id === screenSharer.user_id) : null);
@@ -1192,9 +987,7 @@ const filteredParticipants = useMemo(() => {
     const activeScreenStream = screenShareStream || 
                               (screenShareParticipant ? getParticipantStreamEnhanced(screenShareParticipant, localStream, remoteStreams) : null);
     
-    if (!activeScreenStream && !screenShareStream) {
-      return null;
-    }
+    if (!activeScreenStream && !screenShareStream) return null;
 
     return (
       <Box sx={{ 
@@ -1205,7 +998,7 @@ const filteredParticipants = useMemo(() => {
         gap: 0,
         padding: 0,
         backgroundColor: '#000',
-        position: 'relative'
+        position: 'relative',
       }}>
         <ScreenShareContainer>
           <VideoPlayer
@@ -1230,6 +1023,7 @@ const filteredParticipants = useMemo(() => {
             isScreenShare={true}
           />
           
+          {/* Screen share label */}
           <Box
             sx={{
               position: 'absolute',
@@ -1257,11 +1051,9 @@ const filteredParticipants = useMemo(() => {
         </ScreenShareContainer>
       </Box>
     );
-  }, [
-    participants, screenShareStream, screenSharer, localStream, remoteStreams, theme
-  ]);
+  }, [participants, screenShareStream, screenSharer, localStream, remoteStreams, theme]);
 
-  // Handle screen sharing
+  // ✅ FIXED: Screen share fills entire container with zero padding
   if (isScreenSharing || screenShareStream || participants.some(p => p.isScreenSharing)) {
     return (
       <GridContainer sx={{ height: containerHeight, width: containerWidth, padding: 0 }}>
@@ -1275,7 +1067,6 @@ const filteredParticipants = useMemo(() => {
       {/* Role-based participants grid */}
       <RoleBasedGrid isHost={isCurrentUserHost} participantCount={filteredParticipants.length}>
         {filteredParticipants.map((participant, index) => {
-          const isStudentInStudentView = !isCurrentUserHost && participant.isLocal;
           const isHostInStudentView = !isCurrentUserHost && (participant.role === 'host' || participant.isHost) && !participant.isLocal;
           const isCoHostInStudentView = !isCurrentUserHost && participant.isCoHost && !participant.isLocal;
           
@@ -1323,13 +1114,7 @@ const filteredParticipants = useMemo(() => {
             textAlign: 'center'
           }}
         >
-          <Avatar sx={{ 
-            width: 80, 
-            height: 80, 
-            mb: 2, 
-            backgroundColor: '#333',
-            fontSize: '2rem'
-          }}>
+          <Avatar sx={{ width: 80, height: 80, mb: 2, backgroundColor: '#333', fontSize: '2rem' }}>
             <Person sx={{ fontSize: 40 }} />
           </Avatar>
           <Typography variant="h6" sx={{ mb: 1, fontWeight: 600 }}>
@@ -1345,179 +1130,95 @@ const filteredParticipants = useMemo(() => {
       )}
 
       {/* Participant menu */}
-     {/* Participant menu */}
-{/* Participant menu */}
-<Menu
-  anchorEl={anchorEl}
-  open={Boolean(anchorEl) && Boolean(selectedParticipant)}
-  onClose={handleCloseMenu}
-  PaperProps={{
-    sx: {
-      backgroundColor: '#2a2a2a',
-      color: '#fff',
-      minWidth: 180,
-      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
-    }
-  }}
-  transformOrigin={{ horizontal: 'right', vertical: 'top' }}
-  anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
->
-  {selectedParticipant && (
-    <>
-      <MenuItem disabled sx={{ opacity: 0.7, pointerEvents: 'none' }}>
-        <Typography variant="caption" sx={{ fontWeight: 600 }}>
-          {selectedParticipant.displayName || selectedParticipant.name || 'Participant'}
-        </Typography>
-      </MenuItem>
-      <Divider sx={{ borderColor: 'rgba(255,255,255,0.1)', my: 0.5 }} />
-      
-      {/* Mute Participant */}
-      {onMuteParticipant && (
-        <MenuItem 
-          onClick={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
+      <Menu
+        anchorEl={anchorEl}
+        open={Boolean(anchorEl) && Boolean(selectedParticipant)}
+        onClose={handleCloseMenu}
+        PaperProps={{
+          sx: {
+            backgroundColor: '#2a2a2a',
+            color: '#fff',
+            minWidth: 180,
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+          }
+        }}
+        transformOrigin={{ horizontal: 'right', vertical: 'top' }}
+        anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
+      >
+        {selectedParticipant && (
+          <>
+            <MenuItem disabled sx={{ opacity: 0.7, pointerEvents: 'none' }}>
+              <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                {selectedParticipant.displayName || selectedParticipant.name || 'Participant'}
+              </Typography>
+            </MenuItem>
+            <Divider sx={{ borderColor: 'rgba(255,255,255,0.1)', my: 0.5 }} />
             
-            // ✅ CRITICAL: Capture userId BEFORE closing menu
-            const userId = selectedParticipant.user_id || selectedParticipant.User_ID || selectedParticipant.id;
-            const userName = selectedParticipant.displayName || selectedParticipant.name;
+            {onMuteParticipant && (
+              <MenuItem 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const userId = selectedParticipant.user_id || selectedParticipant.User_ID || selectedParticipant.id;
+                  handleCloseMenu();
+                  if (userId) onMuteParticipant(userId);
+                }}
+                sx={{ '&:hover': { backgroundColor: 'rgba(255,255,255,0.1)' }, py: 1 }}
+              >
+                <MicOff sx={{ mr: 1.5, fontSize: 18, color: '#ff9800' }} />
+                <Typography variant="body2">Mute Participant</Typography>
+              </MenuItem>
+            )}
             
-            console.log('🔇 Mute clicked for:', { userId, userName });
+            {onPromoteToHost && !selectedParticipant.isCoHost && (
+              <MenuItem 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const userId = selectedParticipant.user_id || selectedParticipant.User_ID || selectedParticipant.id;
+                  const participantData = { userId, participant: selectedParticipant };
+                  handleCloseMenu();
+                  if (userId) onPromoteToHost(participantData);
+                }}
+                sx={{ '&:hover': { backgroundColor: 'rgba(255,255,255,0.1)' }, py: 1 }}
+              >
+                <SupervisorAccount sx={{ mr: 1.5, fontSize: 18, color: '#4caf50' }} />
+                <Typography variant="body2">Make Co-Host</Typography>
+              </MenuItem>
+            )}
             
-            // Close menu first
-            handleCloseMenu();
+            {onRemoveCoHost && selectedParticipant.isCoHost && (
+              <MenuItem 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const userId = selectedParticipant.user_id || selectedParticipant.User_ID || selectedParticipant.id;
+                  const userName = selectedParticipant.displayName || selectedParticipant.name;
+                  handleCloseMenu();
+                  if (userId) onRemoveCoHost(userId, userName);
+                }}
+                sx={{ '&:hover': { backgroundColor: 'rgba(255,255,255,0.1)' }, py: 1 }}
+              >
+                <PersonOff sx={{ mr: 1.5, fontSize: 18, color: '#ff9800' }} />
+                <Typography variant="body2">Remove Co-Host</Typography>
+              </MenuItem>
+            )}
             
-            // Execute action with captured userId
-            if (userId) {
-              onMuteParticipant(userId);
-            } else {
-              console.error('❌ No userId found for mute action');
-            }
-          }}
-          sx={{ 
-            '&:hover': { backgroundColor: 'rgba(255,255,255,0.1)' },
-            py: 1,
-          }}
-        >
-          <MicOff sx={{ mr: 1.5, fontSize: 18, color: '#ff9800' }} />
-          <Typography variant="body2">Mute Participant</Typography>
-        </MenuItem>
-      )}
-      
-      {/* Make Co-Host */}
-      {onPromoteToHost && !selectedParticipant.isCoHost && (
-        <MenuItem 
-          onClick={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            
-            // ✅ CRITICAL: Capture data BEFORE closing menu
-            const userId = selectedParticipant.user_id || selectedParticipant.User_ID || selectedParticipant.id;
-            const userName = selectedParticipant.displayName || selectedParticipant.name;
-            const participantData = {
-              userId,
-              participant: selectedParticipant,
-            };
-            
-            console.log('👑 Make Co-Host clicked for:', { userId, userName });
-            
-            // Close menu first
-            handleCloseMenu();
-            
-            // Execute action with captured data
-            if (userId) {
-              onPromoteToHost(participantData);
-            } else {
-              console.error('❌ No userId found for promote action');
-            }
-          }}
-          sx={{ 
-            '&:hover': { backgroundColor: 'rgba(255,255,255,0.1)' },
-            py: 1,
-          }}
-        >
-          <SupervisorAccount sx={{ mr: 1.5, fontSize: 18, color: '#4caf50' }} />
-          <Typography variant="body2">Make Co-Host</Typography>
-        </MenuItem>
-      )}
-      
-      {/* Remove Co-Host */}
-      {onRemoveCoHost && selectedParticipant.isCoHost && (
-        <MenuItem 
-          onClick={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            
-            // ✅ CRITICAL: Capture data BEFORE closing menu
-            const userId = selectedParticipant.user_id || selectedParticipant.User_ID || selectedParticipant.id;
-            const userName = selectedParticipant.displayName || selectedParticipant.name;
-            
-            console.log('👤 Remove Co-Host clicked for:', { userId, userName });
-            
-            // Close menu first
-            handleCloseMenu();
-            
-            // Execute action with captured data
-            if (userId) {
-              onRemoveCoHost(userId, userName);
-            } else {
-              console.error('❌ No userId found for remove co-host action');
-            }
-          }}
-          sx={{ 
-            '&:hover': { backgroundColor: 'rgba(255,255,255,0.1)' },
-            py: 1,
-          }}
-        >
-          <PersonOff sx={{ mr: 1.5, fontSize: 18, color: '#ff9800' }} />
-          <Typography variant="body2">Remove Co-Host</Typography>
-        </MenuItem>
-      )}
-      
-      {/* Remove from Meeting */}
-    {/* Remove from Meeting */}
-{onRemoveParticipant && (
-  <MenuItem 
-    onClick={(e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      
-      // ✅ CRITICAL: Capture data BEFORE closing menu
-      const userId = selectedParticipant.user_id || selectedParticipant.User_ID || selectedParticipant.id;
-      const userName = selectedParticipant.displayName || selectedParticipant.name;
-      
-      // ✅ FIX: Create participantData object (same format as Make Co-Host)
-      const participantData = {
-        userId,
-        user_id: userId,
-        participant: selectedParticipant,
-      };
-      
-      console.log('🚫 Remove from Meeting clicked for:', { userId, userName, participantData });
-      
-      // Close menu first
-      handleCloseMenu();
-      
-      // ✅ FIX: Pass object instead of just userId
-      if (userId) {
-        onRemoveParticipant(participantData);
-      } else {
-        console.error('❌ No userId found for remove action');
-      }
-    }}
-    sx={{ 
-      color: '#f44336',
-      '&:hover': { backgroundColor: 'rgba(244, 67, 54, 0.1)' },
-      py: 1,
-    }}
-  >
-    <PersonOff sx={{ mr: 1.5, fontSize: 18 }} />
-    <Typography variant="body2">Remove from Meeting</Typography>
-  </MenuItem>
-)}
-    </>
-  )}
-</Menu>
+            {onRemoveParticipant && (
+              <MenuItem 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const userId = selectedParticipant.user_id || selectedParticipant.User_ID || selectedParticipant.id;
+                  const participantData = { userId, user_id: userId, participant: selectedParticipant };
+                  handleCloseMenu();
+                  if (userId) onRemoveParticipant(participantData);
+                }}
+                sx={{ color: '#f44336', '&:hover': { backgroundColor: 'rgba(244, 67, 54, 0.1)' }, py: 1 }}
+              >
+                <PersonOff sx={{ mr: 1.5, fontSize: 18 }} />
+                <Typography variant="body2">Remove from Meeting</Typography>
+              </MenuItem>
+            )}
+          </>
+        )}
+      </Menu>
     </GridContainer>
   );
 }
