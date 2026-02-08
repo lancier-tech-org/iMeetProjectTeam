@@ -149,6 +149,16 @@ spec:
                 secretKeyRef:
                   name: backend-secrets
                   key: DB_PORT
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: MONGO_URI
+            - name: MONGO_DB
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: MONGO_DB
           resources:
             requests:
               memory: "4Gi"
