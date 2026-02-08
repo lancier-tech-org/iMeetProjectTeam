@@ -20,6 +20,7 @@ WORKDIR $APP_HOME
 # Install Graphviz for mind map generation
 RUN apt-get update && apt-get install -y graphviz && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+
 # Only install NEW/UPDATED packages from requirements (if any)
 # Most packages are already in base image
 COPY requirements.txt requirements-gpu.txt ./
