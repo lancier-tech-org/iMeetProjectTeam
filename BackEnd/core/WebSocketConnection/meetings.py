@@ -2853,14 +2853,24 @@ def Create_Schedule_Meeting(request):
             monthly_pattern = None
 
         # Process settings data - UNCHANGED (ALL ORIGINAL SETTINGS LOGIC)
-        settings = data.get('settings', {})
-        settings_waiting_room = 1 if settings.get('waitingRoom', data.get('settings_waiting_room', True)) else 0
-        settings_recording = 1 if settings.get('recording', data.get('settings_recording', False)) else 0
-        settings_allow_chat = 1 if settings.get('allowChat', data.get('settings_allow_chat', True)) else 0
-        settings_allow_screen_share = 1 if settings.get('allowScreenShare', data.get('settings_allow_screen_share', True)) else 0
-        settings_mute_participants = 1 if settings.get('muteParticipants', data.get('settings_mute_participants', False)) else 0
-        settings_require_password = 1 if settings.get('requirePassword', data.get('settings_require_password', False)) else 0
-        settings_password = settings.get('password', data.get('settings_password'))
+        # settings = data.get('settings', {})
+        # settings_waiting_room = 1 if settings.get('waitingRoom', data.get('settings_waiting_room', True)) else 0
+        # settings_recording = 1 if settings.get('recording', data.get('settings_recording', False)) else 0
+        # settings_allow_chat = 1 if settings.get('allowChat', data.get('settings_allow_chat', True)) else 0
+        # settings_allow_screen_share = 1 if settings.get('allowScreenShare', data.get('settings_allow_screen_share', True)) else 0
+        # settings_mute_participants = 1 if settings.get('muteParticipants', data.get('settings_mute_participants', False)) else 0
+        # settings_require_password = 1 if settings.get('requirePassword', data.get('settings_require_password', False)) else 0
+        # settings_password = settings.get('password', data.get('settings_password'))
+
+        # Process settings data - FIXED: renamed to avoid shadowing django.conf.settings
+        meeting_settings = data.get('settings', {})
+        settings_waiting_room = 1 if meeting_settings.get('waitingRoom', data.get('settings_waiting_room', True)) else 0
+        settings_recording = 1 if meeting_settings.get('recording', data.get('settings_recording', False)) else 0
+        settings_allow_chat = 1 if meeting_settings.get('allowChat', data.get('settings_allow_chat', True)) else 0
+        settings_allow_screen_share = 1 if meeting_settings.get('allowScreenShare', data.get('settings_allow_screen_share', True)) else 0
+        settings_mute_participants = 1 if meeting_settings.get('muteParticipants', data.get('settings_mute_participants', False)) else 0
+        settings_require_password = 1 if meeting_settings.get('requirePassword', data.get('settings_require_password', False)) else 0
+        settings_password = meeting_settings.get('password', data.get('settings_password'))
 
         # Process reminders data - UNCHANGED (ALL ORIGINAL REMINDERS LOGIC)
         reminders = data.get('reminders', {})
