@@ -710,56 +710,67 @@ class StreamingRecordingWithChunks:
         """Independent master clock that pulls & writes audio at perfect rate"""
         def audio_clock_loop():
             logger.info("⏰ Audio master clock thread started (48kHz stereo)")
-            interval = 0.020  # 20 ms chunks → very common & stable
-            samples_per_chunk = int(48000 * 2 * interval)  # stereo
+            interval = 0.020  # 20 ms chunks
+            samples_per_chunk = int(48000 * 2 * interval)  # 1920 samples stereo
 
-            next_wake = time.perf_counter()
+            # ✅ FIX: Use timeline as the authoritative clock, not perf_counter
             last_buffer_check = time.perf_counter()
-            consecutive_empty_checks = 0  # ✅ NEW: Counter for stability
+            consecutive_empty_checks = 0
+            
+            # ✅ FIX: Track when we last wrote samples to avoid writing too fast
+            last_write_time = time.perf_counter()
 
-            # Run until explicitly told to drain and all buffers are empty
             while True:
                 try:
-                    # ✅ Skip audio writing when timeline is paused
                     if self.timeline.is_paused:
                         time.sleep(0.1)
-                        next_wake = time.perf_counter()
+                        last_write_time = time.perf_counter()  # ✅ Reset on resume
                         continue
                     
                     # Check if we should enter draining mode
                     if not self.is_recording and not self.audio_accepting_new_data:
-                        # Check if all audio buffers are empty every 0.5 seconds (faster check)
                         now = time.perf_counter()
-                        if now - last_buffer_check >= 0.5:  # ✅ CHANGED: 1.0 → 0.5
+                        if now - last_buffer_check >= 0.5:
                             buffers_empty = self._check_all_audio_buffers_empty()
                             last_buffer_check = now
                             
                             if buffers_empty:
-                                consecutive_empty_checks += 1  # ✅ NEW
-                                # ✅ NEW: Require 3 consecutive empty checks (1.5 seconds total)
+                                consecutive_empty_checks += 1
                                 if consecutive_empty_checks >= 3:
                                     logger.info("🎵 All audio buffers empty for 1.5s - entering final flush mode")
                                     self.audio_buffers_empty = True
-                                    break  # Exit loop, enter final flush
+                                    break
                                 else:
                                     logger.info(f"🎵 Buffers empty ({consecutive_empty_checks}/3 checks)")
                             else:
-                                consecutive_empty_checks = 0  # ✅ NEW: Reset counter
+                                consecutive_empty_checks = 0
                                 non_empty = self._count_non_empty_audio_buffers()
                                 logger.info(f"🎵 Still draining audio - {non_empty} source(s) with data")
 
-                    # Continue mixing and writing as long as we're active or draining
-                    now = time.perf_counter()
-                    if now >= next_wake:
+                    # ✅ FIX: Calculate when we SHOULD write next based on timeline
+                    current_timeline_pts = self.timeline.get_current_pts()
+                    expected_samples_by_now = int(current_timeline_pts * 48000 * 2)
+                    samples_behind = expected_samples_by_now - self.audio_samples_written
+                    
+                    # ✅ FIX: Only write if we're behind the timeline by at least one chunk
+                    if samples_behind >= samples_per_chunk:
                         self._mix_and_write_audio_chunk(target_samples=samples_per_chunk)
-                        next_wake += interval
-                        # Prevent drift accumulation
-                        if now > next_wake + interval:
-                            next_wake = now + interval
+                        last_write_time = time.perf_counter()
                     else:
-                        sleep_time = max(0.001, next_wake - now - 0.002)
-                        time.sleep(sleep_time)
+                        # ✅ FIX: Sleep until we expect to be behind by one chunk
+                        # Calculate how long until timeline advances enough for next chunk
+                        time_per_chunk = interval  # 0.020 seconds
+                        now = time.perf_counter()
+                        time_since_write = now - last_write_time
                         
+                        # Sleep for remaining time in this chunk period
+                        sleep_duration = max(0.001, time_per_chunk - time_since_write)
+                        time.sleep(sleep_duration)
+                        
+                except Exception as e:
+                    logger.error(f"Audio clock error: {e}")
+                    time.sleep(0.1)
+          
                 except Exception as e:
                     logger.error(f"Audio clock error: {e}")
                     time.sleep(0.1)
