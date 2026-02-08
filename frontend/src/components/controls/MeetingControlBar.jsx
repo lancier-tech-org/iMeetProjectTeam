@@ -534,6 +534,7 @@ const MeetingControlBar = ({
   hasHostPrivileges,
   attendanceEnabled,
   currentAttendanceData,
+  
   meetingId,
   meetingCode,
   meetingLink,

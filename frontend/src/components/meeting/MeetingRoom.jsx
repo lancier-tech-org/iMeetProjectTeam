@@ -350,8 +350,6 @@ import BrowserTabsHeader from "../tabs/BrowserTabsHeader";
 import MeetingTabContent from "../tabs/MeetingTabContent";
 import WhiteboardTabContent from "../tabs/WhiteboardTabContent";
 
-
-
 // Add this import with other dialog imports
 import FeedbackDialog from "../Feedback/FeedbackDialog";
 
