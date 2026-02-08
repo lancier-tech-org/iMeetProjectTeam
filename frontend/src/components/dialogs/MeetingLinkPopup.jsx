@@ -285,35 +285,7 @@ const UserRow = styled(Box)(() => ({
   padding: "6px 0",
 }));
 
-const RestoreButton = styled(IconButton)(() => ({
-  position: "fixed",
-  bottom: 24,
-  left: 220,
-  width: 40,
-  height: 40,
-  borderRadius: 16,
-  background: "linear-gradient(135deg, rgba(14, 20, 33, 0.92), rgba(30, 41, 59, 0.92))",
-  backdropFilter: "blur(20px)",
-  border: "1px solid rgba(56, 189, 248, 0.2)",
-  color: "#38bdf8",
-  zIndex: 10001,
-  animation: `${restorePulse} 2.5s ease-in-out infinite`,
-  transition: "all 0.25s cubic-bezier(0.22, 1, 0.36, 1)",
-  boxShadow: "0 4px 20px rgba(56, 189, 248, 0.25)",
-  "&:hover": {
-    transform: "scale(1.08)",
-    background: "linear-gradient(135deg, rgba(56, 189, 248, 0.15), rgba(30, 41, 59, 0.95))",
-    border: "1px solid rgba(56, 189, 248, 0.35)",
-    boxShadow: "0 6px 28px rgba(56, 189, 248, 0.35)",
-  },
-  "@media (max-width: 600px)": {
-    bottom: 80,
-    left: 16,
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-  },
-}));
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COMPONENT
@@ -448,16 +420,7 @@ const MeetingLinkPopup = ({
       ? meetingLink.slice(0, 52) + "…"
       : meetingLink || "";
 
-  // ── Minimized FAB ─────────────────────────────────────────────────────────
-  if (minimized) {
-    return (
-      <Tooltip title="Show meeting link" placement="right" arrow>
-        <RestoreButton onClick={onRestore} aria-label="Show meeting link">
-          <LinkRounded sx={{ fontSize: 22 }} />
-        </RestoreButton>
-      </Tooltip>
-    );
-  }
+
 
   // ── Hidden ────────────────────────────────────────────────────────────────
   if (!visible) return null;

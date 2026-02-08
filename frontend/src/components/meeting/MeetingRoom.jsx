@@ -167,25 +167,7 @@ const ControlBarWrapper = styled(Box)(({ theme }) => ({
   },
 }));
 
-const RecordingBadge = styled(Box)(({ isPaused }) => ({
-  position: "fixed",
-  top: 14,
-  left: 384,
-  zIndex: 999,
-  animation: isPaused ? "none" : `${pulseGlow} 2s ease-in-out infinite`,
-  borderRadius: "12px",
-  overflow: "hidden",
-  "@media (max-width: 960px)": {
-    left: "50%",
-    transform: "translateX(-50%)",
-    top: 10,
-  },
-  "@media (max-width: 600px)": {
-    left: 12,
-    transform: "none",
-    top: 8,
-  },
-}));
+
 
 const HandRaiseBadgeContainer = styled(Box)(() => ({
   position: "fixed",
@@ -367,6 +349,8 @@ import HandRaiseNotification from "../status/HandRaiseNotification";
 import BrowserTabsHeader from "../tabs/BrowserTabsHeader";
 import MeetingTabContent from "../tabs/MeetingTabContent";
 import WhiteboardTabContent from "../tabs/WhiteboardTabContent";
+
+
 
 // Add this import with other dialog imports
 import FeedbackDialog from "../Feedback/FeedbackDialog";
@@ -4805,24 +4789,7 @@ return (
         }}
       >
 
-        {/* ── Recording Indicator (fixed position) ─────────────────── */}
-        {recordingState.isRecording && (
-          <Fade in timeout={400}>
-            <RecordingBadge isPaused={recordingState.isPaused}>
-              <RecordingIndicator
-                isRecording={recordingState.isRecording}
-                isPaused={recordingState.isPaused}
-                recordingMethod={recordingState.method}
-                duration={recordingState.duration}
-                pausedDuration={recordingState.pausedDuration}
-                uploading={recordingState.uploading}
-                uploadProgress={recordingState.uploadProgress}
-                onPauseResume={handlePauseResumeRecording}
-                hasHostPrivileges={hasHostPrivileges}
-              />
-            </RecordingBadge>
-          </Fade>
-        )}
+      
 
         {/* ── Hand Raise Badge (fixed position) ────────────────────── */}
         <Grow in={pendingHandsCount > 0 && hasHostPrivileges} timeout={300}>
@@ -4934,6 +4901,13 @@ return (
                 meetingId={realMeetingId}
   meetingCode={meetingData?.meeting_code || meetingData?.Meeting_Code || realMeetingId}
   meetingLink={meetingLink}
+    recordingState={recordingState}
+  onToggleRecording={handleToggleRecording}
+  onPauseResumeRecording={handlePauseResumeRecording}
+  onToggleWhiteboard={handleToggleWhiteboard}
+  onEndMeeting={() => setShowEndMeetingDialog(true)}
+  onFullscreen={handleFullscreen}
+  isFullscreen={isFullscreen}
               />
             </ControlBarWrapper>
 
