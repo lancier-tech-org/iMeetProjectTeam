@@ -68,7 +68,7 @@ print(f"🔧 AWS_REGION: {AWS_REGION}")
 # ✅ MongoDB Configuration
 MONGO_USER = os.getenv('MONGO_USER', 'connectly')
 MONGO_PASSWORD = os.getenv('MONGO_PASSWORD', 'LT@connect25')
-MONGO_HOST = os.getenv('MONGO_HOST', '192.168.48.201')
+MONGO_HOST = os.getenv('MONGO_HOST', 'mongodb.databases.svc.cluster.local')
 MONGO_PORT = os.getenv('MONGO_PORT', '27017')
 MONGO_DB = os.getenv('MONGO_DB', 'connectlydb')
 

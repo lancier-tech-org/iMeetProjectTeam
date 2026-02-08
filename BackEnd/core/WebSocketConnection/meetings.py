@@ -2465,7 +2465,7 @@ def Create_Calendar_Meeting(request):
     status = calculate_meeting_status(start_dt, end_dt, duration)
 
     # --- Base meeting data ---
-    meeting_url = f"https://192.168.48.201:5173/meeting/{meeting_id}"
+    meeting_url = f"https://www.lancieretech.com/meeting/{meeting_id}"
     livekit_room = f"meeting_{meeting_id}"
     created_at = timezone.now().astimezone(ist).strftime('%Y-%m-%d %H:%M:%S')
 
@@ -2900,7 +2900,7 @@ def Create_Schedule_Meeting(request):
             'host_id': host_id,
             'meeting_name': data.get('Meeting_Name', '').strip(),
             'meeting_type': 'ScheduleMeeting',
-            'meeting_link': f"https://192.168.48.201:5173/meeting/{meeting_id}",
+            'meeting_link': f"https://www.lancieretech.com/meeting/{meeting_id}",
             'livekit_room_name': f"meeting_{meeting_id}",
             'status': initial_status,  # CHANGED: Use calculated status
             'started_at': started_at,
@@ -3176,7 +3176,7 @@ def Create_Instant_Meeting(request):
     meeting_id = create_meeting_id()
     logging.info(f"[CREATE] Generated NEW Meeting ID: {meeting_id}")
 
-    base_url = "https://192.168.48.201:5173"
+    base_url = "https://www.lancieretech.com"
     data['Meeting_Link'] = f"{base_url}/meeting/{meeting_id}"
     data['LiveKit_Room_Name'] = f"meeting_{meeting_id}"
 
@@ -5863,7 +5863,7 @@ def bulk_send_invitations(request):
             'meeting_title': meeting_title,
             'guest_emails': valid_emails,
             'meeting_type': 'BulkInvite',
-            'meeting_url': f"https://192.168.48.201:5173/meeting/{meeting_id}" if meeting_id else None
+            'meeting_url': f"https://www.lancieretech.com/meeting/{meeting_id}" if meeting_id else None
         }
         
         # If we have meeting data, add more details

@@ -64,7 +64,7 @@ def get_redis():
         configs_to_try = [
             # Original configuration
             {
-                'host': '192.168.48.201',
+                'host': 'redis.databases.svc.cluster.local',
                 'port': 6379,
                 'db': 0,
                 'decode_responses': True,

@@ -62,7 +62,7 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 # ---------------------------------------------------------------------
 DJANGO_SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-v_&dc%&is!h)z)v*1q(s_8nf)l24p4q_a7$n=f7$9u0xik6j@q")
 DJANGO_DEBUG = os.getenv("DJANGO_DEBUG", "True").lower() in ['true', '1', 't']
-DJANGO_ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,192.168.48.201,183.82.108.211,192.168.48.199,0.0.0.0,*").split(",")]
+DJANGO_ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,www.lancieretech.com,*").split(",")]
 
 if not settings.configured:
     settings.configure(
@@ -87,11 +87,7 @@ if not settings.configured:
         CORS_ALLOWED_ORIGINS=[
             "https://localhost",
             "https://127.0.0.1",
-            "https://192.168.48.201",
-            "https://183.82.108.211",
-            "https://192.168.48.199",
-            "http://localhost:5173",
-            "http://localhost:3000",
+            "https://www.lancieretech.com",
         ],
         SECURE_SSL_REDIRECT=False,
         SESSION_COOKIE_SECURE=True,

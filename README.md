@@ -471,8 +471,8 @@ Create a `.env` file based on `.env.example`:
 
 ```bash
 # API Configuration
-VITE_API_BASE_URL=https://192.168.48.201:8111/api
-VITE_WS_BASE_URL=ws://192.168.48.201:8111/ws/meeting/(?P<meeting_id>[^/]+)/$
+VITE_API_BASE_URL=https://www.lancieretech.com/api
+VITE_WS_BASE_URL=ws://www.lancieretech.com/ws/meeting/(?P<meeting_id>[^/]+)/$
 
 # WebRTC Configuration
 VITE_STUN_SERVERS=stun:stun.l.google.com:19302
