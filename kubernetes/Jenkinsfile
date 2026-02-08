@@ -213,7 +213,7 @@ pipeline {
                                     --build-arg BUILDKIT_INLINE_CACHE=1 \
                                     ${cacheFlag} \
                                     --build-arg VITE_API_URL=https://api.lancieretech.com \
-                                    --build-arg VITE_LIVEKIT_URL=wss://imeetpro-7yq8bbet.livekit.cloud \
+                                    --build-arg VITE_LIVEKIT_URL=wss://imeetpro-ic5go0yy.livekit.cloud \
                                     -t ${FRONTEND_REPO}:${IMAGE_TAG} \
                                     -t ${FRONTEND_REPO}:latest \
                                     -f jenkins/docker/Dockerfile.frontend \

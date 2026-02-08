@@ -36,7 +36,7 @@ spec:
             - name: VITE_API_URL
               value: "https://api.lancieretech.com"
             - name: VITE_LIVEKIT_URL
-              value: "wss://imeetpro-7yq8bbet.livekit.cloud"
+              value: "wss://imeetpro-ic5go0yy.livekit.cloud"
           resources:
             requests:
               memory: "128Mi"

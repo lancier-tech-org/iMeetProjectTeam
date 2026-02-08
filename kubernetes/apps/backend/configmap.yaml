@@ -47,8 +47,8 @@ data:
   AWS_STORAGE_BUCKET_NAME: "imeetpro-prod-recordings"
   
   # LiveKit Configuration
-  LIVEKIT_URL: "wss://imeetpro-7yq8bbet.livekit.cloud"
-  LIVEKIT_WSS_URL: "wss://imeetpro-7yq8bbet.livekit.cloud"
+  LIVEKIT_URL: "wss://imeetpro-ic5go0yy.livekit.cloud"
+  LIVEKIT_WSS_URL: "wss://imeetpro-ic5go0yy.livekit.cloud"
   LIVEKIT_TTL: "86400"
 
 
