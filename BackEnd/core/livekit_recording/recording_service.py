@@ -2194,7 +2194,7 @@ class FixedGoogleMeetRecorder:
     # =============================================================================
 
     def _check_redis_stop_requests(self):
-        """Check if any recordings need to be stopped (requested from other pods)"""
+        """Check if any recordings need to be stopped/paused/resumed (requested from other pods)"""
         try:
             if not REDIS_AVAILABLE:
                 return
@@ -2202,13 +2202,64 @@ class FixedGoogleMeetRecorder:
             with self._global_lock:
                 for meeting_id in list(self.active_recordings.keys()):
                     redis_data = self._get_recording_from_redis(meeting_id)
-                    if redis_data and redis_data.get("status") == "stop_requested":
+                    if not redis_data:
+                        continue
+                    
+                    status = redis_data.get("status")
+                    
+                    if status == "stop_requested":
                         logger.info(f"🛑 Stop request detected from Redis for {meeting_id}")
                         self.stop_stream_recording(meeting_id)
+                    
+                    elif status == "pause_requested":
+                        logger.info(f"⏸️ Pause request detected from Redis for {meeting_id}")
+                        recording_info = self.active_recordings.get(meeting_id)
+                        if recording_info:
+                            bot = recording_info.get("bot_instance")
+                            if bot:
+                                try:
+                                    pause_pts = bot.stream_recorder.pause_recording()
+                                    if pause_pts is not None:
+                                        recording_info["is_paused"] = True
+                                        recording_info["pause_timestamp"] = pause_pts
+                                        recording_info["pause_time"] = datetime.now()
+                                        self._update_recording_in_redis(meeting_id, {
+                                            "status": "paused",
+                                            "pause_timestamp": pause_pts
+                                        })
+                                        logger.info(f"✅ Pause executed via Redis for {meeting_id} at {pause_pts:.3f}s")
+                                    else:
+                                        self._update_recording_in_redis(meeting_id, {"status": "paused"})
+                                        logger.info(f"⏸️ Already paused for {meeting_id}")
+                                except Exception as e:
+                                    logger.error(f"❌ Redis pause execution error: {e}")
+                                    self._update_recording_in_redis(meeting_id, {"status": "active"})
+                    
+                    elif status == "resume_requested":
+                        logger.info(f"▶️ Resume request detected from Redis for {meeting_id}")
+                        recording_info = self.active_recordings.get(meeting_id)
+                        if recording_info:
+                            bot = recording_info.get("bot_instance")
+                            if bot:
+                                try:
+                                    resume_pts = bot.stream_recorder.resume_recording()
+                                    if resume_pts is not None:
+                                        recording_info["is_paused"] = False
+                                        recording_info["resume_time"] = datetime.now()
+                                        self._update_recording_in_redis(meeting_id, {
+                                            "status": "active"
+                                        })
+                                        logger.info(f"✅ Resume executed via Redis for {meeting_id} at {resume_pts:.3f}s")
+                                    else:
+                                        self._update_recording_in_redis(meeting_id, {"status": "active"})
+                                        logger.info(f"▶️ Already running for {meeting_id}")
+                                except Exception as e:
+                                    logger.error(f"❌ Redis resume execution error: {e}")
+                                    self._update_recording_in_redis(meeting_id, {"status": "paused"})
                         
         except Exception as e:
-            logger.error(f"Error checking Redis stop requests: {e}")
-            
+            logger.error(f"Error checking Redis requests: {e}")
+
     def _start_redis_monitor(self):
         """Start background thread to monitor Redis for stop requests from other pods"""
         def monitor_loop():
@@ -2622,17 +2673,15 @@ class FixedGoogleMeetRecorder:
             }
 
     def pause_stream_recording(self, meeting_id: str) -> Dict:
-        """Pause recording - timeline freezes"""
+        """Pause recording - timeline freezes (with cross-pod Redis support)"""
+        
+        # First check local in-memory (same pod that started)
         with self._global_lock:
-            if meeting_id not in self.active_recordings:
-                return {
-                    "status": "no_recording",
-                    "message": "No active recording found",
-                    "meeting_id": meeting_id
-                }
-            
-            recording_info = self.active_recordings[meeting_id]
-            bot = recording_info.get("bot_instance")
+            local_recording = self.active_recordings.get(meeting_id)
+        
+        # If found locally, execute pause directly
+        if local_recording:
+            bot = local_recording.get("bot_instance")
             
             if not bot:
                 return {
@@ -2642,15 +2691,14 @@ class FixedGoogleMeetRecorder:
                 }
             
             try:
-                # Pause the timeline - this freezes time
                 pause_pts = bot.stream_recorder.pause_recording()
                 
                 if pause_pts is not None:
-                    recording_info["is_paused"] = True
-                    recording_info["pause_timestamp"] = pause_pts
-                    recording_info["pause_time"] = datetime.now()
+                    with self._global_lock:
+                        local_recording["is_paused"] = True
+                        local_recording["pause_timestamp"] = pause_pts
+                        local_recording["pause_time"] = datetime.now()
                     
-                    # Update Redis
                     self._update_recording_in_redis(meeting_id, {
                         "status": "paused",
                         "pause_timestamp": pause_pts
@@ -2679,18 +2727,58 @@ class FixedGoogleMeetRecorder:
                     "meeting_id": meeting_id
                 }
         
-    def resume_stream_recording(self, meeting_id: str) -> Dict:
-        """Resume recording - timeline continues"""
-        with self._global_lock:
-            if meeting_id not in self.active_recordings:
+        # Not found locally - check Redis (different pod scenario)
+        redis_recording = self._get_recording_from_redis(meeting_id)
+        
+        if not redis_recording:
+            return {
+                "status": "no_recording",
+                "message": "No active recording found",
+                "meeting_id": meeting_id
+            }
+        
+        # Found in Redis on another pod - signal via Redis
+        current_pod = self._get_pod_name()
+        recording_pod = redis_recording.get("pod_name", "unknown")
+        logger.info(f"⏸️ Pause request for {meeting_id} - recording on pod {recording_pod}, request on {current_pod}")
+        
+        self._update_recording_in_redis(meeting_id, {"status": "pause_requested"})
+        
+        # Wait briefly for the owning pod to execute the pause (up to 5 seconds)
+        import time
+        for i in range(10):
+            time.sleep(0.5)
+            updated = self._get_recording_from_redis(meeting_id)
+            if updated and updated.get("status") == "paused":
+                pause_pts = updated.get("pause_timestamp", 0)
+                logger.info(f"✅ Cross-pod pause confirmed for {meeting_id}")
                 return {
-                    "status": "no_recording",
-                    "message": "No active recording found",
-                    "meeting_id": meeting_id
+                    "status": "paused",
+                    "message": "Recording paused - timeline frozen",
+                    "meeting_id": meeting_id,
+                    "paused_at": pause_pts,
+                    "note": "Cross-pod pause executed"
                 }
-            
-            recording_info = self.active_recordings[meeting_id]
-            bot = recording_info.get("bot_instance")
+        
+        # If we get here, the owning pod hasn't responded yet but signal is sent
+        logger.warning(f"⚠️ Cross-pod pause signal sent but not yet confirmed for {meeting_id}")
+        return {
+            "status": "paused",
+            "message": "Pause signal sent to recording pod",
+            "meeting_id": meeting_id,
+            "note": "Cross-pod pause - may take a few seconds to take effect"
+        }
+        
+    def resume_stream_recording(self, meeting_id: str) -> Dict:
+        """Resume recording - timeline continues (with cross-pod Redis support)"""
+        
+        # First check local in-memory (same pod that started)
+        with self._global_lock:
+            local_recording = self.active_recordings.get(meeting_id)
+        
+        # If found locally, execute resume directly
+        if local_recording:
+            bot = local_recording.get("bot_instance")
             
             if not bot:
                 return {
@@ -2700,26 +2788,25 @@ class FixedGoogleMeetRecorder:
                 }
             
             try:
-                # Resume the timeline - time continues from where it paused
                 resume_pts = bot.stream_recorder.resume_recording()
                 
                 if resume_pts is not None:
-                    pause_start = recording_info.get("pause_time")
-                    pause_duration = (datetime.now() - pause_start).total_seconds() if pause_start else 0
+                    with self._global_lock:
+                        pause_start = local_recording.get("pause_time")
+                        pause_duration = (datetime.now() - pause_start).total_seconds() if pause_start else 0
+                        
+                        local_recording["is_paused"] = False
+                        local_recording["resume_time"] = datetime.now()
+                        
+                        if "pause_events" not in local_recording:
+                            local_recording["pause_events"] = []
+                        
+                        local_recording["pause_events"].append({
+                            "paused_at": local_recording.get("pause_time").isoformat() if pause_start else None,
+                            "resumed_at": datetime.now().isoformat(),
+                            "duration": pause_duration
+                        })
                     
-                    recording_info["is_paused"] = False
-                    recording_info["resume_time"] = datetime.now()
-                    
-                    if "pause_events" not in recording_info:
-                        recording_info["pause_events"] = []
-                    
-                    recording_info["pause_events"].append({
-                        "paused_at": recording_info.get("pause_time").isoformat() if pause_start else None,
-                        "resumed_at": datetime.now().isoformat(),
-                        "duration": pause_duration
-                    })
-                    
-                    # Update Redis
                     self._update_recording_in_redis(meeting_id, {
                         "status": "active"
                     })
@@ -2750,6 +2837,46 @@ class FixedGoogleMeetRecorder:
                     "meeting_id": meeting_id
                 }
         
+        # Not found locally - check Redis (different pod scenario)
+        redis_recording = self._get_recording_from_redis(meeting_id)
+        
+        if not redis_recording:
+            return {
+                "status": "no_recording",
+                "message": "No active recording found",
+                "meeting_id": meeting_id
+            }
+        
+        # Found in Redis on another pod - signal via Redis
+        current_pod = self._get_pod_name()
+        recording_pod = redis_recording.get("pod_name", "unknown")
+        logger.info(f"▶️ Resume request for {meeting_id} - recording on pod {recording_pod}, request on {current_pod}")
+        
+        self._update_recording_in_redis(meeting_id, {"status": "resume_requested"})
+        
+        # Wait briefly for the owning pod to execute the resume (up to 5 seconds)
+        import time
+        for i in range(10):
+            time.sleep(0.5)
+            updated = self._get_recording_from_redis(meeting_id)
+            if updated and updated.get("status") == "active":
+                logger.info(f"✅ Cross-pod resume confirmed for {meeting_id}")
+                return {
+                    "status": "resumed",
+                    "message": "Recording resumed - timeline continuous",
+                    "meeting_id": meeting_id,
+                    "note": "Cross-pod resume executed"
+                }
+        
+        # If we get here, the owning pod hasn't responded yet but signal is sent
+        logger.warning(f"⚠️ Cross-pod resume signal sent but not yet confirmed for {meeting_id}")
+        return {
+            "status": "resumed",
+            "message": "Resume signal sent to recording pod",
+            "meeting_id": meeting_id,
+            "note": "Cross-pod resume - may take a few seconds to take effect"
+        }
+     
     def _async_finalize_fast_recording(self, meeting_id: str, recording_info: dict):
         """Finalize recording and upload to S3 with complete metadata"""
         try:
