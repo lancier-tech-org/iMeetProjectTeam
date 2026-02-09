@@ -2461,36 +2461,47 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             
             logging.info(f"💾 Saving video data to MongoDB...")
 
-            # ✅ CRITICAL FIX: Query by session_id to avoid overwriting different recordings
-            query_filter = {
-                "meeting_id": meeting_id,
-                "user_id": user_id,
-                "is_final_video": True
-            }
-
-            # If this is a session-based recording, add session_id to query
+            # ✅ CRITICAL FIX: ALWAYS query by session_id if available
             if session_id:
-                query_filter["session_id"] = session_id
+                # Session-based recording - update/create with session_id
+                query_filter = {
+                    "meeting_id": meeting_id,
+                    "session_id": session_id  # ✅ EXACT match on session
+                }
                 logging.info(f"Querying for existing doc with session_id: {session_id}")
-
-            existing_doc = collection.find_one(query_filter)
-
-            if existing_doc:
-                collection.update_one({"_id": existing_doc["_id"]}, {"$set": video_document})
-                logging.info(f"✅ Updated existing document for session: {session_id}")
-            else:
-                collection.insert_one(video_document)
-                logging.info(f"✅ Created new document for session: {session_id}")
                 
-            if custom_recording_name:
-                try:
-                    collection.delete_one({
-                        "meeting_id": meeting_id,
-                        "pending_name_update": True
-                    })
-                    logging.info(f"✅ Cleaned up custom name document")
-                except Exception as cleanup_error:
-                    logging.warning(f"Cleanup failed: {cleanup_error}")
+                existing_doc = collection.find_one(query_filter)
+                
+                if existing_doc:
+                    # This is the SAME recording being reprocessed - UPDATE it
+                    collection.replace_one({"_id": existing_doc["_id"]}, video_document)
+                    logging.info(f"✅ Updated existing document for session: {session_id}")
+                else:
+                    # New recording session - CREATE it
+                    collection.insert_one(video_document)
+                    logging.info(f"✅ Created new document for session: {session_id}")
+            else:
+                # Legacy recording without session_id - fall back to old behavior
+                query_filter = {
+                    "meeting_id": meeting_id,
+                    "user_id": user_id,
+                    "is_final_video": True,
+                    "session_id": None  # ✅ Only match old recordings without session_id
+                }
+                
+                existing_doc = collection.find_one(query_filter)
+                
+                if existing_doc:
+                    collection.replace_one({"_id": existing_doc["_id"]}, video_document)
+                    logging.info(f"✅ Updated legacy document (no session_id)")
+                else:
+                    collection.insert_one(video_document)
+                    logging.info(f"✅ Created new legacy document (no session_id)")
+                    
+            # ✅ CRITICAL: Don't delete custom name here - it was already marked as used in recording service
+            # The recording service marks names as used in _async_finalize_fast_recording
+            # If we delete here, we might delete names for OTHER concurrent recordings
+            logging.info(f"ℹ️ Skipping custom name cleanup (already handled by recording service)")
 
             # ========== SEND NOTIFICATIONS ==========
             logging.info(f"📧 Sending notifications...")
@@ -4728,48 +4739,31 @@ def store_custom_recording_name(request):
             except Exception as perm_error:
                 logger.warning(f"Permission check failed: {perm_error}")
         
+        # ✅ NEW: Generate session_id for this recording
+        import uuid
+        session_id = str(uuid.uuid4())[:8]
+
         # Store the custom name with a pending flag
         custom_name_document = {
             "meeting_id": meeting_id,
             "custom_recording_name": custom_name,
             "pending_name_update": True,
-            "recording_timestamp": recording_timestamp or int(time.time()),  # ✅ NEW
+            "custom_name_session_id": session_id,  # ✅ NEW: Link to session
+            "recording_timestamp": recording_timestamp or int(time.time()),
             "name_stored_at": datetime.now(),
             "user_id": user_id
         }
-        
-        # ✅ CRITICAL FIX: Check for THIS specific recording session
-        query = {
-            "meeting_id": meeting_id,
-            "pending_name_update": True
-        }
 
-        # If we have a recording timestamp, use it for matching specific session
-        if recording_timestamp:
-            query["recording_timestamp"] = recording_timestamp
+        # ✅ NEW: Always insert new document (one per recording session)
+        result = collection.insert_one(custom_name_document)
+        logger.info(f"Stored custom name for meeting {meeting_id}, session {session_id}: {custom_name}")
 
-        existing = collection.find_one(query)
-        
-        if existing:
-            # Update existing pending name
-            collection.update_one(
-                {"_id": existing["_id"]},
-                {"$set": {
-                    "custom_recording_name": custom_name,
-                    "name_stored_at": datetime.now()
-                }}
-            )
-            logger.info(f"Updated pending custom name for meeting {meeting_id}")
-        else:
-            # Insert new pending name
-            result = collection.insert_one(custom_name_document)
-            logger.info(f"Stored custom name for meeting {meeting_id}: {custom_name}")
-        
         return JsonResponse({
             "status": "success",
             "message": "Recording name stored successfully",
             "custom_name": custom_name,
-            "meeting_id": meeting_id
+            "meeting_id": meeting_id,
+            "session_id": session_id  # ✅ NEW: Return session_id
         })
         
     except json.JSONDecodeError:

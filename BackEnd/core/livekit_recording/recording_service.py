@@ -2382,7 +2382,7 @@ class FixedGoogleMeetRecorder:
             # ✅ CRITICAL FIX: Generate session_id BEFORE creating MongoDB document
             import uuid
             session_id = str(uuid.uuid4())[:8]
-            
+
             recording_metadata = {
                 "meeting_id": meeting_id,
                 "host_user_id": host_user_id,
@@ -2392,9 +2392,10 @@ class FixedGoogleMeetRecorder:
                 "target_fps": self.target_fps,
                 "start_time": datetime.now(),
                 "created_at": datetime.now(),
-                "session_id": session_id  # ✅ CRITICAL: Include session_id from the start
+                "session_id": session_id,  # ✅ CRITICAL: Include session_id from the start
+                "recording_timestamp": int(time.time())  # ✅ NEW: Add timestamp for custom name matching
             }
-            
+
             result = self.collection.insert_one(recording_metadata)
             recording_doc_id = str(result.inserted_id)
             recorder_identity = f"fast_recorder_{meeting_id}_{timestamp}"
@@ -3262,53 +3263,43 @@ class FixedGoogleMeetRecorder:
                 meeting_type = "InstantMeeting"
             
             # ==================== GENERATE FILENAME ====================
-            # ✅ CRITICAL FIX: Include date only (no time) to differentiate multiple recordings
-            timestamp_str = datetime.now().strftime("%d-%m-%Y")  # Changed from "%Y%m%d_%H%M%S" to "%d-%m-%Y"
+            timestamp_str = datetime.now().strftime("%d-%m-%Y")
             custom_recording_name = None
             try:
                 from bson import ObjectId
                 
-                # ✅ CRITICAL FIX: Get the recording start timestamp to match with custom name
-                recording_start_time = recording_info.get("start_time")
-                if recording_start_time:
-                    if isinstance(recording_start_time, datetime):
-                        recording_timestamp = int(recording_start_time.timestamp())
-                    else:
-                        recording_timestamp = int(recording_start_time)
-                else:
-                    recording_timestamp = timestamp  # Use current timestamp as fallback
-                
-                # Query for custom name that matches THIS recording session
-                # Try timestamp match first (within 10 second window for clock skew)
+                # ✅ NEW: Match by session_id (most reliable)
                 custom_name_doc = collection.find_one({
                     "meeting_id": meeting_id,
                     "pending_name_update": True,
-                    "recording_timestamp": {
-                        "$gte": recording_timestamp - 10,
-                        "$lte": recording_timestamp + 10
-                    }
+                    "custom_name_session_id": session_id  # ✅ EXACT match on session
                 })
-                
-                # Fallback: Get most recent custom name for this meeting if exact match not found
-                if not custom_name_doc:
-                    custom_name_doc = collection.find_one(
-                        {
-                            "meeting_id": meeting_id,
-                            "pending_name_update": True
-                        },
-                        sort=[("name_stored_at", -1)]  # Get most recent
-                    )
                 
                 if custom_name_doc:
                     custom_recording_name = custom_name_doc.get("custom_recording_name")
-                    logger.info(f"📝 Custom name: {custom_recording_name}")
+                    logger.info(f"📝 Custom name matched by session_id: {custom_recording_name}")
+                    
+                    # ✅ NEW: Mark this name as USED so other recordings don't take it
+                    collection.update_one(
+                        {"_id": custom_name_doc["_id"]},
+                        {"$set": {
+                            "pending_name_update": False,
+                            "used_for_session_id": session_id,
+                            "used_at": datetime.now()
+                        }}
+                    )
+                    logger.info(f"✅ Marked custom name as used for session {session_id}")
+                else:
+                    logger.info(f"ℹ️ No custom name found for session {session_id}")
+                    
             except Exception as e:
                 logger.warning(f"Custom name check failed: {e}")
 
             if custom_recording_name:
                 filename = f"{custom_recording_name}_{timestamp_str}.mp4"
             else:
-                filename = f"Recording_{timestamp_str}.mp4"  # Removed meeting_id from default name
+                filename = f"Recording_{timestamp_str}.mp4"
+
             # ==================== CREATE COMPLETE MONGODB DOCUMENT ====================
             # ✅ CRITICAL FIX: Add session_id to track multiple recordings
             video_document = {
@@ -3349,7 +3340,6 @@ class FixedGoogleMeetRecorder:
 
             try:
                 # ✅ CRITICAL FIX: Check if document with this session_id already exists
-                # If it does, update it. Otherwise, create new.
                 existing_doc = self.collection.find_one({
                     "meeting_id": meeting_id,
                     "session_id": session_id
@@ -3357,12 +3347,13 @@ class FixedGoogleMeetRecorder:
                 
                 if existing_doc:
                     # Update the existing document for this session
-                    self.collection.update_one(
+                    # ✅ CRITICAL: Use $set to update ALL fields including new ones
+                    self.collection.replace_one(
                         {"_id": existing_doc["_id"]},
-                        {"$set": video_document}
+                        video_document  # Replace entire document to ensure all fields present
                     )
                     recording_doc_id = existing_doc["_id"]
-                    logger.info(f"✅ Updated MongoDB document for session {session_id}: {recording_doc_id}")
+                    logger.info(f"✅ Replaced MongoDB document for session {session_id}: {recording_doc_id}")
                 else:
                     # Insert new document for this session
                     result = self.collection.insert_one(video_document)
