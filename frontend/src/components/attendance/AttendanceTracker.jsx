@@ -1328,10 +1328,46 @@ const AttendanceTracker = ({
     )
   );
 
-  const renderToastNotifications = () => (
-    <Snackbar open={toastOpen} autoHideDuration={5000} onClose={handleToastClose} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
-      <Alert onClose={handleToastClose} severity={toastSeverity === "violation" ? "warning" : toastSeverity} variant={toastVariant} sx={{ width: '100%', boxShadow: 3, fontWeight: 600 }}
-        icon={toastMessage.includes("Identity") ? <PersonOff /> : toastSeverity === "error" ? <ErrorIcon /> : toastSeverity === "warning" ? <Warning /> : undefined}>
+const renderToastNotifications = () => (
+    <Snackbar
+      open={toastOpen}
+      autoHideDuration={5000}
+      onClose={handleToastClose}
+      anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+      sx={{
+        zIndex: 9999,
+        top: '80px !important',
+        '& .MuiSnackbarContent-root': {
+          minWidth: 'auto',
+        },
+      }}
+    >
+      <Alert
+        onClose={handleToastClose}
+        severity={toastSeverity === "violation" ? "warning" : toastSeverity}
+        variant="filled"
+        sx={{
+          width: '100%',
+          minWidth: 320,
+          maxWidth: 500,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
+          fontWeight: 600,
+          fontSize: '0.85rem',
+          borderRadius: '10px',
+          '& .MuiAlert-icon': {
+            fontSize: '22px',
+          },
+          '& .MuiAlert-action': {
+            paddingTop: 0,
+          },
+        }}
+        icon={
+          toastMessage.includes("Identity") ? <PersonOff /> :
+          toastSeverity === "error" ? <ErrorIcon /> :
+          toastSeverity === "warning" ? <Warning /> :
+          undefined
+        }
+      >
         {toastMessage}
       </Alert>
     </Snackbar>
