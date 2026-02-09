@@ -1212,6 +1212,7 @@ def validate_email(request):
     except Exception as e:
         return JsonResponse({"error": "Validation failed"}, status=500)
 
+
 @require_http_methods(["POST"])
 @csrf_exempt
 def Register_User(request):
@@ -1385,9 +1386,31 @@ def Register_User(request):
     # ========================================================================
     # ✅ FIX 3: Use proper transaction with rollback on any failure
     # ========================================================================
+    # user_id = None
+    # photo_result = None
+    # embedding_id = None
+
+    # ========================================================================
+    # ✅ VALIDATE FACE BEFORE STARTING TRANSACTION
+    # ========================================================================
+    face_validation = None
+    if data.get('profile_photo'):
+        logger.info("Validating face in captured photo before registration...")
+        face_validation = validate_human_face(data['profile_photo'])
+        
+        if not face_validation['valid']:
+            logger.error(f"❌ Face validation failed: {face_validation['error']}")
+            return JsonResponse({"Error": face_validation['error']}, status=400)
+        
+        logger.info(f"✅ Face validated: det_score={face_validation['det_score']:.2f}, faces={face_validation['face_count']}")
+
+    # ========================================================================
+    # ✅ FIX 3: Use proper transaction with rollback on any failure
+    # ========================================================================
     user_id = None
     photo_result = None
     embedding_id = None
+
     
     try:
         with transaction.atomic():
@@ -1424,21 +1447,8 @@ def Register_User(request):
                 # ============================================================
                 # STORE REGISTRATION PHOTO IN S3 (PERMANENT)
                 # ============================================================
-                # if data.get('profile_photo'):
-                #     logger.info(f"Storing registration photo for user {user_id}...")
-                #     photo_result = store_profile_photo_s3(user_id, data['profile_photo'])
-                # ============================================================
-                # ✅ VALIDATE HUMAN FACE BEFORE STORING (NEW)
-                # ============================================================
                 if data.get('profile_photo'):
-                    logger.info(f"Validating face in captured photo for user {user_id}...")
-                    
-                    face_validation = validate_human_face(data['profile_photo'])
-                    
-                    if not face_validation['valid']:
-                        logger.error(f"❌ Face validation failed for user {user_id}: {face_validation['error']}")
-                        raise Exception(face_validation['error'])
-                    
+            
                     logger.info(f"✅ Face validated: det_score={face_validation['det_score']:.2f}, faces={face_validation['face_count']}")
                     
                     # ============================================================
@@ -1446,7 +1456,7 @@ def Register_User(request):
                     # ============================================================
                     logger.info(f"Storing registration photo for user {user_id}...")
                     photo_result = store_profile_photo_s3(user_id, data['profile_photo'])
-                   
+                    
                     if photo_result:
                         # Update profile_photo_id (PERMANENT registration photo)
                         cursor.execute(
@@ -1550,6 +1560,7 @@ def Register_User(request):
     
     logger.info(f"✓✓✓ Registration completed for user {user_id}")
     return JsonResponse(response_data, status=201)
+
 
 @require_http_methods(["GET"])
 @csrf_exempt
