@@ -2618,12 +2618,16 @@ def get_all_videos(request):
         meeting_id = request.GET.get('meeting_id')
         meeting_type = request.GET.get('meeting_type')  # ✅ NEW PARAMETER
 
-        # Build query filter - ONLY SHOW FINAL VIDEOS
-        query_filter = {"is_final_video": True}
-        
+        # Build query filter - ONLY SHOW FINAL VIDEOS, EXCLUDE METADATA
+        query_filter = {
+            "is_final_video": True,
+            "processing_status": {"$exists": True},  # ✅ Must have processing status
+            "pending_name_update": {"$ne": True}     # ✅ CRITICAL: Exclude custom name metadata
+        }
+
         if meeting_id:
             query_filter['meeting_id'] = meeting_id
-        
+
         # ✅ NEW: Filter by meeting type
         if meeting_type:
             if meeting_type in ['CalendarMeeting', 'ScheduleMeeting', 'InstantMeeting']:
