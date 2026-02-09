@@ -591,15 +591,21 @@ class TimelineManager:
 class StreamingRecordingWithChunks:
     """Production-ready streaming recorder with constant memory"""
     
-    def __init__(self, meeting_id: str, target_fps: int = 20):
+    def __init__(self, meeting_id: str, target_fps: int = 20, session_id: str = None):  # ✅ NEW: Accept session_id
         self.meeting_id = meeting_id
         self.target_fps = target_fps
         
-        # ✅ CRITICAL FIX: Add unique session ID for multiple recordings in same meeting
-        import uuid
-        self.session_id = str(uuid.uuid4())[:8]  # Short unique ID
-        self.s3_prefix = f"{S3_FOLDERS['recordings_temp']}/{meeting_id}/{self.session_id}"
+        # ✅ FIXED: Use passed session_id or generate new one
+        if session_id:
+            self.session_id = session_id
+            logger.info(f"✅ Using provided session_id: {session_id}")
+        else:
+            import uuid
+            self.session_id = str(uuid.uuid4())[:8]
+            logger.warning(f"⚠️ No session_id provided, generated new one: {self.session_id}")
         
+        self.s3_prefix = f"{S3_FOLDERS['recordings_temp']}/{meeting_id}/{self.session_id}"
+
         # Single timeline for entire recording
         self.timeline = TimelineManager()
         
@@ -1547,8 +1553,9 @@ class FixedRecordingBot:
     """Fixed recording bot with FAST FRAME DUPLICATION"""
     
     def __init__(self, room_url: str, token: str, room_name: str, meeting_id: str,
-             result_queue: queue.Queue, stop_event: threading.Event, target_fps: int = 20):
-    
+         result_queue: queue.Queue, stop_event: threading.Event, target_fps: int = 20,
+         session_id: str = None, recording_doc_id: str = None):  # ✅ NEW: Accept session_id and recording_doc_id
+
         self.room_url = room_url
         self.token = token
         self.room_name = room_name
@@ -1556,12 +1563,14 @@ class FixedRecordingBot:
         self.result_queue = result_queue
         self.stop_event = stop_event
         self.target_fps = target_fps
-        
+        self.session_id = session_id  # ✅ NEW: Store session_id
+        self.recording_doc_id = recording_doc_id  # ✅ NEW: Store recording_doc_id
         self.room = None
         self.is_connected = False
         
         # NEW: Production recorder with timeline
-        self.stream_recorder = StreamingRecordingWithChunks(meeting_id, target_fps)
+        self.stream_recorder = StreamingRecordingWithChunks(meeting_id, target_fps, session_id=self.session_id)  # ✅ FIXED: Pass session_id
+        logger.info(f"✅ StreamingRecordingWithChunks initialized with session_id: {self.session_id}")
         
         self.active_video_streams = {}
         self.active_audio_streams = {}
@@ -2124,15 +2133,18 @@ class FixedGoogleMeetRecorder:
                 logger.warning("Redis not available, using in-memory only")
                 return False
             
-            # ✅ CRITICAL: Get session_id from bot instance
+            # ✅ FIXED: Get session_id from bot instance - ensure it exists
             bot_instance = recording_data.get("bot_instance")
             session_id = None
-            if bot_instance and hasattr(bot_instance, 'stream_recorder'):
-                session_id = getattr(bot_instance.stream_recorder, 'session_id', None)
+            if bot_instance:
+                if hasattr(bot_instance, 'stream_recorder') and bot_instance.stream_recorder:
+                    session_id = getattr(bot_instance.stream_recorder, 'session_id', None)
             
             if not session_id:
-                logger.warning(f"⚠️ No session_id found for {meeting_id}, using legacy key")
-            
+                logger.error(f"❌ CRITICAL: No session_id found for {meeting_id} - this will cause issues!")
+                # Don't save to Redis without session_id
+                return False
+                        
             # Convert non-serializable objects to strings
             redis_data = {
                 "meeting_id": meeting_id,
@@ -2371,6 +2383,30 @@ class FixedGoogleMeetRecorder:
         monitor_thread = threading.Thread(target=monitor_loop, daemon=True, name="RedisStopMonitor")
         monitor_thread.start()
         logger.info("✅ Redis stop monitor started for cross-pod requests")
+
+    def store_custom_recording_name(self, meeting_id: str, session_id: str, custom_name: str) -> bool:
+        """Store custom recording name in the recording document itself"""
+        try:
+            # Update the incomplete recording document with custom name
+            result = self.collection.update_one(
+                {
+                    "meeting_id": meeting_id,
+                    "session_id": session_id,
+                    "is_final_video": False
+                },
+                {"$set": {"custom_recording_name": custom_name}}
+            )
+            
+            if result.modified_count > 0:
+                logger.info(f"✅ Stored custom name '{custom_name}' for session {session_id}")
+                return True
+            else:
+                logger.warning(f"⚠️ Could not find document to update custom name for session {session_id}")
+                return False
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to store custom name: {e}")
+            return False
         
     def generate_recorder_token(self, room_name: str, recorder_identity: str) -> str:
         """Generate JWT token for recording bot - ONLY screen share and microphone"""
@@ -2437,24 +2473,35 @@ class FixedGoogleMeetRecorder:
         
         try:
             timestamp = int(time.time())
+            
+            # ✅ FIXED: Generate session_id BEFORE creating document
+            import uuid
+            session_id = str(uuid.uuid4())[:8]  # Generate unique session ID
+            
             recording_metadata = {
                 "meeting_id": meeting_id,
+                "session_id": session_id,  # ✅ NEW: Add session_id immediately
+                "recording_sequence": timestamp,  # ✅ NEW: Add recording sequence
                 "host_user_id": host_user_id,
                 "room_name": room_name,
                 "recording_status": "starting",
                 "recording_type": "fast_google_meet",
                 "target_fps": self.target_fps,
                 "start_time": datetime.now(),
-                "created_at": datetime.now()
+                "created_at": datetime.now(),
+                "is_final_video": False,  # ✅ NEW: Mark as incomplete initially
+                "processing_status": "pending"  # ✅ NEW: Mark as pending
             }
             
             result = self.collection.insert_one(recording_metadata)
             recording_doc_id = str(result.inserted_id)
             
+            logger.info(f"✅ Created initial recording document with session_id: {session_id}, doc_id: {recording_doc_id}")
             recorder_identity = f"fast_recorder_{meeting_id}_{timestamp}"
-            
+
+            # ✅ NEW: Pass session_id to recording bot
             success, error_msg, bot_instance = self._start_fast_recording(
-                room_name, meeting_id, host_user_id, recording_doc_id, recorder_identity
+                room_name, meeting_id, host_user_id, recording_doc_id, recorder_identity, session_id
             )
 
             if success:
@@ -2500,21 +2547,22 @@ class FixedGoogleMeetRecorder:
             }
 
     def _start_fast_recording(self, room_name: str, meeting_id: str, host_user_id: str,
-                           recording_doc_id: str, recorder_identity: str) -> Tuple[bool, Optional[str], Optional[object]]:
+                       recording_doc_id: str, recorder_identity: str, session_id: str) -> Tuple[bool, Optional[str], Optional[object]]:
         """Start FAST recording process with proper bot instance storage"""
         try:
             recorder_token = self.generate_recorder_token(room_name, recorder_identity)
-            
+
             result_queue = queue.Queue()
             stop_event = threading.Event()
-            
+
             # ✅ CRITICAL: Use a holder dict to pass bot instance back from thread
             bot_instance_holder = {}  # Will be filled by the thread with 'bot' key
-            
+
+            # ✅ NEW: Pass session_id to recording thread
             future = self.thread_pool.submit(
                 self._run_fast_recording_task_with_bot_return,
                 self.livekit_wss_url, recorder_token, room_name, meeting_id,
-                result_queue, stop_event, self.target_fps, bot_instance_holder
+                result_queue, stop_event, self.target_fps, bot_instance_holder, session_id, recording_doc_id
             )
             
             try:
@@ -2606,9 +2654,9 @@ class FixedGoogleMeetRecorder:
                 loop_manager.force_cleanup_loop(loop, identifier)
 
     def _run_fast_recording_task_with_bot_return(self, room_url: str, token: str, room_name: str,
-                                               meeting_id: str, result_queue: queue.Queue, 
-                                               stop_event: threading.Event, target_fps: int,
-                                               bot_instance_holder: dict):
+                                           meeting_id: str, result_queue: queue.Queue, 
+                                           stop_event: threading.Event, target_fps: int,
+                                           bot_instance_holder: dict, session_id: str, recording_doc_id: str):
         """Run FAST recording task and return bot instance via holder dict"""
         identifier = f"fast_recording_{meeting_id}"
         loop = None
@@ -2626,11 +2674,15 @@ class FixedGoogleMeetRecorder:
                 meeting_id=meeting_id,
                 result_queue=result_queue,
                 stop_event=stop_event,
-                target_fps=target_fps
+                target_fps=target_fps,
+                session_id=session_id,  # ✅ NEW: Pass session_id
+                recording_doc_id=recording_doc_id  # ✅ NEW: Pass recording_doc_id
             )
-            
+
             # ✅ CRITICAL: Store bot in holder BEFORE running so pause can access it
             bot_instance_holder['bot'] = bot
+            logger.info(f"✅ Bot instance created with session_id: {session_id}, doc_id: {recording_doc_id}")
+
             logger.info(f"✅ Bot instance stored in holder for {meeting_id}")
             
             result = loop_manager.safe_run_until_complete(
@@ -3252,10 +3304,10 @@ class FixedGoogleMeetRecorder:
             logger.info(f"✅ Recording file ready: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB)")
             
             # ==================== UPLOAD TO S3 ====================
-            # ✅ CRITICAL FIX: Include session ID to prevent overwriting previous recordings
+            # ✅ CRITICAL FIX: Use session-based S3 path for proper session extraction in process_video_sync
             session_id = recording_info.get("bot_instance").stream_recorder.session_id if recording_info.get("bot_instance") else "unknown"
             timestamp = int(time.time())
-            final_s3_key = f"videos/{meeting_id}_{session_id}_{timestamp}.mp4"
+            final_s3_key = f"videos/{meeting_id}/{session_id}/recording_{meeting_id}_{session_id}_{timestamp}.mp4"
 
             try:
                 logger.info(f"📤 Uploading merged file to S3: {final_s3_key}")
@@ -3335,48 +3387,25 @@ class FixedGoogleMeetRecorder:
             
             # ==================== GENERATE FILENAME ====================
             # ✅ CRITICAL FIX: Include date only (no time) to differentiate multiple recordings
-            timestamp_str = datetime.now().strftime("%d-%m-%Y")  # Changed from "%Y%m%d_%H%M%S" to "%d-%m-%Y"
+            timestamp_str = datetime.now().strftime("%d-%m-%Y")
             custom_recording_name = None
             try:
-                from bson import ObjectId
-                
-                # ✅ CRITICAL FIX: Get the recording start timestamp to match with custom name
-                recording_start_time = recording_info.get("start_time")
-                if recording_start_time:
-                    if isinstance(recording_start_time, datetime):
-                        recording_timestamp = int(recording_start_time.timestamp())
-                    else:
-                        recording_timestamp = int(recording_start_time)
-                else:
-                    recording_timestamp = timestamp  # Use current timestamp as fallback
-                
-                # Query for custom name that matches THIS recording session
-                # Try timestamp match first (within 10 second window for clock skew)
-                custom_name_doc = collection.find_one({
+                # ✅ SIMPLIFIED: Query main collection for incomplete document with custom name
+                custom_name_doc = self.collection.find_one({
                     "meeting_id": meeting_id,
-                    "pending_name_update": True,
-                    "recording_timestamp": {
-                        "$gte": recording_timestamp - 10,
-                        "$lte": recording_timestamp + 10
-                    }
+                    "session_id": session_id,
+                    "is_final_video": False
                 })
                 
-                # Fallback: Get most recent custom name for this meeting if exact match not found
-                if not custom_name_doc:
-                    custom_name_doc = collection.find_one(
-                        {
-                            "meeting_id": meeting_id,
-                            "pending_name_update": True
-                        },
-                        sort=[("name_stored_at", -1)]  # Get most recent
-                    )
-                
-                if custom_name_doc:
+                if custom_name_doc and custom_name_doc.get("custom_recording_name"):
                     custom_recording_name = custom_name_doc.get("custom_recording_name")
-                    logger.info(f"📝 Custom name: {custom_recording_name}")
+                    logger.info(f"✅ Found custom name for session {session_id}: {custom_recording_name}")
+                else:
+                    logger.info(f"ℹ️ No custom name found for session {session_id}")
+                    
             except Exception as e:
-                logger.warning(f"Custom name check failed: {e}")
-
+                logger.warning(f"⚠️ Custom name check failed: {e}")
+                custom_recording_name = None
             if custom_recording_name:
                 filename = f"{custom_recording_name}_{timestamp_str}.mp4"
             else:
@@ -3415,27 +3444,50 @@ class FixedGoogleMeetRecorder:
                 "embedded_subtitles": False
             }
             
-            # Insert or update MongoDB
+            # ✅ FIXED: ALWAYS UPDATE, never create new document
             from bson import ObjectId
             recording_doc_id = recording_info.get("recording_doc_id")
-            
+            session_id = video_document.get("session_id")
+
             try:
+                updated = False
+                
+                # Strategy 1: Try to update by recording_doc_id (most reliable)
                 if recording_doc_id and len(str(recording_doc_id)) == 24:
-                    # Update existing document
-                    self.collection.update_one(
+                    result = self.collection.update_one(
                         {"_id": ObjectId(recording_doc_id)},
                         {"$set": video_document}
                     )
-                    logger.info(f"✅ Updated existing MongoDB document")
-                else:
-                    # Insert new document
+                    if result.modified_count > 0 or result.matched_count > 0:
+                        logger.info(f"✅ Updated MongoDB document by recording_doc_id: {recording_doc_id}")
+                        updated = True
+                
+                # Strategy 2: Try to update by session_id (fallback)
+                if not updated and session_id:
+                    result = self.collection.update_one(
+                        {"meeting_id": meeting_id, "session_id": session_id},
+                        {"$set": video_document}
+                    )
+                    if result.modified_count > 0 or result.matched_count > 0:
+                        logger.info(f"✅ Updated MongoDB document by session_id: {session_id}")
+                        updated = True
+                
+                # Strategy 3: CRITICAL ERROR - should never happen
+                if not updated:
+                    logger.error(f"❌ CRITICAL: Could not find document to update!")
+                    logger.error(f"   recording_doc_id: {recording_doc_id}")
+                    logger.error(f"   session_id: {session_id}")
+                    logger.error(f"   This indicates a serious bug - creating new document as emergency fallback")
+                    
                     result = self.collection.insert_one(video_document)
                     recording_doc_id = result.inserted_id
-                    logger.info(f"✅ Created new MongoDB document: {recording_doc_id}")
+                    logger.error(f"⚠️ EMERGENCY: Created new MongoDB document: {recording_doc_id}")
+                    
             except Exception as db_error:
                 logger.error(f"❌ MongoDB operation failed: {db_error}")
-                # Continue anyway - notification can still work
-            
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                
             # ==================== SEND NOTIFICATION ====================
             try:
                 logger.info(f"📧 Sending notification for {meeting_id}...")

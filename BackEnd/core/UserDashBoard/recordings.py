@@ -2405,17 +2405,44 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             session_id = None
             recording_sequence = int(time.time())  # Default timestamp
 
-            # Try to extract session_id from video_s3_key or video_path
+            # Strategy 1: Extract from new session-based S3 path
+            # Format: videos/meeting_id/session_id/recording_meeting_id_session_id_timestamp.mp4
             if video_s3_key and "/" in video_s3_key:
-                # Format: videos/meeting_id/session_id/recording_meeting_id_session_id.mp4
                 path_parts = video_s3_key.split("/")
-                if len(path_parts) >= 3:
-                    # Check if middle part looks like a UUID (session_id)
+                if len(path_parts) >= 4:  # New format: videos/meeting_id/session_id/filename
                     potential_session = path_parts[-2]
                     if len(potential_session) == 8 and "-" not in potential_session:
                         session_id = potential_session
-                        logging.info(f"✅ Extracted session_id from S3 key: {session_id}")
+                        logging.info(f"✅ Extracted session_id from S3 path (new format): {session_id}")
 
+            # Strategy 2: Extract from old format in filename
+            # Format: videos/meeting_id_session_id_timestamp.mp4
+            if not session_id and video_s3_key:
+                filename = os.path.basename(video_s3_key)
+                # Pattern: meeting_id_session_id_timestamp.mp4
+                parts = filename.replace('.mp4', '').split('_')
+                if len(parts) >= 2:
+                    # The session_id is typically the second-to-last part before timestamp
+                    for part in parts:
+                        if len(part) == 8 and part.isalnum() and "-" not in part:
+                            # Verify it's not the meeting_id or timestamp
+                            if part != meeting_id and not part.isdigit():
+                                session_id = part
+                                logging.info(f"✅ Extracted session_id from filename (old format): {session_id}")
+                                break
+
+            # Strategy 3: Check if already in video_path
+            if not session_id and video_path:
+                if "session_id" in os.path.basename(video_path):
+                    # Extract from temp recording path if available
+                    import re
+                    match = re.search(r'_([a-f0-9]{8})_', video_path)
+                    if match:
+                        session_id = match.group(1)
+                        logging.info(f"✅ Extracted session_id from video_path: {session_id}")
+
+            if not session_id:
+                logging.warning(f"⚠️ Could not extract session_id from S3 key: {video_s3_key}")
             video_document = {
                 "meeting_id": meeting_id,
                 "session_id": session_id,  # ✅ NEW: Track recording session
@@ -2461,112 +2488,49 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             
             logging.info(f"💾 Saving video data to MongoDB...")
 
-            # ✅ CRITICAL FIX: ALWAYS query by session_id if available
+            # ✅ FIXED: ALWAYS UPDATE, never create duplicate
             if session_id:
-                # Session-based recording - update/create with session_id
                 query_filter = {
                     "meeting_id": meeting_id,
-                    "session_id": session_id  # ✅ EXACT match on session
+                    "session_id": session_id
                 }
                 logging.info(f"Querying for existing doc with session_id: {session_id}")
                 
                 existing_doc = collection.find_one(query_filter)
                 
                 if existing_doc:
-                    # This is the SAME recording being reprocessed - UPDATE it
+                    # UPDATE existing document
                     collection.replace_one({"_id": existing_doc["_id"]}, video_document)
-                    logging.info(f"✅ Updated existing document for session: {session_id}")
+                    logging.info(f"✅ Updated existing MongoDB document for session {session_id}")
                 else:
-                    # New recording session - CREATE it
+                    # ✅ CRITICAL ERROR: Document should exist from finalization
+                    logging.error(f"❌ CRITICAL: No document found for session {session_id}!")
+                    logging.error(f"   This should have been created in start_stream_recording")
+                    logging.error(f"   Creating emergency document as fallback")
+                    
+                    # Emergency fallback - create document
                     collection.insert_one(video_document)
-                    logging.info(f"✅ Created new document for session: {session_id}")
+                    logging.error(f"⚠️ EMERGENCY: Created new MongoDB document for session {session_id}")
+                    
             else:
-                # Legacy recording without session_id - fall back to old behavior
+                # Legacy recording without session_id
+                # ONLY match documents that also have session_id: None
                 query_filter = {
                     "meeting_id": meeting_id,
                     "user_id": user_id,
                     "is_final_video": True,
-                    "session_id": None  # ✅ Only match old recordings without session_id
+                    "session_id": None  # ✅ CRITICAL: Only match other legacy recordings
                 }
                 
                 existing_doc = collection.find_one(query_filter)
                 
                 if existing_doc:
                     collection.replace_one({"_id": existing_doc["_id"]}, video_document)
-                    logging.info(f"✅ Updated legacy document (no session_id)")
+                    logging.info(f"✅ Updated existing MongoDB document")
                 else:
                     collection.insert_one(video_document)
-                    logging.info(f"✅ Created new legacy document (no session_id)")
-                    
-            # ✅ CORRECTED: Custom name cleanup using session_id extracted earlier
-            try:
-                # session_id was already extracted above (around line 870)
-                # We can use it here for cleanup
-                
-                if session_id:
-                    # Strategy 1: Try to find custom name by session_id match
-                    custom_name_to_delete = collection.find_one({
-                        "meeting_id": meeting_id,
-                        "pending_name_update": True,
-                        "custom_name_session_id": session_id  # Match exact session
-                    })
-                    
-                    if custom_name_to_delete:
-                        delete_result = collection.delete_one({"_id": custom_name_to_delete["_id"]})
-                        if delete_result.deleted_count > 0:
-                            logging.info(f"✅ Deleted custom name for session {session_id}")
-                        else:
-                            logging.warning(f"⚠️ Failed to delete custom name for session {session_id}")
-                    else:
-                        # Strategy 2: Fallback - match by timestamp if session_id not stored
-                        # Get the MongoDB document we just created to find its timestamp
-                        video_doc = collection.find_one({
-                            "meeting_id": meeting_id,
-                            "session_id": session_id
-                        })
-                        
-                        if video_doc and video_doc.get("timestamp"):
-                            doc_timestamp = video_doc["timestamp"]
-                            recording_timestamp = int(doc_timestamp.timestamp() if isinstance(doc_timestamp, datetime) else doc_timestamp)
-                            
-                            delete_result = collection.delete_one({
-                                "meeting_id": meeting_id,
-                                "pending_name_update": True,
-                                "recording_timestamp": {
-                                    "$gte": recording_timestamp - 10,
-                                    "$lte": recording_timestamp + 10
-                                }
-                            })
-                            
-                            if delete_result.deleted_count > 0:
-                                logging.info(f"✅ Deleted custom name by timestamp match (session: {session_id})")
-                            else:
-                                logging.info(f"ℹ️ No custom name found for this recording (session: {session_id})")
-                        else:
-                            logging.info(f"ℹ️ No custom name cleanup needed for session {session_id}")
-                else:
-                    # Legacy recording without session_id
-                    # Only delete if there's exactly ONE pending custom name for this meeting
-                    pending_names = list(collection.find({
-                        "meeting_id": meeting_id,
-                        "pending_name_update": True
-                    }))
-                    
-                    if len(pending_names) == 1:
-                        # Safe to delete - only one pending name
-                        delete_result = collection.delete_one({"_id": pending_names[0]["_id"]})
-                        if delete_result.deleted_count > 0:
-                            logging.info(f"✅ Deleted custom name for legacy recording (no session_id)")
-                    elif len(pending_names) > 1:
-                        logging.warning(f"⚠️ Multiple pending names found ({len(pending_names)}) - skipping cleanup to be safe")
-                    else:
-                        logging.info(f"ℹ️ No custom name to clean up")
-                        
-            except Exception as cleanup_error:
-                logging.warning(f"⚠️ Custom name cleanup failed: {cleanup_error}")
-                import traceback
-                logging.warning(f"Cleanup traceback: {traceback.format_exc()}")
-                
+                    logging.info(f"✅ Created new MongoDB document")
+
             # ========== SEND NOTIFICATIONS ==========
             logging.info(f"📧 Sending notifications...")
             try:
