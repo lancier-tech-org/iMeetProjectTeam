@@ -25,6 +25,7 @@ import {
   styled,
   useMediaQuery,
   useTheme,
+  Snackbar,
 } from "@mui/material";
 import {
   Visibility,
@@ -192,6 +193,7 @@ const Register = () => {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [profilePhoto, setProfilePhoto] = useState(null);
   const profilePhotoRef = useRef(null);
+  const [livenessMessage, setLivenessMessage] = useState(null);
   const [step2Touched, setStep2Touched] = useState(false);
   const [emailValidating, setEmailValidating] = useState(false);
   const [emailError, setEmailError] = useState("");
@@ -485,7 +487,14 @@ const Register = () => {
         state: { registrationSuccess: true, email: formData.email },
       });
     } catch (error) {
+      const msg = error.response?.data?.message || error.message || "Registration failed. Please try again.";
       setApiError(error.message || "Registration failed. Please try again.");
+      if(msg.toLowerCase().includes("email")) {
+        setProfilePhoto(null);
+        profilePhotoRef.current = null;
+        setActiveStep(0);
+        setCameraOpen(true);
+      }
     }
   };
 
@@ -1465,12 +1474,15 @@ const Register = () => {
           </Box>
         </Grid>
       </Grid>
-
-      <CameraCapture
+<CameraCapture
         open={cameraOpen}
-        onClose={() => setCameraOpen(false)}
+        onClose={() => {
+          setCameraOpen(false);
+          setLivenessMessage(null);
+        }}
         onCapture={handlePhotoCapture}
         currentPhoto={profilePhoto || profilePhotoRef.current}
+        onInstruction={(msg) => setLivenessMessage(msg)}
       />
     </Box>
   );

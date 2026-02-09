@@ -3,6 +3,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Box, Button, Dialog, DialogContent, DialogActions, Typography, Stack,
   Alert, Fade, Zoom, useMediaQuery, useTheme, LinearProgress, Chip,
+  Snackbar,
 } from '@mui/material';
 import {
   CameraAlt, Refresh, CheckCircle, Videocam, VideocamOff,
@@ -13,32 +14,21 @@ import * as faceapi from 'face-api.js';
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
-const FACE_API_MODEL_URL = '/models'; // Public folder: public/models/
-const DETECTION_INTERVAL_MS = 150;    // How often to run face detection (ms)
-const OVAL_FIT_THRESHOLD = 0.15;      // How close face must be to oval (15% tolerance)
-// ========================== UPDATED ==========================
-// CHANGE 1: Increased from 0.5 → 0.65 to reject background objects/walls/shadows
+const FACE_API_MODEL_URL = '/models';
+const DETECTION_INTERVAL_MS = 150;
+const OVAL_FIT_THRESHOLD = 0.15;
 const MIN_FACE_CONFIDENCE = 0.5;
-// ========================== NEW ==============================
-// CHANGE 2: Face must be stable inside oval for N consecutive good frames before liveness starts
 const CONSECUTIVE_FRAMES_REQUIRED = 5;
-// CHANGE 3: Auto-capture delay after all liveness challenges pass (ms)
 const AUTO_CAPTURE_DELAY_MS = 1500;
-// CHANGE 4: Max retries for model loading
 const MODEL_LOAD_MAX_RETRIES = 3;
-// CHANGE 5: Expression variance threshold for anti-spoofing (photos have frozen expressions)
-const EXPRESSION_VARIANCE_WINDOW = 8; // Track last N expression readings
-const MIN_EXPRESSION_VARIANCE = 0.02; // Minimum variance to confirm live face (not a static photo)
-// =============================================================
+const EXPRESSION_VARIANCE_WINDOW = 8;
+const MIN_EXPRESSION_VARIANCE = 0.02;
 
-// Liveness challenge configuration
+// How many consecutive "straight face" frames needed before capture
+const STRAIGHT_FACE_FRAMES_REQUIRED = 5;
+
+// Liveness challenge configuration (NO BLINK - only turn + smile)
 const LIVENESS_CHALLENGES = [
-  {
-    id: 'blink',
-    instruction: 'Please blink your eyes',
-    icon: 'blink',
-    detectFn: 'detectBlink',
-  },
   {
     id: 'turnLeft',
     instruction: 'Turn your head slightly left',
@@ -56,7 +46,8 @@ const LIVENESS_CHALLENGES = [
 // ============================================================================
 // COMPONENT
 // ============================================================================
-const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
+// const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
+  const CameraCapture = ({ open, onClose, onCapture, currentPhoto, onInstruction }) => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
 
@@ -65,18 +56,12 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
   const canvasRef = useRef(null);
   const overlayCanvasRef = useRef(null);
   const detectionIntervalRef = useRef(null);
-  const prevEyeStateRef = useRef({ leftOpen: true, rightOpen: true });
-  const blinkCountRef = useRef(0);
-  // ========================== NEW REFS ==========================
-  // CHANGE 6: Track consecutive good frames for stable face detection
   const consecutiveGoodFramesRef = useRef(0);
-  // CHANGE 7: Auto-capture timer ref for cleanup
   const autoCaptureTimerRef = useRef(null);
-  // CHANGE 8: Track expression history for anti-spoofing variance check
   const expressionHistoryRef = useRef([]);
-  // CHANGE 9: Track model load retry count
   const modelLoadRetryCountRef = useRef(0);
-  // ==============================================================
+  // Track consecutive straight face frames after challenges pass
+  const straightFaceFramesRef = useRef(0);
 
   // Camera states
   const [stream, setStream] = useState(null);
@@ -90,15 +75,11 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [faceDetected, setFaceDetected] = useState(false);
   const [faceInOval, setFaceInOval] = useState(false);
-  const [ovalColor, setOvalColor] = useState('red'); // 'red' | 'green'
+  const [ovalColor, setOvalColor] = useState('red');
   const [faceStatus, setFaceStatus] = useState('No face detected');
   const [multipleFaces, setMultipleFaces] = useState(false);
-  // ========================== NEW STATE ==========================
-  // CHANGE 10: Model load error state with retry capability
   const [modelLoadError, setModelLoadError] = useState(false);
-  // CHANGE 11: Anti-spoofing status message
   const [spoofWarning, setSpoofWarning] = useState('');
-  // ==============================================================
 
   // Liveness states
   const [livenessStarted, setLivenessStarted] = useState(false);
@@ -107,12 +88,16 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
   const [allChallengesPassed, setAllChallengesPassed] = useState(false);
   const [livenessInstruction, setLivenessInstruction] = useState('');
 
+  // Snackbar state for liveness instructions
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
+
+  // Waiting for straight face state
+  const [waitingForStraightFace, setWaitingForStraightFace] = useState(false);
+
   // ============================================================================
   // LOAD FACE-API MODELS
   // ============================================================================
-  // ========================== UPDATED ==========================
-  // CHANGE 12: Added retry mechanism, faceRecognitionNet for better face quality,
-  //            and proper error state management
   const loadModels = useCallback(async () => {
     if (modelsLoaded || modelsLoading) return;
 
@@ -124,14 +109,14 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
       try {
         console.log(`🔄 Loading face-api.js models... (attempt ${retryCount + 1}/${MODEL_LOAD_MAX_RETRIES})`);
         await Promise.all([
-  faceapi.nets.tinyFaceDetector.loadFromUri(FACE_API_MODEL_URL),
-  faceapi.nets.faceLandmark68Net.loadFromUri(FACE_API_MODEL_URL),
-  faceapi.nets.faceExpressionNet.loadFromUri(FACE_API_MODEL_URL),
-]);
+          faceapi.nets.tinyFaceDetector.loadFromUri(FACE_API_MODEL_URL),
+          faceapi.nets.faceLandmark68Net.loadFromUri(FACE_API_MODEL_URL),
+          faceapi.nets.faceExpressionNet.loadFromUri(FACE_API_MODEL_URL),
+        ]);
         setModelsLoaded(true);
         setModelLoadError(false);
         modelLoadRetryCountRef.current = 0;
-        console.log('✅ Face-api.js models loaded successfully (including faceRecognitionNet)');
+        console.log('✅ Face-api.js models loaded successfully');
       } catch (err) {
         console.error(`❌ Failed to load face-api models (attempt ${retryCount + 1}):`, err);
 
@@ -150,17 +135,14 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
     setModelsLoading(false);
   }, [modelsLoaded, modelsLoading]);
 
-  // CHANGE 13: NEW - Retry model loading manually
   const retryModelLoad = useCallback(() => {
     setModelsLoaded(false);
     setModelsLoading(false);
     setModelLoadError(false);
     setError('');
     modelLoadRetryCountRef.current = 0;
-    // Trigger re-load on next render cycle
     setTimeout(() => loadModels(), 100);
   }, [loadModels]);
-  // ==============================================================
 
   // ============================================================================
   // CAMERA START / STOP
@@ -206,18 +188,14 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
   };
 
   const stopCamera = () => {
-    // Stop detection loop
     if (detectionIntervalRef.current) {
       clearInterval(detectionIntervalRef.current);
       detectionIntervalRef.current = null;
     }
-    // ========================== NEW ==========================
-    // CHANGE 14: Clear auto-capture timer on camera stop
     if (autoCaptureTimerRef.current) {
       clearTimeout(autoCaptureTimerRef.current);
       autoCaptureTimerRef.current = null;
     }
-    // =========================================================
 
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
@@ -241,22 +219,22 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
     setOvalColor('red');
     setFaceStatus('No face detected');
     setMultipleFaces(false);
-    blinkCountRef.current = 0;
-    prevEyeStateRef.current = { leftOpen: true, rightOpen: true };
-    // ========================== NEW ==========================
-    // CHANGE 15: Reset new refs on liveness reset
     consecutiveGoodFramesRef.current = 0;
     expressionHistoryRef.current = [];
+    straightFaceFramesRef.current = 0;
+    setWaitingForStraightFace(false);
     setSpoofWarning('');
+    setSnackbarOpen(false);
+    setSnackbarMessage('');
+    if (onInstruction) onInstruction(null);
     if (autoCaptureTimerRef.current) {
       clearTimeout(autoCaptureTimerRef.current);
       autoCaptureTimerRef.current = null;
     }
-    // =========================================================
   };
 
   // ============================================================================
-  // FACE DETECTION LOOP
+  // FACE DETECTION HELPERS
   // ============================================================================
   const getOvalBounds = useCallback(() => {
     if (!videoRef.current) return null;
@@ -264,7 +242,6 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
     const vh = videoRef.current.videoHeight;
     if (!vw || !vh) return null;
 
-    // Oval dimensions (matches the CSS overlay)
     const ovalW = vw * (isMobile ? 0.7 : 0.55);
     const ovalH = vh * (isMobile ? 0.55 : 0.75);
     const cx = vw / 2;
@@ -280,55 +257,41 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
     };
   }, [isMobile]);
 
-  // ========================== UPDATED ==========================
-  // CHANGE 16: Enhanced isFaceInsideOval - now checks ALL 4 edges of the face
-  //            bounding box are inside the oval, not just the center point.
-  //            This ensures the face is FULLY inside, not partially outside.
   const isFaceInsideOval = useCallback(
     (detection) => {
       const oval = getOvalBounds();
       if (!oval) return false;
 
       const box = detection.detection.box;
-
-      // Face bounding box corners
       const faceLeft = box.x;
       const faceRight = box.x + box.width;
       const faceTop = box.y;
       const faceBottom = box.y + box.height;
-
-      // Face center
       const faceCX = box.x + box.width / 2;
       const faceCY = box.y + box.height / 2;
 
-      // Oval center and semi-axes
       const ovalCX = oval.cx;
       const ovalCY = oval.cy;
-      const a = oval.width / 2; // semi-major axis
-      const b = oval.height / 2; // semi-minor axis
+      const a = oval.width / 2;
+      const b = oval.height / 2;
 
-      // Helper: check if a point is inside the ellipse
       const isPointInsideOval = (px, py) => {
         const nx = (px - ovalCX) / a;
         const ny = (py - ovalCY) / b;
         return (nx * nx + ny * ny) <= 1.0;
       };
 
-      // CHECK 1: Face center must be well within the oval
       const centerNX = (faceCX - ovalCX) / a;
       const centerNY = (faceCY - ovalCY) / b;
       const centerDistance = centerNX * centerNX + centerNY * centerNY;
       const isCentered = centerDistance < (1 - OVAL_FIT_THRESHOLD);
 
-      // CHECK 2: ALL four corners of the face bounding box must be inside the oval
-      // This ensures the face is FULLY inside, not just centered
       const allCornersInside =
         isPointInsideOval(faceLeft, faceTop) &&
         isPointInsideOval(faceRight, faceTop) &&
         isPointInsideOval(faceLeft, faceBottom) &&
         isPointInsideOval(faceRight, faceBottom);
 
-      // CHECK 3: Face size relative to oval (unchanged from original)
       const faceToOvalWidthRatio = box.width / oval.width;
       const faceToOvalHeightRatio = box.height / oval.height;
       const isCorrectSize =
@@ -341,16 +304,11 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
     },
     [getOvalBounds]
   );
-  // ==============================================================
 
   // ============================================================================
   // ANTI-SPOOFING: Expression Variance Check
   // ============================================================================
-  // ========================== NEW FUNCTION ==========================
-  // CHANGE 17: Detect static/frozen expressions (printed photos, phone screens)
-  //            Real faces have micro-expression fluctuations; photos don't.
   const checkExpressionVariance = useCallback((expressions) => {
-    // Extract the dominant expression value
     const values = [
       expressions.neutral || 0,
       expressions.happy || 0,
@@ -360,101 +318,65 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
     ];
     const dominantValue = Math.max(...values);
 
-    // Add to history
     expressionHistoryRef.current.push(dominantValue);
 
-    // Keep only the last N readings
     if (expressionHistoryRef.current.length > EXPRESSION_VARIANCE_WINDOW) {
       expressionHistoryRef.current = expressionHistoryRef.current.slice(
         -EXPRESSION_VARIANCE_WINDOW
       );
     }
 
-    // Need enough samples to calculate variance
     if (expressionHistoryRef.current.length < EXPRESSION_VARIANCE_WINDOW) {
-      return true; // Not enough data yet, allow through
+      return true;
     }
 
-    // Calculate variance of expression values
     const history = expressionHistoryRef.current;
     const mean = history.reduce((sum, v) => sum + v, 0) / history.length;
     const variance =
       history.reduce((sum, v) => sum + (v - mean) ** 2, 0) / history.length;
 
-    // A real face has natural micro-expression changes (variance > threshold)
-    // A photo/screen shows near-zero variance (frozen expression)
     if (variance < MIN_EXPRESSION_VARIANCE) {
       console.log(`⚠️ Low expression variance: ${variance.toFixed(5)} - possible spoof`);
-      return false; // Suspected spoof
+      return false;
     }
 
-    return true; // Passes variance check
+    return true;
   }, []);
-  // ==============================================================
 
-  // ---- Liveness: Blink Detection ----
-  const getEAR = (eye) => {
-    // Eye Aspect Ratio (EAR)
-    // eye is array of {x, y} points from face landmarks
-    const dist = (a, b) => Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+  // ============================================================================
+  // STRAIGHT FACE DETECTION (for capture after challenges)
+  // ============================================================================
+  const isFaceStraight = useCallback((landmarks, expressions) => {
+    // Check 1: Head is facing forward (nose centered between jaw edges)
+    const nose = landmarks.getNose();
+    const jaw = landmarks.getJawOutline();
+    const noseTip = nose[3];
+    const jawLeft = jaw[0];
+    const jawRight = jaw[jaw.length - 1];
+    const jawWidth = jawRight.x - jawLeft.x;
+    const noseRelativeX = (noseTip.x - jawLeft.x) / jawWidth;
 
-    const vertical1 = dist(eye[1], eye[5]);
-    const vertical2 = dist(eye[2], eye[4]);
-    const horizontal = dist(eye[0], eye[3]);
+    // Straight = between 0.42 and 0.58 (centered)
+    const isForward = noseRelativeX >= 0.42 && noseRelativeX <= 0.58;
 
-    return (vertical1 + vertical2) / (2.0 * horizontal);
-  };
+    // Check 2: Neutral expression (not smiling too much)
+    const happyScore = expressions.happy || 0;
+    const neutralScore = expressions.neutral || 0;
+    const isNeutral = neutralScore > 0.3 && happyScore < 0.5;
 
-  const detectBlink = useCallback((landmarks) => {
-    const leftEye = landmarks.getLeftEye();
-    const rightEye = landmarks.getRightEye();
-
-    const leftEAR = getEAR(leftEye);
-    const rightEAR = getEAR(rightEye);
-    const avgEAR = (leftEAR + rightEAR) / 2;
-
-    const EAR_THRESHOLD = 0.25; // Below this = eyes closed
-    const currentlyClosed = avgEAR < EAR_THRESHOLD;
-
-    const wasOpen = prevEyeStateRef.current.leftOpen;
-
-    if (wasOpen && currentlyClosed) {
-      // Transition from open → closed = blink started
-      prevEyeStateRef.current = { leftOpen: false, rightOpen: false };
-    } else if (!wasOpen && !currentlyClosed) {
-      // Transition from closed → open = blink completed
-      blinkCountRef.current += 1;
-      prevEyeStateRef.current = { leftOpen: true, rightOpen: true };
-      console.log(`👁️ Blink detected! Count: ${blinkCountRef.current}`);
-
-      if (blinkCountRef.current >= 1) {
-        return true; // Challenge passed
-      }
-    } else {
-      prevEyeStateRef.current = {
-        leftOpen: !currentlyClosed,
-        rightOpen: !currentlyClosed,
-      };
-    }
-
-    return false;
+    return isForward && isNeutral;
   }, []);
 
   // ---- Liveness: Head Turn Detection ----
   const detectHeadTurn = useCallback((landmarks) => {
     const nose = landmarks.getNose();
     const jaw = landmarks.getJawOutline();
-
-    // Nose tip X position
-    const noseTip = nose[3]; // tip of nose
+    const noseTip = nose[3];
     const jawLeft = jaw[0];
     const jawRight = jaw[jaw.length - 1];
-
-    // Calculate nose position relative to jaw width
     const jawWidth = jawRight.x - jawLeft.x;
     const noseRelativeX = (noseTip.x - jawLeft.x) / jawWidth;
 
-    // Normal = 0.5 (centered), turned left = < 0.40, turned right = > 0.60
     if (noseRelativeX < 0.38 || noseRelativeX > 0.62) {
       console.log(`↩️ Head turn detected: ratio=${noseRelativeX.toFixed(2)}`);
       return true;
@@ -475,13 +397,18 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
     return false;
   }, []);
 
-  // ---- Main Detection Loop ----
-  // ========================== UPDATED ==========================
-  // CHANGE 18: Enhanced detection loop with:
-  //   - Consecutive frame tracking before starting liveness
-  //   - Expression variance anti-spoofing check
-  //   - Stricter face confidence via inputSize bump
-  //   - Auto-capture trigger when all challenges pass
+  // ============================================================================
+  // SHOW SNACKBAR INSTRUCTION
+  // ============================================================================
+const showInstruction = useCallback((message) => {
+    setSnackbarMessage(message);
+    setSnackbarOpen(true);
+    if (onInstruction) onInstruction(message);
+  }, [onInstruction]);
+
+  // ============================================================================
+  // MAIN DETECTION LOOP
+  // ============================================================================
   const runDetection = useCallback(async () => {
     if (
       !videoRef.current ||
@@ -494,8 +421,6 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
     try {
       const detections = await faceapi
         .detectAllFaces(videoRef.current, new faceapi.TinyFaceDetectorOptions({
-          // CHANGE 19: Increased inputSize from 320 → 416 for better accuracy
-          // and reduced false positives from background objects
           inputSize: 320,
           scoreThreshold: MIN_FACE_CONFIDENCE,
         }))
@@ -509,8 +434,8 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
         setOvalColor('red');
         setFaceStatus('No face detected — look at the camera');
         setMultipleFaces(false);
-        // CHANGE 20: Reset consecutive frames on face loss
         consecutiveGoodFramesRef.current = 0;
+        straightFaceFramesRef.current = 0;
         setSpoofWarning('');
         return;
       }
@@ -522,8 +447,8 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
         setOvalColor('red');
         setFaceStatus(`${detections.length} faces detected — only your face should be visible`);
         setMultipleFaces(true);
-        // CHANGE 21: Reset consecutive frames on multiple faces
         consecutiveGoodFramesRef.current = 0;
+        straightFaceFramesRef.current = 0;
         return;
       }
 
@@ -532,18 +457,15 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
       setMultipleFaces(false);
       const detection = detections[0];
 
-      // ========================== NEW CHECK ==========================
-      // CHANGE 22: Additional confidence check - reject low-score detections
-      // that might be background objects falsely detected as faces
       const detectionScore = detection.detection.score;
       if (detectionScore < MIN_FACE_CONFIDENCE) {
         setFaceInOval(false);
         setOvalColor('red');
         setFaceStatus('Face not clearly visible — ensure good lighting');
         consecutiveGoodFramesRef.current = 0;
+        straightFaceFramesRef.current = 0;
         return;
       }
-      // ==============================================================
 
       // Check if face fits in oval
       const insideOval = isFaceInsideOval(detection);
@@ -552,14 +474,12 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
       if (!insideOval) {
         setOvalColor('red');
         setFaceStatus('Position your face fully inside the oval');
-        // CHANGE 23: Reset consecutive frames when face leaves oval
         consecutiveGoodFramesRef.current = 0;
+        straightFaceFramesRef.current = 0;
         return;
       }
 
-      // ========================== NEW ANTI-SPOOFING ==========================
-      // CHANGE 24: Check expression variance before starting liveness
-      // Photos/screens show frozen expressions with near-zero variance
+      // Anti-spoofing check before liveness
       if (!livenessStarted) {
         const isLikelyLive = checkExpressionVariance(detection.expressions);
         if (!isLikelyLive) {
@@ -571,13 +491,9 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
         }
         setSpoofWarning('');
       }
-      // ====================================================================
 
       // Face is in oval!
       if (!livenessStarted) {
-        // ========================== UPDATED ==========================
-        // CHANGE 25: Require N consecutive good frames before starting liveness
-        // This prevents flickering and ensures stable face detection
         consecutiveGoodFramesRef.current += 1;
 
         if (consecutiveGoodFramesRef.current < CONSECUTIVE_FRAMES_REQUIRED) {
@@ -591,11 +507,7 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
         setFaceStatus('Face detected ✓ Starting verification...');
         setLivenessStarted(true);
         setCurrentChallengeIndex(0);
-        blinkCountRef.current = 0;
-        prevEyeStateRef.current = { leftOpen: true, rightOpen: true };
-        // Reset expression history for liveness phase
         expressionHistoryRef.current = [];
-        // ==============================================================
         return;
       }
 
@@ -604,22 +516,23 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
         const challenge = LIVENESS_CHALLENGES[currentChallengeIndex];
 
         if (!challenge) {
-          // All challenges done!
-          setAllChallengesPassed(true);
-          setOvalColor('green');
-          setFaceStatus('All checks passed ✓ Capturing photo...');
-          setLivenessInstruction('');
+          // All challenges done — now wait for straight face
+        setAllChallengesPassed(true);
+            setOvalColor('green');
+            setFaceStatus('All checks passed ✓ Click Capture Photo');
+            setLivenessInstruction('');
+            showInstruction('✓ Verified! Click Capture Photo');
           return;
         }
 
+        // Show instruction in snackbar
         setLivenessInstruction(challenge.instruction);
-        setOvalColor('green'); // Keep green during challenges
+        showInstruction(challenge.instruction);
+        setOvalColor('green');
 
         let passed = false;
 
-        if (challenge.id === 'blink') {
-          passed = detectBlink(detection.landmarks);
-        } else if (challenge.id === 'turnLeft') {
+        if (challenge.id === 'turnLeft') {
           passed = detectHeadTurn(detection.landmarks);
         } else if (challenge.id === 'smile') {
           passed = detectSmile(detection.expressions);
@@ -632,18 +545,19 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
           const nextIndex = currentChallengeIndex + 1;
           setCurrentChallengeIndex(nextIndex);
 
-          // Reset blink counter for next round
-          blinkCountRef.current = 0;
-          prevEyeStateRef.current = { leftOpen: true, rightOpen: true };
-
           if (nextIndex >= LIVENESS_CHALLENGES.length) {
             setAllChallengesPassed(true);
+            setWaitingForStraightFace(true);
+            straightFaceFramesRef.current = 0;
             setOvalColor('green');
-            setFaceStatus('All checks passed ✓ Capturing photo...');
+            setFaceStatus('Verification passed ✓ Now look straight at the camera');
             setLivenessInstruction('');
+            showInstruction('✓ Verified! Now look straight at the camera');
           }
         }
       }
+
+      
     } catch (err) {
       console.error('Detection error:', err);
     }
@@ -652,11 +566,13 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
     isFaceInsideOval,
     livenessStarted,
     allChallengesPassed,
+    waitingForStraightFace,
     currentChallengeIndex,
-    detectBlink,
     detectHeadTurn,
     detectSmile,
-    checkExpressionVariance, // CHANGE 26: Added to dependency array
+    isFaceStraight,
+    checkExpressionVariance,
+    showInstruction,
   ]);
 
   // ============================================================================
@@ -695,44 +611,24 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
     if (currentPhoto) setCapturedImage(currentPhoto);
   }, [currentPhoto]);
 
-  // ========================== NEW EFFECT ==========================
-  // CHANGE 27: Auto-capture photo when all liveness challenges pass
-  // Triggers automatic photo capture after a short delay
-  useEffect(() => {
-    if (allChallengesPassed && isCameraActive && !capturedImage && !isCapturing) {
-      console.log(`📸 All challenges passed — auto-capturing in ${AUTO_CAPTURE_DELAY_MS}ms...`);
-      autoCaptureTimerRef.current = setTimeout(() => {
-        capturePhoto();
-      }, AUTO_CAPTURE_DELAY_MS);
-    }
-
-    return () => {
-      if (autoCaptureTimerRef.current) {
-        clearTimeout(autoCaptureTimerRef.current);
-        autoCaptureTimerRef.current = null;
-      }
-    };
-  }, [allChallengesPassed, isCameraActive, capturedImage, isCapturing]);
-  // ==============================================================
-
+ 
   // ============================================================================
   // ACTIONS
   // ============================================================================
   const capturePhoto = () => {
-    // ========================== NEW GUARD ==========================
-    // CHANGE 28: Explicit guard — block capture if oval is RED (liveness not passed)
     if (!allChallengesPassed) {
       setError('Please complete face verification first. The oval must be green.');
       return;
     }
-    // ==============================================================
 
     if (!videoRef.current || !canvasRef.current) {
       setError('Camera not ready.');
       return;
     }
     try {
-      setIsCapturing(true);
+     setIsCapturing(true);
+      setSnackbarOpen(false);
+      if (onInstruction) onInstruction(null);
       const video = videoRef.current;
       const canvas = canvasRef.current;
       canvas.width = video.videoWidth;
@@ -787,8 +683,6 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
 
   const getChallengeIcon = (challengeId) => {
     switch (challengeId) {
-      case 'blink':
-        return <VisibilityOutlined sx={{ fontSize: 16 }} />;
       case 'turnLeft':
         return <Face sx={{ fontSize: 16 }} />;
       case 'smile':
@@ -819,7 +713,7 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
         },
       }}
     >
-      {/* ====== Header ====== */}
+     {/* ====== Header ====== */}
       <Box
         sx={{
           p: { xs: 2, sm: 2.5 },
@@ -838,6 +732,37 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
         </Stack>
       </Box>
 
+      {/* ====== LIVENESS NOTIFICATION BAR (below header) ====== */}
+      {livenessStarted && !capturedImage && snackbarMessage && (
+        <Box
+          sx={{
+            backgroundColor: allChallengesPassed ? '#4CAF50' : '#1565C0',
+            color: '#fff',
+            py: 1,
+            px: 2,
+            textAlign: 'center',
+            animation: 'slideDown 0.3s ease-out',
+            '@keyframes slideDown': {
+              '0%': { transform: 'translateY(-100%)', opacity: 0 },
+              '100%': { transform: 'translateY(0)', opacity: 1 },
+            },
+          }}
+        >
+          <Typography
+            sx={{
+              fontWeight: 700,
+              fontSize: { xs: '0.85rem', sm: '0.95rem' },
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 1,
+            }}
+          >
+            {allChallengesPassed ? '✅' : '👉'} {snackbarMessage}
+          </Typography>
+        </Box>
+      )}
+
       <DialogContent
         sx={{
           p: { xs: 2, sm: 3 },
@@ -855,8 +780,7 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
           </Alert>
         )}
 
-        {/* ========================== NEW ========================== */}
-        {/* CHANGE 29: Model load error with retry button */}
+        {/* Model load error with retry button */}
         {modelLoadError && !modelsLoading && (
           <Fade in>
             <Alert
@@ -877,7 +801,6 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
             </Alert>
           </Fade>
         )}
-        {/* ========================================================= */}
 
         {error && !modelLoadError && (
           <Fade in>
@@ -902,8 +825,7 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
           </Fade>
         )}
 
-        {/* ========================== NEW ========================== */}
-        {/* CHANGE 30: Spoof warning alert */}
+        {/* Spoof warning alert */}
         {spoofWarning && !capturedImage && isCameraActive && (
           <Fade in>
             <Alert
@@ -914,7 +836,6 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
             </Alert>
           </Fade>
         )}
-        {/* ========================================================= */}
 
         {/* ====== VIDEO CONTAINER ====== */}
         <Box
@@ -947,11 +868,8 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
                 }}
               />
 
-              {/* Hidden overlay canvas for detection drawing */}
-              <canvas
-                ref={overlayCanvasRef}
-                style={{ display: 'none' }}
-              />
+              {/* Hidden overlay canvas */}
+              <canvas ref={overlayCanvasRef} style={{ display: 'none' }} />
 
               {/* Loading State */}
               {!isCameraActive && !error && (
@@ -1008,8 +926,8 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
                       height: isMobile ? '55%' : '75%',
                       border: `3px solid ${
                         ovalColor === 'green'
-                          ? 'rgba(76, 175, 80, 0.9)'   // GREEN - face fits
-                          : 'rgba(244, 67, 54, 0.9)'   // RED - face doesn't fit
+                          ? 'rgba(76, 175, 80, 0.9)'
+                          : 'rgba(244, 67, 54, 0.9)'
                       }`,
                       borderRadius: '50%',
                       pointerEvents: 'none',
@@ -1062,7 +980,7 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
                       label={faceStatus}
                       sx={{
                         backgroundColor:
-                          allChallengesPassed
+                          allChallengesPassed 
                             ? 'rgba(76, 175, 80, 0.9)'
                             : faceDetected && faceInOval
                               ? 'rgba(255, 152, 0, 0.9)'
@@ -1078,51 +996,8 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
                 </Fade>
               )}
 
-              {/* ====== LIVENESS INSTRUCTION (BOTTOM OF VIDEO) ====== */}
-              {isCameraActive && livenessStarted && !allChallengesPassed && livenessInstruction && (
-                <Fade in>
-                  <Box
-                    sx={{
-                      position: 'absolute',
-                      bottom: 16,
-                      left: '50%',
-                      transform: 'translateX(-50%)',
-                      zIndex: 10,
-                      textAlign: 'center',
-                    }}
-                  >
-                    <Box
-                      sx={{
-                        backgroundColor: 'rgba(33, 150, 243, 0.9)',
-                        borderRadius: 3,
-                        px: 3,
-                        py: 1.5,
-                        animation: 'pulse 2s infinite',
-                        '@keyframes pulse': {
-                          '0%, 100%': { transform: 'scale(1)' },
-                          '50%': { transform: 'scale(1.03)' },
-                        },
-                      }}
-                    >
-                      <Typography
-                        variant="body1"
-                        sx={{
-                          color: '#fff',
-                          fontWeight: 700,
-                          fontSize: { xs: '0.9rem', sm: '1rem' },
-                          textShadow: '0 1px 3px rgba(0,0,0,0.3)',
-                        }}
-                      >
-                        {livenessInstruction}
-                      </Typography>
-                    </Box>
-                  </Box>
-                </Fade>
-              )}
-
-              {/* ========================== NEW ========================== */}
-              {/* CHANGE 31: Auto-capture countdown indicator */}
-              {isCameraActive && allChallengesPassed && !capturedImage && !isCapturing && (
+              {/* ====== AUTO-CAPTURE COUNTDOWN (when straight face confirmed) ====== */}
+              {isCameraActive && allChallengesPassed && !waitingForStraightFace && !capturedImage && !isCapturing && (
                 <Fade in>
                   <Box
                     sx={{
@@ -1157,7 +1032,6 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
                   </Box>
                 </Fade>
               )}
-              {/* ========================================================= */}
 
               {/* Flash Effect */}
               {isCapturing && (
@@ -1237,11 +1111,7 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
                           ? <CheckCircle sx={{ fontSize: 14, color: '#4CAF50 !important' }} />
                           : getChallengeIcon(challenge.id)
                       }
-                      label={
-                        challenge.id === 'blink' ? 'Blink'
-                          : challenge.id === 'turnLeft' ? 'Turn'
-                            : 'Smile'
-                      }
+                      label={challenge.id === 'turnLeft' ? 'Turn' : 'Smile'}
                       variant={isCurrent ? 'filled' : 'outlined'}
                       sx={{
                         fontSize: '0.7rem',
@@ -1352,6 +1222,7 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
             <Button
               onClick={capturePhoto}
               variant="contained"
+              // disabled={!isCameraActive || isCapturing || !allChallengesPassed || waitingForStraightFace}
               disabled={!isCameraActive || isCapturing || !allChallengesPassed}
               startIcon={<CameraAlt sx={{ fontSize: { xs: 18, sm: 20 } }} />}
               fullWidth={isMobile}
@@ -1362,17 +1233,17 @@ const CameraCapture = ({ open, onClose, onCapture, currentPhoto }) => {
                 textTransform: 'none',
                 fontWeight: 600,
                 fontSize: { xs: '0.875rem', sm: '0.9375rem' },
-                backgroundColor: allChallengesPassed ? '#4CAF50' : '#E0E0E0',
+                backgroundColor: (allChallengesPassed ) ? '#4CAF50' : '#E0E0E0',
                 boxShadow: 'none',
                 order: { xs: 1, sm: 2 },
                 '&:hover': {
-                  backgroundColor: allChallengesPassed ? '#388E3C' : '#E0E0E0',
-                  boxShadow: allChallengesPassed ? '0 4px 12px rgba(76, 175, 80, 0.4)' : 'none',
+                  backgroundColor: (allChallengesPassed) ? '#388E3C' : '#E0E0E0',
+                  boxShadow: (allChallengesPassed ) ? '0 4px 12px rgba(76, 175, 80, 0.4)' : 'none',
                 },
                 '&:disabled': { backgroundColor: '#E0E0E0', color: '#9E9E9E' },
               }}
             >
-              {isCapturing
+             {isCapturing
                 ? 'Capturing...'
                 : !allChallengesPassed
                   ? 'Complete verification first'
