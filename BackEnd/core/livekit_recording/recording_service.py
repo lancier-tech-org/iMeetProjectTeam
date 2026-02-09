@@ -591,15 +591,18 @@ class TimelineManager:
 class StreamingRecordingWithChunks:
     """Production-ready streaming recorder with constant memory"""
     
-    def __init__(self, meeting_id: str, target_fps: int = 20):
+    def __init__(self, meeting_id: str, target_fps: int = 20, session_id: str = None):
         self.meeting_id = meeting_id
         self.target_fps = target_fps
         
-        # ✅ CRITICAL FIX: Add unique session ID for multiple recordings in same meeting
-        import uuid
-        self.session_id = str(uuid.uuid4())[:8]  # Short unique ID
-        self.s3_prefix = f"{S3_FOLDERS['recordings_temp']}/{meeting_id}/{self.session_id}"
+        # ✅ Use pre-generated session_id or generate new one
+        if session_id:
+            self.session_id = session_id
+        else:
+            import uuid
+            self.session_id = str(uuid.uuid4())[:8]
         
+        self.s3_prefix = f"{S3_FOLDERS['recordings_temp']}/{meeting_id}/{self.session_id}"
         # Single timeline for entire recording
         self.timeline = TimelineManager()
         
@@ -1547,8 +1550,9 @@ class FixedRecordingBot:
     """Fixed recording bot with FAST FRAME DUPLICATION"""
     
     def __init__(self, room_url: str, token: str, room_name: str, meeting_id: str,
-             result_queue: queue.Queue, stop_event: threading.Event, target_fps: int = 20):
-    
+         result_queue: queue.Queue, stop_event: threading.Event, target_fps: int = 20,
+         session_id: str = None):  # ✅ Accept pre-generated session_id
+
         self.room_url = room_url
         self.token = token
         self.room_name = room_name
@@ -1560,9 +1564,8 @@ class FixedRecordingBot:
         self.room = None
         self.is_connected = False
         
-        # NEW: Production recorder with timeline
-        self.stream_recorder = StreamingRecordingWithChunks(meeting_id, target_fps)
-        
+        # NEW: Production recorder with timeline - pass session_id
+        self.stream_recorder = StreamingRecordingWithChunks(meeting_id, target_fps, session_id)  # ✅ Pass session_id
         self.active_video_streams = {}
         self.active_audio_streams = {}
         self.track_references = {}
@@ -2375,6 +2378,11 @@ class FixedGoogleMeetRecorder:
         
         try:
             timestamp = int(time.time())
+            
+            # ✅ CRITICAL FIX: Generate session_id BEFORE creating MongoDB document
+            import uuid
+            session_id = str(uuid.uuid4())[:8]
+            
             recording_metadata = {
                 "meeting_id": meeting_id,
                 "host_user_id": host_user_id,
@@ -2383,28 +2391,25 @@ class FixedGoogleMeetRecorder:
                 "recording_type": "fast_google_meet",
                 "target_fps": self.target_fps,
                 "start_time": datetime.now(),
-                "created_at": datetime.now()
+                "created_at": datetime.now(),
+                "session_id": session_id  # ✅ CRITICAL: Include session_id from the start
             }
             
             result = self.collection.insert_one(recording_metadata)
             recording_doc_id = str(result.inserted_id)
-            
             recorder_identity = f"fast_recorder_{meeting_id}_{timestamp}"
             
             success, error_msg, bot_instance = self._start_fast_recording(
-                room_name, meeting_id, host_user_id, recording_doc_id, recorder_identity
+                room_name, meeting_id, host_user_id, recording_doc_id, recorder_identity, session_id  # ✅ Pass session_id
             )
 
             if success:
-                # Get session_id from bot instance
-                session_id = bot_instance.stream_recorder.session_id if bot_instance else None
-                
+                # ✅ session_id already in MongoDB from initial insert - just update status
                 self.collection.update_one(
                     {"_id": result.inserted_id},
                     {"$set": {
                         "recording_status": "active",
-                        "recorder_identity": recorder_identity,
-                        "session_id": session_id  # ✅ CRITICAL: Save session_id to MongoDB
+                        "recorder_identity": recorder_identity
                     }}
                 )
                 
@@ -2446,7 +2451,7 @@ class FixedGoogleMeetRecorder:
             }
 
     def _start_fast_recording(self, room_name: str, meeting_id: str, host_user_id: str,
-                           recording_doc_id: str, recorder_identity: str) -> Tuple[bool, Optional[str], Optional[object]]:
+                        recording_doc_id: str, recorder_identity: str, session_id: str) -> Tuple[bool, Optional[str], Optional[object]]:
         """Start FAST recording process with proper bot instance storage"""
         try:
             recorder_token = self.generate_recorder_token(room_name, recorder_identity)
@@ -2460,7 +2465,7 @@ class FixedGoogleMeetRecorder:
             future = self.thread_pool.submit(
                 self._run_fast_recording_task_with_bot_return,
                 self.livekit_wss_url, recorder_token, room_name, meeting_id,
-                result_queue, stop_event, self.target_fps, bot_instance_holder
+                result_queue, stop_event, self.target_fps, bot_instance_holder, session_id  # ✅ Pass session_id
             )
             
             try:
@@ -2557,9 +2562,9 @@ class FixedGoogleMeetRecorder:
                 loop_manager.force_cleanup_loop(loop, identifier)
 
     def _run_fast_recording_task_with_bot_return(self, room_url: str, token: str, room_name: str,
-                                               meeting_id: str, result_queue: queue.Queue, 
-                                               stop_event: threading.Event, target_fps: int,
-                                               bot_instance_holder: dict):
+                                            meeting_id: str, result_queue: queue.Queue, 
+                                            stop_event: threading.Event, target_fps: int,
+                                            bot_instance_holder: dict, session_id: str):
         """Run FAST recording task and return bot instance via holder dict"""
         identifier = f"fast_recording_{meeting_id}"
         loop = None
@@ -2577,7 +2582,8 @@ class FixedGoogleMeetRecorder:
                 meeting_id=meeting_id,
                 result_queue=result_queue,
                 stop_event=stop_event,
-                target_fps=target_fps
+                target_fps=target_fps,
+                session_id=session_id  # ✅ Pass pre-generated session_id
             )
             
             # ✅ CRITICAL: Store bot in holder BEFORE running so pause can access it
