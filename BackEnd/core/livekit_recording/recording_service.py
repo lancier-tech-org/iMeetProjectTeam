@@ -885,7 +885,6 @@ class StreamingRecordingWithChunks:
                 prefix=f'audio_{self.meeting_id}_{self.session_id}_'
             )
             os.close(audio_fd)
-            os.close(audio_fd)
             
             # Create audio FIFO - ✅ NOW INCLUDES SESSION ID
             temp_dir = tempfile.gettempdir()
