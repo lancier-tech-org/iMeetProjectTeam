@@ -3340,24 +3340,33 @@ class FixedGoogleMeetRecorder:
             # Insert or update MongoDB
             from bson import ObjectId
             recording_doc_id = recording_info.get("recording_doc_id")
-            
+
             try:
-                if recording_doc_id and len(str(recording_doc_id)) == 24:
-                    # Update existing document
+                # ✅ CRITICAL FIX: Check if document with this session_id already exists
+                # If it does, update it. Otherwise, create new.
+                existing_doc = self.collection.find_one({
+                    "meeting_id": meeting_id,
+                    "session_id": session_id
+                })
+                
+                if existing_doc:
+                    # Update the existing document for this session
                     self.collection.update_one(
-                        {"_id": ObjectId(recording_doc_id)},
+                        {"_id": existing_doc["_id"]},
                         {"$set": video_document}
                     )
-                    logger.info(f"✅ Updated existing MongoDB document")
+                    recording_doc_id = existing_doc["_id"]
+                    logger.info(f"✅ Updated MongoDB document for session {session_id}: {recording_doc_id}")
                 else:
-                    # Insert new document
+                    # Insert new document for this session
                     result = self.collection.insert_one(video_document)
                     recording_doc_id = result.inserted_id
-                    logger.info(f"✅ Created new MongoDB document: {recording_doc_id}")
+                    logger.info(f"✅ Created new MongoDB document for session {session_id}: {recording_doc_id}")
+                    
             except Exception as db_error:
                 logger.error(f"❌ MongoDB operation failed: {db_error}")
                 # Continue anyway - notification can still work
-            
+
             # ==================== SEND NOTIFICATION ====================
             try:
                 logger.info(f"📧 Sending notification for {meeting_id}...")
