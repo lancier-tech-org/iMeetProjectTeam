@@ -2498,11 +2498,75 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                     collection.insert_one(video_document)
                     logging.info(f"✅ Created new legacy document (no session_id)")
                     
-            # ✅ CRITICAL: Don't delete custom name here - it was already marked as used in recording service
-            # The recording service marks names as used in _async_finalize_fast_recording
-            # If we delete here, we might delete names for OTHER concurrent recordings
-            logging.info(f"ℹ️ Skipping custom name cleanup (already handled by recording service)")
-
+            # ✅ CORRECTED: Custom name cleanup using session_id extracted earlier
+            try:
+                # session_id was already extracted above (around line 870)
+                # We can use it here for cleanup
+                
+                if session_id:
+                    # Strategy 1: Try to find custom name by session_id match
+                    custom_name_to_delete = collection.find_one({
+                        "meeting_id": meeting_id,
+                        "pending_name_update": True,
+                        "custom_name_session_id": session_id  # Match exact session
+                    })
+                    
+                    if custom_name_to_delete:
+                        delete_result = collection.delete_one({"_id": custom_name_to_delete["_id"]})
+                        if delete_result.deleted_count > 0:
+                            logging.info(f"✅ Deleted custom name for session {session_id}")
+                        else:
+                            logging.warning(f"⚠️ Failed to delete custom name for session {session_id}")
+                    else:
+                        # Strategy 2: Fallback - match by timestamp if session_id not stored
+                        # Get the MongoDB document we just created to find its timestamp
+                        video_doc = collection.find_one({
+                            "meeting_id": meeting_id,
+                            "session_id": session_id
+                        })
+                        
+                        if video_doc and video_doc.get("timestamp"):
+                            doc_timestamp = video_doc["timestamp"]
+                            recording_timestamp = int(doc_timestamp.timestamp() if isinstance(doc_timestamp, datetime) else doc_timestamp)
+                            
+                            delete_result = collection.delete_one({
+                                "meeting_id": meeting_id,
+                                "pending_name_update": True,
+                                "recording_timestamp": {
+                                    "$gte": recording_timestamp - 10,
+                                    "$lte": recording_timestamp + 10
+                                }
+                            })
+                            
+                            if delete_result.deleted_count > 0:
+                                logging.info(f"✅ Deleted custom name by timestamp match (session: {session_id})")
+                            else:
+                                logging.info(f"ℹ️ No custom name found for this recording (session: {session_id})")
+                        else:
+                            logging.info(f"ℹ️ No custom name cleanup needed for session {session_id}")
+                else:
+                    # Legacy recording without session_id
+                    # Only delete if there's exactly ONE pending custom name for this meeting
+                    pending_names = list(collection.find({
+                        "meeting_id": meeting_id,
+                        "pending_name_update": True
+                    }))
+                    
+                    if len(pending_names) == 1:
+                        # Safe to delete - only one pending name
+                        delete_result = collection.delete_one({"_id": pending_names[0]["_id"]})
+                        if delete_result.deleted_count > 0:
+                            logging.info(f"✅ Deleted custom name for legacy recording (no session_id)")
+                    elif len(pending_names) > 1:
+                        logging.warning(f"⚠️ Multiple pending names found ({len(pending_names)}) - skipping cleanup to be safe")
+                    else:
+                        logging.info(f"ℹ️ No custom name to clean up")
+                        
+            except Exception as cleanup_error:
+                logging.warning(f"⚠️ Custom name cleanup failed: {cleanup_error}")
+                import traceback
+                logging.warning(f"Cleanup traceback: {traceback.format_exc()}")
+                
             # ========== SEND NOTIFICATIONS ==========
             logging.info(f"📧 Sending notifications...")
             try:
@@ -4308,11 +4372,26 @@ def Stop_Recording(request, id):
                     "success": True
                 }, status=200)
 
-        # ✅ NEW: Call recording service via HTTP
+        # ✅ NEW: Call recording service via HTTP with optional session_id
         try:
+            # Try to get session_id from request if provided (for multi-recording scenarios)
+            request_data = {}
+            if request.body:
+                try:
+                    request_data = json.loads(request.body)
+                except:
+                    pass
+            
+            session_id = request_data.get('session_id')  # Optional
+            
+            payload = {"meeting_id": id}
+            if session_id:
+                payload["session_id"] = session_id
+                logger.info(f"Stopping specific recording session: {session_id}")
+            
             response = requests.post(
                 f"{RECORDING_SERVICE_URL}/stop",
-                json={"meeting_id": id},
+                json=payload,
                 timeout=60  # Longer timeout for stopping
             )
             
