@@ -558,14 +558,17 @@ def get_schedule_meeting_metadata(meeting_id: str) -> dict:
             "folder_path": None
         }
 
-def build_s3_video_path(meeting_id: str, user_id: str, meeting_type: str) -> str:
+def build_s3_video_path(meeting_id: str, user_id: str, meeting_type: str, session_id: str = None) -> str:
     """
     Build S3 path for video based on meeting type.
     
     For ScheduleMeetings: 
         videos/schedule_meetings/{schedule_id}_{sanitized_title}/{meeting_id}_{user_id}_recording.mp4
     
-    For InstantMeetings/CalendarMeetings: 
+    For InstantMeetings/CalendarMeetings with session_id: 
+        videos/{meeting_id}/{session_id}/{meeting_id}_{session_id}_{timestamp}.mp4
+    
+    For InstantMeetings/CalendarMeetings without session_id: 
         videos/{meeting_id}_{user_id}_recording.mp4
     
     This organizes scheduled meeting recordings into folders automatically.
@@ -583,6 +586,14 @@ def build_s3_video_path(meeting_id: str, user_id: str, meeting_type: str) -> str
                 logger.info(f"✅ ScheduleMeeting S3 path: {s3_key}")
                 return s3_key
         
+        # ✅ NEW: If session_id provided, use session-based structure
+        if session_id:
+            import time
+            timestamp = int(time.time())
+            s3_key = f"{base_folder}/{meeting_id}/{session_id}/{meeting_id}_{session_id}_{timestamp}.mp4"
+            logger.info(f"✅ Session-based S3 path: {s3_key}")
+            return s3_key
+        
         # Default path for InstantMeeting, CalendarMeeting, or if schedule fetch fails
         s3_key = f"{base_folder}/{meeting_id}_{user_id}_recording.mp4"
         logger.info(f"Default S3 path: {s3_key}")
@@ -591,7 +602,7 @@ def build_s3_video_path(meeting_id: str, user_id: str, meeting_type: str) -> str
     except Exception as e:
         logger.error(f"Error building S3 path: {e}")
         return f"{S3_FOLDERS['videos']}/{meeting_id}_{user_id}_recording.mp4"
-    
+      
 def build_s3_document_path(
     meeting_id: str,
     user_id: str,
@@ -1969,10 +1980,26 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             compressed_size = os.path.getsize(compressed)
             logging.info(f"✅ Compressed file: {compressed_size} bytes")
 
-            # ========== UPLOAD VIDEO TO S3 FIRST (CRITICAL) ==========
+            # ==================== UPLOAD VIDEO TO S3 FIRST (CRITICAL) ==========
             meeting_type = get_meeting_type(meeting_id)
             logging.info("☁ Uploading video to S3...")
-            video_s3_key = build_s3_video_path(meeting_id, user_id, meeting_type)
+
+            # ✅ CRITICAL FIX: Check if this is a session-based recording (new format)
+            # Session-based recordings have format: videos/meeting_id/session_id/recording_meeting_id_session_id.mp4
+            # We need to preserve this path structure when processing
+            if "session_id" in os.path.basename(video_path):
+                # This is already a session-based recording from the new recording service
+                # Extract the full S3 key from the file path if possible
+                logging.info(f"Detected session-based recording: {video_path}")
+                # Use the existing path structure from the recording service
+                video_s3_key = extract_s3_key_from_url(video_path, AWS_S3_BUCKET)
+                if not video_s3_key:
+                    # Fallback: build new key (will create duplicate but ensures upload succeeds)
+                    video_s3_key = build_s3_video_path(meeting_id, user_id, meeting_type)
+                    logging.warning(f"Could not extract session key, using fallback: {video_s3_key}")
+            else:
+                # Old format or manual upload - use traditional path
+                video_s3_key = build_s3_video_path(meeting_id, user_id, meeting_type)
             video_url = upload_to_aws_s3(compressed, video_s3_key)
 
             if not video_url:
@@ -2374,8 +2401,25 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                 original_filename = os.path.basename(video_path)
 
             # ========== SAVE TO MONGODB ==========
+            # ✅ CRITICAL FIX: Extract session_id if this is a session-based recording
+            session_id = None
+            recording_sequence = int(time.time())  # Default timestamp
+
+            # Try to extract session_id from video_s3_key or video_path
+            if video_s3_key and "/" in video_s3_key:
+                # Format: videos/meeting_id/session_id/recording_meeting_id_session_id.mp4
+                path_parts = video_s3_key.split("/")
+                if len(path_parts) >= 3:
+                    # Check if middle part looks like a UUID (session_id)
+                    potential_session = path_parts[-2]
+                    if len(potential_session) == 8 and "-" not in potential_session:
+                        session_id = potential_session
+                        logging.info(f"✅ Extracted session_id from S3 key: {session_id}")
+
             video_document = {
                 "meeting_id": meeting_id,
+                "session_id": session_id,  # ✅ NEW: Track recording session
+                "recording_sequence": recording_sequence,  # ✅ NEW: Sort multiple recordings
                 "user_id": user_id,
                 "user_name": user_details.get("user_name", f"User {user_id}"),
                 "user_email": user_details.get("user_email", ""),
@@ -2416,20 +2460,28 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             }
             
             logging.info(f"💾 Saving video data to MongoDB...")
-            
-            existing_doc = collection.find_one({
+
+            # ✅ CRITICAL FIX: Query by session_id to avoid overwriting different recordings
+            query_filter = {
                 "meeting_id": meeting_id,
                 "user_id": user_id,
                 "is_final_video": True
-            })
+            }
+
+            # If this is a session-based recording, add session_id to query
+            if session_id:
+                query_filter["session_id"] = session_id
+                logging.info(f"Querying for existing doc with session_id: {session_id}")
+
+            existing_doc = collection.find_one(query_filter)
 
             if existing_doc:
                 collection.update_one({"_id": existing_doc["_id"]}, {"$set": video_document})
-                logging.info(f"✅ Updated existing document")
+                logging.info(f"✅ Updated existing document for session: {session_id}")
             else:
                 collection.insert_one(video_document)
-                logging.info(f"✅ Created new document")
-
+                logging.info(f"✅ Created new document for session: {session_id}")
+                
             if custom_recording_name:
                 try:
                     collection.delete_one({
@@ -4634,7 +4686,8 @@ def store_custom_recording_name(request):
         meeting_id = data.get('meeting_id')
         custom_name = data.get('custom_name')
         user_id = data.get('user_id')  # For permission checking
-        
+        recording_timestamp = data.get('recording_timestamp')  # ✅ NEW: To identify specific recording
+
         if not meeting_id or not custom_name:
             return JsonResponse({
                 "status": "error",
@@ -4680,15 +4733,22 @@ def store_custom_recording_name(request):
             "meeting_id": meeting_id,
             "custom_recording_name": custom_name,
             "pending_name_update": True,
+            "recording_timestamp": recording_timestamp or int(time.time()),  # ✅ NEW
             "name_stored_at": datetime.now(),
             "user_id": user_id
         }
         
-        # Check if already exists (user might change name before processing completes)
-        existing = collection.find_one({
+        # ✅ CRITICAL FIX: Check for THIS specific recording session
+        query = {
             "meeting_id": meeting_id,
             "pending_name_update": True
-        })
+        }
+
+        # If we have a recording timestamp, use it for matching specific session
+        if recording_timestamp:
+            query["recording_timestamp"] = recording_timestamp
+
+        existing = collection.find_one(query)
         
         if existing:
             # Update existing pending name

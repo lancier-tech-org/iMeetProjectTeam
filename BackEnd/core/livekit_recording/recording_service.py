@@ -21,9 +21,11 @@ import numpy as np
 from PIL import Image
 import ssl
 import wave
+from bson import ObjectId
 import struct
 from collections import deque
 import math
+from core.UserDashBoard.recordings import collection
 
 # ADD THIS AT THE TOP (after imports):
 import boto3
@@ -592,7 +594,11 @@ class StreamingRecordingWithChunks:
     def __init__(self, meeting_id: str, target_fps: int = 20):
         self.meeting_id = meeting_id
         self.target_fps = target_fps
-        self.s3_prefix = f"{S3_FOLDERS['recordings_temp']}/{meeting_id}"
+        
+        # ✅ CRITICAL FIX: Add unique session ID for multiple recordings in same meeting
+        import uuid
+        self.session_id = str(uuid.uuid4())[:8]  # Short unique ID
+        self.s3_prefix = f"{S3_FOLDERS['recordings_temp']}/{meeting_id}/{self.session_id}"
         
         # Single timeline for entire recording
         self.timeline = TimelineManager()
@@ -614,11 +620,12 @@ class StreamingRecordingWithChunks:
         # Video pacing control
         self.frame_interval = 1.0 / target_fps
         
-        # Temp output file
+        # Temp output file - ✅ NOW INCLUDES SESSION ID
         self.temp_video_fd, self.temp_video_path = tempfile.mkstemp(
             suffix='.mp4',
-            prefix=f'recording_{meeting_id}_'
+            prefix=f'recording_{meeting_id}_{self.session_id}_'
         )
+
         os.close(self.temp_video_fd)
         
         # Audio pacing control
@@ -629,8 +636,8 @@ class StreamingRecordingWithChunks:
         self.audio_buffer = []  # Small bounded buffer for partial samples
         self.max_audio_buffer_samples = 4800  # 50ms max buffer
 
-        # S3 upload
-        self.s3_video_key = f"{self.s3_prefix}/recording_{meeting_id}.mp4"
+        # S3 upload - ✅ NOW INCLUDES SESSION ID
+        self.s3_video_key = f"{self.s3_prefix}/recording_{meeting_id}_{self.session_id}.mp4"
         self.chunk_uploader = None
         
         # Track guard for LiveKit compatibility (NO buffering, just flags)
@@ -872,20 +879,21 @@ class StreamingRecordingWithChunks:
             self.timeline.start()
             self.stop_event.clear()  # Reset stop event for new recording
             self.is_recording = False   
-            # Create temp audio file
+            # Create temp audio file - ✅ NOW INCLUDES SESSION ID
             audio_fd, self.temp_audio_path = tempfile.mkstemp(
                 suffix='.wav',
-                prefix=f'audio_{self.meeting_id}_'
+                prefix=f'audio_{self.meeting_id}_{self.session_id}_'
             )
             os.close(audio_fd)
+            os.close(audio_fd)
             
-            # Create audio FIFO
+            # Create audio FIFO - ✅ NOW INCLUDES SESSION ID
             temp_dir = tempfile.gettempdir()
-            self.audio_fifo_path = os.path.join(temp_dir, f'audio_{self.meeting_id}.fifo')
-            
+            self.audio_fifo_path = os.path.join(temp_dir, f'audio_{self.meeting_id}_{self.session_id}.fifo')
+
             if os.path.exists(self.audio_fifo_path):
                 os.remove(self.audio_fifo_path)
-            
+
             os.mkfifo(self.audio_fifo_path)
             logger.info(f"✅ Created audio FIFO: {self.audio_fifo_path}")
             
@@ -3106,7 +3114,10 @@ class FixedGoogleMeetRecorder:
             logger.info(f"✅ Recording file ready: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB)")
             
             # ==================== UPLOAD TO S3 ====================
-            final_s3_key = f"videos/{meeting_id}_recording.mp4"
+            # ✅ CRITICAL FIX: Include session ID to prevent overwriting previous recordings
+            session_id = recording_info.get("bot_instance").stream_recorder.session_id if recording_info.get("bot_instance") else "unknown"
+            timestamp = int(time.time())
+            final_s3_key = f"videos/{meeting_id}_{session_id}_{timestamp}.mp4"
 
             try:
                 logger.info(f"📤 Uploading merged file to S3: {final_s3_key}")
@@ -3185,12 +3196,43 @@ class FixedGoogleMeetRecorder:
                 meeting_type = "InstantMeeting"
             
             # ==================== GENERATE FILENAME ====================
+            # ✅ CRITICAL FIX: Include date only (no time) to differentiate multiple recordings
+            timestamp_str = datetime.now().strftime("%d-%m-%Y")  # Changed from "%Y%m%d_%H%M%S" to "%d-%m-%Y"
             custom_recording_name = None
             try:
-                custom_name_doc = self.collection.find_one({
+                from bson import ObjectId
+                
+                # ✅ CRITICAL FIX: Get the recording start timestamp to match with custom name
+                recording_start_time = recording_info.get("start_time")
+                if recording_start_time:
+                    if isinstance(recording_start_time, datetime):
+                        recording_timestamp = int(recording_start_time.timestamp())
+                    else:
+                        recording_timestamp = int(recording_start_time)
+                else:
+                    recording_timestamp = timestamp  # Use current timestamp as fallback
+                
+                # Query for custom name that matches THIS recording session
+                # Try timestamp match first (within 10 second window for clock skew)
+                custom_name_doc = collection.find_one({
                     "meeting_id": meeting_id,
-                    "pending_name_update": True
+                    "pending_name_update": True,
+                    "recording_timestamp": {
+                        "$gte": recording_timestamp - 10,
+                        "$lte": recording_timestamp + 10
+                    }
                 })
+                
+                # Fallback: Get most recent custom name for this meeting if exact match not found
+                if not custom_name_doc:
+                    custom_name_doc = collection.find_one(
+                        {
+                            "meeting_id": meeting_id,
+                            "pending_name_update": True
+                        },
+                        sort=[("name_stored_at", -1)]  # Get most recent
+                    )
+                
                 if custom_name_doc:
                     custom_recording_name = custom_name_doc.get("custom_recording_name")
                     logger.info(f"📝 Custom name: {custom_recording_name}")
@@ -3198,13 +3240,15 @@ class FixedGoogleMeetRecorder:
                 logger.warning(f"Custom name check failed: {e}")
 
             if custom_recording_name:
-                filename = f"{custom_recording_name}.mp4"
+                filename = f"{custom_recording_name}_{timestamp_str}.mp4"
             else:
-                filename = f"Recording_{meeting_id}.mp4"
-            
+                filename = f"Recording_{timestamp_str}.mp4"  # Removed meeting_id from default name
             # ==================== CREATE COMPLETE MONGODB DOCUMENT ====================
+            # ✅ CRITICAL FIX: Add session_id to track multiple recordings
             video_document = {
                 "meeting_id": meeting_id,
+                "session_id": session_id,  # ✅ NEW: Unique session identifier
+                "recording_sequence": int(time.time()),  # ✅ NEW: Helps sort multiple recordings
                 "user_id": host_user_id,
                 "user_name": user_name,
                 "user_email": user_email,
