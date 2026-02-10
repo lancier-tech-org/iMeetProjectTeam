@@ -307,7 +307,13 @@ const AttendanceConfig = {
 };
 
 // ==================== API CONFIGURATION ====================
-const API_BASE = 'https://api.lancieretech.com';
+// Service 3 (Behavioral — CPU): All /api/attendance/* endpoints
+const API_BASE = import.meta.env.VITE_API_URL || 'https://api.lancieretech.com';
+
+// Service 2 (Identity — GPU): All /api/face/* endpoints
+// In production with K8s ingress, BOTH use the same domain (ingress routes by URL path)
+// For local dev without ingress, set VITE_IDENTITY_API_URL to the identity service URL
+const IDENTITY_API_BASE = import.meta.env.VITE_IDENTITY_API_URL || API_BASE;
 
 // ==================== MAIN COMPONENT ====================
 const AttendanceTracker = ({
@@ -564,6 +570,40 @@ const AttendanceTracker = ({
     }
   }, [sessionStartTime]);
 
+  // ==================== IDENTITY SERVICE API CALL HELPER ====================
+  // Separate helper for Service 2 (Identity Verification — GPU, Port 8220)
+  const identityApiCall = useCallback(async (endpoint, method = "POST", data = null) => {
+    const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    const url = `${IDENTITY_API_BASE}/api/face${cleanEndpoint}`.replace(/([^:]\/)\//g, "$1");
+    const httpMethod = method.toUpperCase();
+    console.log(`[IDENTITY API] ${httpMethod} ${url}`);
+    const options = {
+      method: httpMethod,
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      credentials: 'include',
+    };
+    if (data && ["POST", "PUT", "PATCH"].includes(httpMethod)) {
+      options.body = JSON.stringify(data);
+    }
+    try {
+      const response = await fetch(url, options);
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('text/html')) {
+        throw new Error('Identity service returned HTML instead of JSON');
+      }
+      if (!response.ok) {
+        const errorText = await response.text();
+        const error = new Error(`HTTP ${response.status}: ${errorText.substring(0, 100)}`);
+        try { error.data = JSON.parse(errorText); } catch { error.data = { error: errorText }; }
+        throw error;
+      }
+      try { return await response.json(); } catch (parseError) { throw new Error('Invalid JSON from identity service'); }
+    } catch (error) {
+      console.error(`[IDENTITY API ERROR] ${httpMethod} ${url}:`, error.message);
+      throw error;
+    }
+  }, []);
+
   // ==================== DISPLAY NOTIFICATION SYSTEM ====================
   const showViolationPopup = useCallback((message, type = "warning", force = false) => {
     if (!mountedRef.current) return;
@@ -733,21 +773,23 @@ const AttendanceTracker = ({
   }, [meetingId, userId, apiCall]);
 
   // ==================== HANDLE ANALYSIS RESPONSE ====================
-  const handleAnalysisResponse = useCallback((response) => {
+  const handleAnalysisResponse = useCallback((response, identityResponse = null) => {
     if (!response || !mountedRef.current) return;
     if (isSessionTerminatedRef.current) return;
     if (isOnBreakRef.current) { console.log("[ANALYSIS] Ignoring analysis response - participant is on break"); return; }
 
-    // 1. IDENTITY VERIFICATION
-    if (response.identity_warning_count !== undefined) {
-      setAuthWarningCount(response.identity_warning_count);
-      if (response.identity_warning_count > 0) setFaceAuthStatus("unauthorized");
-      else if (response.identity_verified) setFaceAuthStatus("verified");
+    // 1. IDENTITY VERIFICATION (from Service 2 — identity-service:8220)
+    // Identity data now comes from separate identityResponse (parallel call)
+    const idResp = identityResponse || {};
+    if (idResp.identity_warning_count !== undefined) {
+      setAuthWarningCount(idResp.identity_warning_count);
+      if (idResp.identity_warning_count > 0) setFaceAuthStatus("unauthorized");
+      else if (idResp.identity_verified) setFaceAuthStatus("verified");
     }
-    if (response.identity_popup && response.identity_popup.trim() !== "") triggerToast(response.identity_popup, "error");
-    if (response.identity_is_removed === true || (response.status === "removed_from_meeting" && response.removal_type === "identity_verification")) {
+    if (idResp.identity_popup && idResp.identity_popup.trim() !== "") triggerToast(idResp.identity_popup, "error");
+    if (idResp.identity_is_removed === true || idResp.identity_action === "identity_removal") {
       setIsAuthBlocked(true); isAuthBlockedRef.current = true;
-      handleSessionTermination("identity_verification_failure", response.message || "Session terminated: Identity verification failed 3 times.");
+      handleSessionTermination("identity_verification_failure", idResp.identity_popup || "Session terminated: Identity verification failed 3 times.");
       return;
     }
 
@@ -782,7 +824,7 @@ const AttendanceTracker = ({
     }
   }, [handleSessionTermination, triggerToast, onStatusChange]);
 
-  // ==================== FRAME CAPTURE AND ANALYSIS ====================
+  // ==================== FRAME CAPTURE AND ANALYSIS (PARALLEL — Service 2 + Service 3) ====================
   const captureAndAnalyze = useCallback(async () => {
     if (!mountedRef.current || isSessionTerminatedRef.current || !cameraEnabledRef.current) return;
     if (isOnBreakRef.current) { console.log("[CAPTURE] Skipping - participant is on break"); return; }
@@ -806,14 +848,49 @@ const AttendanceTracker = ({
       canvas.width = width; canvas.height = height;
       context.drawImage(video, 0, 0, width, height);
       const frameData = canvas.toDataURL("image/jpeg", 0.8);
-      const analysisState = {
+
+      // ================================================================
+      // PARALLEL CALLS: Service 2 (Identity/GPU) + Service 3 (Behavioral/CPU)
+      // Both run at the SAME TIME using Promise.allSettled
+      // ================================================================
+      const behavioralPayload = {
         meeting_id: meetingId, user_id: userId, frame: frameData, user_role: effectiveRole,
         current_tracking_mode: currentTrackingModeRef.current, is_host: isHost, is_cohost: isCoHost,
         is_on_break: isOnBreakRef.current, should_detect_violations: shouldDetectViolations,
         role_history: roleHistoryRef.current, session_start_time: sessionStartTime,
       };
-      const response = await apiCall("/detect/", "POST", analysisState);
-      if (mountedRef.current && !isSessionTerminatedRef.current) handleAnalysisResponse(response);
+
+      const identityPayload = {
+        meeting_id: meetingId, user_id: userId, frame: frameData,
+      };
+
+      const [behavioralResult, identityResult] = await Promise.allSettled([
+        // Service 3: Behavioral Detection (CPU) → backend:8000
+        apiCall("/detect/", "POST", behavioralPayload),
+        // Service 2: Identity Verification (GPU) → identity-service:8220
+        identityApiCall("/identity-check", "POST", identityPayload),
+      ]);
+
+      // Extract responses (handle failures gracefully)
+      const behavioralResponse = behavioralResult.status === "fulfilled" ? behavioralResult.value : null;
+      const identityResponse = identityResult.status === "fulfilled" ? identityResult.value : null;
+
+      if (behavioralResult.status === "rejected") {
+        console.error("[CAPTURE] Behavioral service error:", behavioralResult.reason?.message);
+      }
+      if (identityResult.status === "rejected") {
+        console.warn("[CAPTURE] Identity service error (non-blocking):", identityResult.reason?.message);
+      }
+
+      // Handle combined response
+      if (mountedRef.current && !isSessionTerminatedRef.current) {
+        if (behavioralResponse) {
+          handleAnalysisResponse(behavioralResponse, identityResponse);
+        } else if (identityResponse) {
+          // Behavioral failed but identity succeeded — still process identity
+          handleAnalysisResponse({}, identityResponse);
+        }
+      }
     } catch (error) {
       console.error("[CAPTURE] Frame analysis error:", error);
       if (error.message.includes("session_closed") || error.message.includes("session_terminated")) {
@@ -821,7 +898,7 @@ const AttendanceTracker = ({
         return;
       }
     } finally { if (mountedRef.current) setProcessingFrame(false); }
-  }, [videoReady, meetingId, userId, processingFrame, effectiveRole, isHost, isCoHost, shouldDetectViolations, sessionStartTime, apiCall, handleAnalysisResponse, handleSessionTermination]);
+  }, [videoReady, meetingId, userId, processingFrame, effectiveRole, isHost, isCoHost, shouldDetectViolations, sessionStartTime, apiCall, identityApiCall, handleAnalysisResponse, handleSessionTermination]);
 
   useEffect(() => { captureAndAnalyzeRef.current = captureAndAnalyze; }, [captureAndAnalyze]);
 
