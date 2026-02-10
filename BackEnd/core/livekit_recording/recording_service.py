@@ -656,10 +656,15 @@ class StreamingRecordingWithChunks:
         self.video_writer_thread = None
         self.placeholder_frame = None  # Generated once on startup
 
-        # Audio mixer for multiple sources
-        self.audio_sources = {}  # {source_id: deque of samples}
+        # Audio mixer for multiple sources — Zoom-style jitter buffers
+        self.audio_sources = {}  # {source_id: deque} — NO maxlen, explicit overflow
+        self.audio_sources_write = {}  # Double buffer: write side (LiveKit pushes here)
         self.audio_mixer_lock = threading.Lock()
-        self.max_audio_source_buffer = 9600  # 100ms per source at 48kHz stereo
+        self.audio_write_lock = threading.Lock()  # Separate lock for ingestion
+        self.max_audio_source_buffer = 48000 * 2  # 1 second max per source (48kHz stereo)
+        self.audio_overflow_count = 0  # Track overflow events for monitoring
+        self.audio_chunks_written = 0  # Unconditional metronome chunk counter
+        self.audio_metronome_t0 = None  # Absolute start time for metronome
 
         # State
         self.is_recording = False
@@ -713,123 +718,160 @@ class StreamingRecordingWithChunks:
             # Fallback: solid gray frame
             self.placeholder_frame = np.full((720, 1280, 3), 60, dtype=np.uint8)
 
-    def _start_audio_clock_thread(self):
-        """Independent master clock that pulls & writes audio at perfect rate"""
-        def audio_clock_loop():
-            logger.info("⏰ Audio master clock thread started (48kHz stereo)")
-            interval = 0.020  # 20 ms chunks
-            samples_per_chunk = int(48000 * 2 * interval)  # 1920 samples stereo
+    def _swap_audio_buffers(self):
+        """Atomically swap write buffers into read buffers for the mixer"""
+        with self.audio_write_lock:
+            with self.audio_mixer_lock:
+                for source_key, write_buf in self.audio_sources_write.items():
+                    if source_key not in self.audio_sources:
+                        self.audio_sources[source_key] = deque()
+                    # Move all samples from write → read
+                    self.audio_sources[source_key].extend(write_buf)
+                    write_buf.clear()
 
-            # ✅ FIX: Use timeline as the authoritative clock, not perf_counter
+    def _start_audio_clock_thread(self):
+        """Layer 2 — Unconditional metronome. Writes EXACTLY 10ms every 10ms. Never skips."""
+        def audio_clock_loop():
+            CHUNK_INTERVAL = 0.010  # 10ms — Zoom uses 10ms chunks
+            SAMPLES_PER_CHUNK = int(48000 * 2 * CHUNK_INTERVAL)  # 960 stereo samples
+            SWAP_INTERVAL = 5  # Swap buffers every 5 chunks (50ms)
+
+            logger.info(f"⏰ Audio METRONOME started: {SAMPLES_PER_CHUNK} samples every {CHUNK_INTERVAL*1000:.0f}ms")
+
+            # Wait for timeline to actually start
+            while not self.timeline.is_active and not self.stop_event.is_set():
+                time.sleep(0.01)
+
+            self.audio_metronome_t0 = time.perf_counter()
+            self.audio_chunks_written = 0
+            swap_counter = 0
+            last_log_time = time.perf_counter()
             last_buffer_check = time.perf_counter()
             consecutive_empty_checks = 0
-            
-            # ✅ FIX: Track when we last wrote samples to avoid writing too fast
-            last_write_time = time.perf_counter()
 
             while True:
                 try:
+                    # ---- PAUSE HANDLING ----
                     if self.timeline.is_paused:
-                        time.sleep(0.1)
-                        last_write_time = time.perf_counter()  # ✅ Reset on resume
+                        time.sleep(0.05)
+                        # Reset metronome reference on resume
+                        self.audio_metronome_t0 = time.perf_counter()
+                        self.audio_chunks_written = 0
+                        # Recalculate: chunks already written = samples / chunk_size
+                        # (keeps total sample count continuous)
                         continue
-                    
-                    # Check if we should enter draining mode
+
+                    # ---- DRAIN MODE CHECK ----
                     if not self.is_recording and not self.audio_accepting_new_data:
                         now = time.perf_counter()
                         if now - last_buffer_check >= 0.5:
+                            self._swap_audio_buffers()  # Final swap
                             buffers_empty = self._check_all_audio_buffers_empty()
                             last_buffer_check = now
-                            
+
                             if buffers_empty:
                                 consecutive_empty_checks += 1
                                 if consecutive_empty_checks >= 3:
-                                    logger.info("🎵 All audio buffers empty for 1.5s - entering final flush mode")
+                                    logger.info("🎵 All buffers empty for 1.5s — entering final flush")
                                     self.audio_buffers_empty = True
                                     break
-                                else:
-                                    logger.info(f"🎵 Buffers empty ({consecutive_empty_checks}/3 checks)")
                             else:
                                 consecutive_empty_checks = 0
-                                non_empty = self._count_non_empty_audio_buffers()
-                                logger.info(f"🎵 Still draining audio - {non_empty} source(s) with data")
 
-                    # ✅ FIX: Calculate when we SHOULD write next based on timeline
-                    current_timeline_pts = self.timeline.get_current_pts()
-                    expected_samples_by_now = int(current_timeline_pts * 48000 * 2)
-                    samples_behind = expected_samples_by_now - self.audio_samples_written
-                    
-                    # ✅ FIX: Only write if we're behind the timeline by at least one chunk
-                    if samples_behind >= samples_per_chunk:
-                        self._mix_and_write_audio_chunk(target_samples=samples_per_chunk)
-                        last_write_time = time.perf_counter()
-                    else:
-                        # ✅ FIX: Sleep until we expect to be behind by one chunk
-                        # Calculate how long until timeline advances enough for next chunk
-                        time_per_chunk = interval  # 0.020 seconds
-                        now = time.perf_counter()
-                        time_since_write = now - last_write_time
-                        
-                        # Sleep for remaining time in this chunk period
-                        sleep_duration = max(0.001, time_per_chunk - time_since_write)
-                        time.sleep(sleep_duration)
-                        
-                except Exception as e:
-                    logger.error(f"Audio clock error: {e}")
-                    time.sleep(0.1)
-          
-                except Exception as e:
-                    logger.error(f"Audio clock error: {e}")
-                    time.sleep(0.1)
+                    # ---- PERIODIC BUFFER SWAP (every 50ms) ----
+                    swap_counter += 1
+                    if swap_counter >= SWAP_INTERVAL:
+                        self._swap_audio_buffers()
+                        swap_counter = 0
 
-            # FINAL FLUSH: Write EXACT deficit to match timeline
-            logger.info("🎵 Audio clock: Final flush sequence starting...")
+                    # ---- THE METRONOME: How many chunks do I OWE? ----
+                    now = time.perf_counter()
+                    elapsed = now - self.audio_metronome_t0
+                    chunks_owed = int(elapsed / CHUNK_INTERVAL)
+                    chunks_to_write = chunks_owed - self.audio_chunks_written
+
+                    # Write ALL owed chunks RIGHT NOW (catch up if late)
+                    if chunks_to_write > 0:
+                        if chunks_to_write > 5:
+                            logger.warning(
+                                f"⚠️ Metronome behind by {chunks_to_write} chunks "
+                                f"({chunks_to_write * CHUNK_INTERVAL * 1000:.0f}ms) — catching up"
+                            )
+
+                        for _ in range(chunks_to_write):
+                            self._mix_and_write_audio_chunk(target_samples=SAMPLES_PER_CHUNK)
+                            self.audio_chunks_written += 1
+
+                    # ---- SLEEP UNTIL NEXT CHUNK IS DUE ----
+                    next_chunk_time = self.audio_metronome_t0 + (self.audio_chunks_written + 1) * CHUNK_INTERVAL
+                    sleep_duration = max(0.001, next_chunk_time - time.perf_counter())
+                    time.sleep(sleep_duration)
+
+                    # ---- PERIODIC LOGGING ----
+                    now_log = time.perf_counter()
+                    if now_log - last_log_time >= 5.0:
+                        timeline_pts = self.timeline.get_current_pts()
+                        expected = int(timeline_pts * 48000 * 2)
+                        drift = self.audio_samples_written - expected
+                        logger.info(
+                            f"🎵 Metronome: {self.audio_samples_written} samples | "
+                            f"Timeline: {timeline_pts:.1f}s | "
+                            f"Drift: {drift} samples ({drift / (48000 * 2) * 1000:.1f}ms) | "
+                            f"Overflows: {self.audio_overflow_count}"
+                        )
+                        last_log_time = now_log
+
+                except Exception as e:
+                    logger.error(f"Audio metronome error: {e}")
+                    time.sleep(0.05)
+
+            # ---- FINAL FLUSH: Write EXACT deficit to match timeline ----
+            logger.info("🎵 Metronome: Final flush sequence...")
             try:
+                # One last buffer swap
+                self._swap_audio_buffers()
+
                 with self.audio_lock:
                     if self.audio_enabled and self.audio_fifo_writer:
-                        # ✅ CRITICAL FIX: Calculate EXACT audio deficit
                         final_timeline_pts = self.timeline.get_current_pts()
-                        expected_total_samples = int(final_timeline_pts * 48000 * 2)
-                        samples_deficit = expected_total_samples - self.audio_samples_written
-                        
+                        expected_total = int(final_timeline_pts * 48000 * 2)
+                        deficit = expected_total - self.audio_samples_written
+
                         logger.info(f"📊 Final audio analysis:")
                         logger.info(f"   Timeline: {final_timeline_pts:.2f}s")
-                        logger.info(f"   Expected samples: {expected_total_samples}")
-                        logger.info(f"   Actual samples: {self.audio_samples_written}")
-                        logger.info(f"   Deficit: {samples_deficit} samples ({samples_deficit / (48000 * 2):.2f}s)")
-                        
-                        # ✅ FIX: Write EXACT deficit, not fixed 2 seconds
-                        if samples_deficit > 0:
-                            logger.info(f"📝 Writing {samples_deficit / (48000 * 2):.2f}s of compensating silence...")
-                            
-                            remaining = samples_deficit
+                        logger.info(f"   Expected: {expected_total} samples")
+                        logger.info(f"   Written:  {self.audio_samples_written} samples")
+                        logger.info(f"   Deficit:  {deficit} ({deficit / (48000 * 2):.2f}s)")
+                        logger.info(f"   Total overflows: {self.audio_overflow_count}")
+
+                        if deficit > 0:
+                            remaining = deficit
                             while remaining > 0:
-                                chunk_size = min(samples_per_chunk, remaining)
-                                silence = np.zeros(chunk_size, dtype=np.int16)
+                                chunk = min(SAMPLES_PER_CHUNK, remaining)
+                                silence = np.zeros(chunk, dtype=np.int16)
                                 self.audio_fifo_writer.write(silence.tobytes())
-                                self.audio_samples_written += chunk_size
-                                remaining -= chunk_size
-                            
-                            logger.info(f"✅ Wrote {samples_deficit} deficit samples")
+                                self.audio_samples_written += chunk
+                                remaining -= chunk
+
+                            logger.info(f"✅ Wrote {deficit} deficit samples")
                         else:
-                            logger.info(f"✅ No deficit - audio matches timeline")
-                        
-                        # Extended flush
-                        for i in range(10):
+                            logger.info(f"✅ No deficit — audio matches timeline")
+
+                        for _ in range(10):
                             self.audio_fifo_writer.flush()
                             time.sleep(0.5)
-                        
+
                         if hasattr(self.audio_fifo_writer, 'fileno'):
                             try:
                                 os.fsync(self.audio_fifo_writer.fileno())
                                 time.sleep(1.0)
                             except:
                                 pass
-                        
-                        logger.info(f"✅ Audio FIFO flushed - Final sample count: {self.audio_samples_written}")
-                
+
+                        logger.info(f"✅ FIFO flushed — final count: {self.audio_samples_written}")
+
                 self.audio_drain_complete = True
-                logger.info("⏰ Audio master clock thread stopped - drain complete")
+                logger.info("⏰ Metronome stopped — drain complete")
 
             except Exception as e:
                 logger.error(f"❌ Final flush error: {e}")
@@ -837,24 +879,28 @@ class StreamingRecordingWithChunks:
 
         self.audio_clock_thread = threading.Thread(
             target=audio_clock_loop,
-            name="AudioMasterClock",
+            name="AudioMetronome",
             daemon=True
         )
         self.audio_clock_thread.start()
-        logger.info("✅ Audio master clock thread launched")
-    
+        logger.info("✅ Audio METRONOME thread launched (unconditional 10ms writer)")
+
     def _check_all_audio_buffers_empty(self) -> bool:
-        """Check if all audio source buffers are empty"""
+        """Check if ALL audio buffers are empty (both read AND write sides)"""
         try:
+            # Check read-side (mixer) buffers
             with self.audio_mixer_lock:
-                if not self.audio_sources:
-                    return True
-                
                 for source_key, buffer in self.audio_sources.items():
                     if len(buffer) > 0:
                         return False
-                
-                return True
+
+            # Check write-side (ingestion) buffers
+            with self.audio_write_lock:
+                for source_key, buffer in self.audio_sources_write.items():
+                    if len(buffer) > 0:
+                        return False
+
+            return True
         except:
             return False
     
@@ -1225,15 +1271,13 @@ class StreamingRecordingWithChunks:
         
     def add_audio_samples(self, samples, participant_id="unknown", source_type="microphone"):
         """
-        Just store incoming audio samples per source — do NOT mix or write here.
-        Mixing and writing will be done by the independent clock-driven audio thread.
+        Layer 1 — Ingestion. Pushes into WRITE-SIDE buffer only.
+        Never blocks on the mixer. Never touches the read-side buffers.
         """
-        # Reject new audio if we're in draining mode or stopped
         if not self.audio_accepting_new_data or not self.is_recording or self.timeline.is_paused or not samples:
             return
 
         try:
-            # Normalize incoming samples to int16 stereo
             if isinstance(samples, list):
                 audio_array = np.array(samples, dtype=np.int16).flatten()
             elif isinstance(samples, np.ndarray):
@@ -1241,85 +1285,83 @@ class StreamingRecordingWithChunks:
             else:
                 return
 
-            # Audio is already stereo from _convert_frame_to_audio_simple()
-            # Just ensure even length for safety
             if len(audio_array) % 2 != 0:
                 audio_array = np.append(audio_array, 0)
+
             source_key = f"{participant_id}_{source_type}"
 
-            with self.audio_mixer_lock:
-                if source_key not in self.audio_sources:
-                    self.audio_sources[source_key] = deque(maxlen=self.max_audio_source_buffer * 4)  # larger tolerance
-                self.audio_sources[source_key].extend(audio_array.tolist())
+            # Write to WRITE-SIDE buffer (separate lock from mixer)
+            with self.audio_write_lock:
+                if source_key not in self.audio_sources_write:
+                    self.audio_sources_write[source_key] = deque()  # NO maxlen
+
+                buf = self.audio_sources_write[source_key]
+
+                # Explicit overflow: drop NEWEST (preserve continuity of queued audio)
+                if len(buf) + len(audio_array) > self.max_audio_source_buffer:
+                    overflow = len(buf) + len(audio_array) - self.max_audio_source_buffer
+                    self.audio_overflow_count += 1
+                    if self.audio_overflow_count % 100 == 1:
+                        logger.warning(
+                            f"⚠️ Audio overflow #{self.audio_overflow_count} for {source_key}: "
+                            f"dropping {overflow} newest samples (buffer: {len(buf)})"
+                        )
+                    keep = max(0, self.max_audio_source_buffer - len(buf))
+                    if keep > 0:
+                        buf.extend(audio_array[:keep].tolist())
+                    return
+
+                buf.extend(audio_array.tolist())
 
         except Exception as e:
             logger.warning(f"Audio enqueue error ({source_type}): {e}")
 
-    def _mix_and_write_audio_chunk(self, target_samples: int = 960):  # 10 ms @ 48 kHz stereo
-        """Mix whatever is available and ALWAYS write a full chunk — CRITICAL: writes silence when no sources active"""
+    def _mix_and_write_audio_chunk(self, target_samples: int = 960):
+        """Layer 2+3 — Mix read-side buffers and UNCONDITIONALLY write exactly target_samples.
+        This method is called by the metronome. It NEVER decides whether to write.
+        It ALWAYS writes exactly target_samples. No exceptions. No conditions."""
         try:
-            # ✅ FIX: Calculate how many samples we SHOULD have written by now
-            current_pts = self.timeline.get_current_pts()
-            expected_samples_total = int(current_pts * 48000 * 2)  # Timeline-based expectation
-            samples_behind = expected_samples_total - self.audio_samples_written
-            
-            # ✅ FIX: If we're falling behind timeline, log warning
-            if samples_behind > 48000:  # More than 0.5 seconds behind
-                logger.warning(f"⚠️ Audio falling behind timeline by {samples_behind / (48000 * 2):.2f}s")
-            
             with self.audio_mixer_lock:
                 mixed = np.zeros(target_samples, dtype=np.float32)
                 active_count = 0
-                has_any_data = False
 
                 for source_key, buffer in list(self.audio_sources.items()):
                     avail = len(buffer)
                     if avail > 0:
-                        has_any_data = True
-                        if avail >= target_samples:
-                            source_samples = np.array(
-                                [buffer.popleft() for _ in range(target_samples)],
-                                dtype=np.float32
-                            )
-                        else:
-                            source_samples = np.array(
-                                [buffer.popleft() for _ in range(avail)],
-                                dtype=np.float32
-                            )
+                        # Take exactly what we need, or all available + zero-pad
+                        take = min(avail, target_samples)
+                        # Fast batch pop using islice
+                        raw = [buffer.popleft() for _ in range(take)]
+                        source_samples = np.array(raw, dtype=np.float32)
+
+                        if take < target_samples:
+                            # Pad with zeros — this source ran short for this chunk
                             source_samples = np.pad(
-                                source_samples, 
-                                (0, target_samples - len(source_samples)),
+                                source_samples,
+                                (0, target_samples - take),
                                 mode='constant',
                                 constant_values=0
                             )
-                        
-                        assert len(source_samples) == target_samples, \
-                            f"Expected {target_samples} samples, got {len(source_samples)}"
-                        
+
                         mixed += source_samples
                         active_count += 1
 
-                # ✅ FIX: ALWAYS write samples, even if no data (silence maintains timeline sync)
+                # Average if multiple sources (prevents clipping from sum)
                 if active_count > 1:
                     mixed /= active_count
-                
-                mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
 
-            # ✅ FIX: ALWAYS write, regardless of has_any_data
+                # Hard clip to int16 range
+                output = np.clip(mixed, -32768, 32767).astype(np.int16)
+
+            # UNCONDITIONAL WRITE — this is the whole point
             with self.audio_lock:
                 if self.audio_enabled and self.audio_fifo_writer and self.ffmpeg_audio_process.poll() is None:
                     try:
-                        self.audio_fifo_writer.write(mixed.tobytes())
-                        self.audio_fifo_writer.flush()
-                        self.audio_samples_written += len(mixed)
-                        
-                        if self.audio_samples_written % (48000 * 2 * 5) == 0:
-                            logger.info(
-                                f"🎵 Audio: {self.audio_samples_written} samples | "
-                                f"Timeline: {current_pts:.1f}s | "
-                                f"Sources active: {active_count} | "
-                                f"Behind: {samples_behind / (48000 * 2):.2f}s"
-                            )
+                        self.audio_fifo_writer.write(output.tobytes())
+                        # Flush every 5th chunk (50ms) instead of every chunk
+                        self.audio_samples_written += target_samples
+                        if self.audio_chunks_written % 5 == 0:
+                            self.audio_fifo_writer.flush()
                     except (BrokenPipeError, IOError) as e:
                         logger.error(f"❌ Audio write error: {e}")
                         self.is_recording = False
@@ -1353,9 +1395,13 @@ class StreamingRecordingWithChunks:
         """Pause recording - timeline freezes, drop incoming frames"""
         pause_pts = self.timeline.pause()
         if pause_pts is not None:
-            # Clear audio buffer to prevent stale audio after resume
-            with self.audio_lock:
-                self.audio_buffer.clear()
+            # Clear BOTH audio buffer sides to prevent stale audio after resume
+            with self.audio_write_lock:
+                for buf in self.audio_sources_write.values():
+                    buf.clear()
+            with self.audio_mixer_lock:
+                for buf in self.audio_sources.values():
+                    buf.clear()
             
             logger.info(f"⏸️  Recording paused at {pause_pts:.3f}s")
             logger.info(f"   - FFmpeg continues running")
