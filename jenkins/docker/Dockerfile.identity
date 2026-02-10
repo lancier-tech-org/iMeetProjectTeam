@@ -10,6 +10,7 @@ FROM 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/gpu-worker-base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
     APP_HOME=/app \
     INSIGHTFACE_HOME=/app/models/.insightface \
     MPLCONFIGDIR=/tmp/.matplotlib \
