@@ -66,7 +66,6 @@
 
 
 
-
 # =============================================================================
 # iMeetPro Backend ConfigMap - Production (UPDATED FOR MICROSERVICE SPLIT)
 # =============================================================================
@@ -128,7 +127,7 @@ data:
   IDENTITY_SERVICE_URL: "http://identity-service.imeetpro.svc.cluster.local:8220"
   IDENTITY_SERVICE_PORT: "8220"
   IDENTITY_CHECK_INTERVAL: "3.0"
-  IDENTITY_UNKNOWN_THRESHOLD: "10"
+  IDENTITY_UNKNOWN_THRESHOLD: "5"
   IDENTITY_MAX_WARNINGS: "3"
   IDENTITY_REMOVAL_PENALTY: "1.0"
 
