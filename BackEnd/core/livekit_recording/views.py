@@ -1,4 +1,4 @@
-# core/stream_recording/views.py - FIXED VERSION
+# core/livekit_recording/views.py - FIXED VERSION
 
 import json
 import logging
@@ -23,10 +23,10 @@ def start_stream_recording(request, meeting_id):
         data = json.loads(request.body) if request.body else {}
         user_id = data.get('user_id') or request.GET.get('user_id')
         room_name = data.get('room_name') or f"meeting_{meeting_id}"
-        session_id = data.get('session_id') or request.GET.get('session_id')  # ✅ NEW
         
         if not user_id:
             return JsonResponse({"Error": "Missing user_id"}, status=400)
+        
         # Check if meeting exists in database
         try:
             with connection.cursor() as cursor:
@@ -38,9 +38,8 @@ def start_stream_recording(request, meeting_id):
             logger.warning(f"Database check failed: {db_error}")
         
         # Start stream recording - SYNCHRONOUS CALL (FIXED)
-        result = stream_recording_service.start_stream_recording(
-            meeting_id, user_id, room_name, session_id  # ✅ NEW: Pass session_id
-        )
+        result = stream_recording_service.start_stream_recording(meeting_id, user_id, room_name)
+        
         if result.get("status") == "success":
             # Update database to reflect recording state
             try:
@@ -70,12 +69,13 @@ def start_stream_recording(request, meeting_id):
 def stop_stream_recording(request, meeting_id):
     """Stop LiveKit stream recording and process the video"""
     try:
-        # Parse request data to get session_id if provided
+        # ✅ FIX: Extract session_id from request
         data = json.loads(request.body) if request.body else {}
-        session_id = data.get('session_id') or request.GET.get('session_id')  # ✅ NEW
+        session_id = data.get('session_id')
         
-        # Stop stream recording - SYNCHRONOUS CALL (FIXED)
-        result = stream_recording_service.stop_stream_recording(meeting_id, session_id)  # ✅ NEW: Pass session_id
+        # Stop stream recording - pass session_id to stop correct one
+        result = stream_recording_service.stop_stream_recording(meeting_id, session_id=session_id)
+        
         # Update database to reflect stopped state
         try:
             with connection.cursor() as cursor:
@@ -176,10 +176,8 @@ def Start_Recording_Stream(request, id):
 
             # Start stream recording - SYNCHRONOUS CALL (FIXED)
             room_name = recording_settings.get('room_name', f"meeting_{id}")
-            session_id = recording_settings.get('session_id')  # ✅ NEW: Get from settings
-            result = stream_recording_service.start_stream_recording(
-                id, str(host_id), room_name, session_id  # ✅ NEW: Pass session_id
-            )
+            result = stream_recording_service.start_stream_recording(id, str(host_id), room_name)
+            
             if result.get("status") == "success":
                 # Update database
                 started_at = timezone.now()
@@ -197,9 +195,10 @@ def Start_Recording_Stream(request, id):
                     "is_recording": True,
                     "meeting_id": id,
                     "recording_id": result.get("recording_id"),
+                    "session_id": result.get("session_id"),  # ✅ Pass to frontend
                     "recording_type": "django_compatible_livekit_stream",
-                    "screen_share_required": False,  # Works with or without screen share
-                    "user_interaction_required": False,  # Server-side recording
+                    "screen_share_required": False,
+                    "user_interaction_required": False,
                     "bot_joining": True,
                     "captures": "all_video_audio_streams",
                     "room_name": room_name,
@@ -272,12 +271,12 @@ def Stop_Recording_Stream(request, id):
                     "recording_type": "django_compatible_livekit_stream"
                 }, status=200)
 
-        # Stop stream recording - SYNCHRONOUS CALL (FIXED)
-        # Parse request data to get session_id if provided
-        data = json.loads(request.body) if request.body else {}
-        session_id = data.get('session_id') or request.GET.get('session_id')  # ✅ NEW
+        # ✅ FIX: Extract session_id from request body
+        stop_data = json.loads(request.body) if request.body else {}
+        session_id = stop_data.get('session_id')
         
-        result = stream_recording_service.stop_stream_recording(id, session_id)  # ✅ NEW: Pass session_id
+        # Stop stream recording - pass session_id to stop correct one
+        result = stream_recording_service.stop_stream_recording(id, session_id=session_id)
         
         # Update database to reflect stopped state
         ended_at = timezone.now()
@@ -402,12 +401,10 @@ def Start_Recording(request, id):
             # Start LiveKit stream recording
             try:
                 room_name = recording_settings.get('room_name', f"meeting_{id}")
-                session_id = recording_settings.get('session_id')  # ✅ NEW: Get from settings
                 
                 # FIXED: Direct synchronous call
-                result = stream_recording_service.start_stream_recording(
-                    id, str(host_id), room_name, session_id  # ✅ NEW: Pass session_id
-                )
+                result = stream_recording_service.start_stream_recording(id, str(host_id), room_name)
+                
                 if result.get("status") == "success":
                     # Update database to reflect recording state
                     started_at = timezone.now()
@@ -512,12 +509,11 @@ def Stop_Recording(request, id):
 
         # Stop LiveKit stream recording
         try:
-            # Parse request data to get session_id if provided
-            data = json.loads(request.body) if request.body else {}
-            session_id = data.get('session_id') or request.GET.get('session_id')  # ✅ NEW
+            # ✅ FIX: Extract session_id from request
+            stop_data = json.loads(request.body) if request.body else {}
+            session_id = stop_data.get('session_id')
             
-            # FIXED: Direct synchronous call
-            result = stream_recording_service.stop_stream_recording(id, session_id)  # ✅ NEW: Pass session_id
+            result = stream_recording_service.stop_stream_recording(id, session_id=session_id)
             
             # Update database to reflect stopped state FIRST
             ended_at = timezone.now()

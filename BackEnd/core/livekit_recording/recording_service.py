@@ -2101,25 +2101,39 @@ class FixedGoogleMeetRecorder:
     #         (Add after __init__ method, around line 2020)
     # =============================================================================
 
-    def _redis_key(self, meeting_id: str) -> str:
-        """Generate Redis key for recording state"""
+    def _redis_key(self, meeting_id: str, session_id: str = None) -> str:
+        """Generate Redis key for recording state - unique per session"""
+        if session_id:
+            return f"recording:active:{meeting_id}:{session_id}"
         return f"recording:active:{meeting_id}"
+    
+    def _redis_sessions_key(self, meeting_id: str) -> str:
+        """Redis SET key tracking all active session_ids for a meeting"""
+        return f"recording:sessions:{meeting_id}"
     
     def _get_pod_name(self) -> str:
         """Get current Kubernetes pod name"""
         return os.getenv('HOSTNAME', f'unknown-{os.getpid()}')
     
     def _save_recording_to_redis(self, meeting_id: str, recording_data: dict) -> bool:
-        """Save recording state to Redis"""
+        """Save recording state to Redis — keyed by meeting_id:session_id"""
         try:
             if not REDIS_AVAILABLE or not redis_client:
                 logger.warning("Redis not available, using in-memory only")
                 return False
             
-            # Convert non-serializable objects to strings
-            # Convert non-serializable objects to strings
+            # ✅ FIX: Get session_id from bot instance
+            session_id = None
+            bot = recording_data.get("bot_instance")
+            if bot and hasattr(bot, 'stream_recorder'):
+                session_id = bot.stream_recorder.session_id
+            
+            if not session_id:
+                session_id = recording_data.get("session_id", f"legacy-{os.getpid()}")
+            
             redis_data = {
                 "meeting_id": meeting_id,
+                "session_id": session_id,
                 "room_name": recording_data.get("room_name", ""),
                 "recording_doc_id": recording_data.get("recording_doc_id", ""),
                 "recorder_identity": recording_data.get("recorder_identity", ""),
@@ -2128,63 +2142,99 @@ class FixedGoogleMeetRecorder:
                 "is_paused": recording_data.get("is_paused", False),
                 "start_time": recording_data.get("start_time").isoformat() if recording_data.get("start_time") else "",
                 "status": "active",
-                "pod_name": self._get_pod_name(),  # ✅ ADD THIS LINE
-                "worker_pid": os.getpid()          # ✅ ADD THIS LINE
+                "pod_name": self._get_pod_name(),
+                "worker_pid": os.getpid()
             }
-                        
-            # Store with 6 hour TTL (recordings shouldn't last longer)
+            
+            # ✅ FIX: Store with session-specific key (not just meeting_id)
             redis_client.setex(
-                self._redis_key(meeting_id),
+                self._redis_key(meeting_id, session_id),
                 21600,  # 6 hours
                 json.dumps(redis_data)
             )
-            logger.info(f"✅ Recording state saved to Redis: {meeting_id}")
+            
+            # ✅ FIX: Add session_id to meeting's session set
+            redis_client.sadd(self._redis_sessions_key(meeting_id), session_id)
+            redis_client.expire(self._redis_sessions_key(meeting_id), 21600)
+            
+            logger.info(f"✅ Recording state saved to Redis: {meeting_id}:{session_id}")
             return True
             
         except Exception as e:
             logger.error(f"❌ Failed to save recording to Redis: {e}")
             return False
     
-    def _get_recording_from_redis(self, meeting_id: str) -> Optional[dict]:
-        """Get recording state from Redis"""
+    def _get_recording_from_redis(self, meeting_id: str, session_id: str = None) -> Optional[dict]:
+        """Get recording state from Redis — by session_id or most recent"""
         try:
             if not REDIS_AVAILABLE or not redis_client:
                 return None
             
-            data = redis_client.get(self._redis_key(meeting_id))
-            if data:
-                return json.loads(data)
-            return None
+            # If session_id provided, look up directly
+            if session_id:
+                data = redis_client.get(self._redis_key(meeting_id, session_id))
+                if data:
+                    return json.loads(data)
+                return None
+            
+            # No session_id — find any active session for this meeting
+            active_sessions = redis_client.smembers(self._redis_sessions_key(meeting_id))
+            if not active_sessions:
+                return None
+            
+            # Return the most recently created session (check each)
+            latest = None
+            for sid in active_sessions:
+                data = redis_client.get(self._redis_key(meeting_id, sid))
+                if data:
+                    parsed = json.loads(data)
+                    if latest is None or parsed.get("start_time", "") > latest.get("start_time", ""):
+                        latest = parsed
+            
+            return latest
             
         except Exception as e:
             logger.error(f"❌ Failed to get recording from Redis: {e}")
             return None
     
-    def _delete_recording_from_redis(self, meeting_id: str) -> bool:
-        """Delete recording state from Redis"""
+    def _delete_recording_from_redis(self, meeting_id: str, session_id: str = None) -> bool:
+        """Delete recording state from Redis — only the specific session"""
         try:
             if not REDIS_AVAILABLE or not redis_client:
                 return False
             
-            redis_client.delete(self._redis_key(meeting_id))
-            logger.info(f"✅ Recording state deleted from Redis: {meeting_id}")
+            if session_id:
+                # ✅ FIX: Delete only THIS session's key (not other recordings in same meeting)
+                redis_client.delete(self._redis_key(meeting_id, session_id))
+                redis_client.srem(self._redis_sessions_key(meeting_id), session_id)
+                logger.info(f"✅ Recording state deleted from Redis: {meeting_id}:{session_id}")
+            else:
+                # Fallback: find and delete most recent session
+                active_sessions = redis_client.smembers(self._redis_sessions_key(meeting_id)) if redis_client else set()
+                for sid in active_sessions:
+                    redis_client.delete(self._redis_key(meeting_id, sid))
+                redis_client.delete(self._redis_sessions_key(meeting_id))
+                logger.info(f"✅ All recording states deleted from Redis: {meeting_id} ({len(active_sessions)} sessions)")
+            
             return True
             
         except Exception as e:
             logger.error(f"❌ Failed to delete recording from Redis: {e}")
             return False
     
-    def _update_recording_in_redis(self, meeting_id: str, updates: dict) -> bool:
-        """Update recording state in Redis"""
+    def _update_recording_in_redis(self, meeting_id: str, updates: dict, session_id: str = None) -> bool:
+        """Update recording state in Redis — session-aware"""
         try:
             if not REDIS_AVAILABLE or not redis_client:
                 return False
             
-            existing = self._get_recording_from_redis(meeting_id)
+            existing = self._get_recording_from_redis(meeting_id, session_id=session_id)
             if existing:
+                # Use the session_id from existing data if not provided
+                actual_session_id = session_id or existing.get("session_id")
                 existing.update(updates)
                 redis_client.setex(
-                    self._redis_key(meeting_id),
+                    self._redis_key(meeting_id, actual_session_id),
                     21600,
                     json.dumps(existing)
                 )
@@ -2207,20 +2257,24 @@ class FixedGoogleMeetRecorder:
                 return
             
             with self._global_lock:
-                for meeting_id in list(self.active_recordings.keys()):
-                    redis_data = self._get_recording_from_redis(meeting_id)
+                for compound_key in list(self.active_recordings.keys()):
+                    # ✅ FIX: Parse compound key to get meeting_id and session_id
+                    if ":" not in compound_key:
+                        continue
+                    meeting_id, session_id = compound_key.split(":", 1)
+                    redis_data = self._get_recording_from_redis(meeting_id, session_id=session_id)
                     if not redis_data:
                         continue
                     
                     status = redis_data.get("status")
                     
                     if status == "stop_requested":
-                        logger.info(f"🛑 Stop request detected from Redis for {meeting_id}")
-                        self.stop_stream_recording(meeting_id)
+                        logger.info(f"🛑 Stop request detected from Redis for {meeting_id}:{session_id}")
+                        self.stop_stream_recording(meeting_id, session_id=session_id)
                     
                     elif status == "pause_requested":
-                        logger.info(f"⏸️ Pause request detected from Redis for {meeting_id}")
-                        recording_info = self.active_recordings.get(meeting_id)
+                        logger.info(f"⏸️ Pause request detected from Redis for {meeting_id}:{session_id}")
+                        recording_info = self.active_recordings.get(compound_key)
                         if recording_info:
                             bot = recording_info.get("bot_instance")
                             if bot:
@@ -2233,18 +2287,18 @@ class FixedGoogleMeetRecorder:
                                         self._update_recording_in_redis(meeting_id, {
                                             "status": "paused",
                                             "pause_timestamp": pause_pts
-                                        })
+                                        }, session_id=session_id)
                                         logger.info(f"✅ Pause executed via Redis for {meeting_id} at {pause_pts:.3f}s")
                                     else:
-                                        self._update_recording_in_redis(meeting_id, {"status": "paused"})
+                                        self._update_recording_in_redis(meeting_id, {"status": "paused"}, session_id=session_id)
                                         logger.info(f"⏸️ Already paused for {meeting_id}")
                                 except Exception as e:
                                     logger.error(f"❌ Redis pause execution error: {e}")
-                                    self._update_recording_in_redis(meeting_id, {"status": "active"})
+                                    self._update_recording_in_redis(meeting_id, {"status": "active"}, session_id=session_id)
                     
                     elif status == "resume_requested":
-                        logger.info(f"▶️ Resume request detected from Redis for {meeting_id}")
-                        recording_info = self.active_recordings.get(meeting_id)
+                        logger.info(f"▶️ Resume request detected from Redis for {meeting_id}:{session_id}")
+                        recording_info = self.active_recordings.get(compound_key)
                         if recording_info:
                             bot = recording_info.get("bot_instance")
                             if bot:
@@ -2255,14 +2309,14 @@ class FixedGoogleMeetRecorder:
                                         recording_info["resume_time"] = datetime.now()
                                         self._update_recording_in_redis(meeting_id, {
                                             "status": "active"
-                                        })
+                                        }, session_id=session_id)
                                         logger.info(f"✅ Resume executed via Redis for {meeting_id} at {resume_pts:.3f}s")
                                     else:
-                                        self._update_recording_in_redis(meeting_id, {"status": "active"})
+                                        self._update_recording_in_redis(meeting_id, {"status": "active"}, session_id=session_id)
                                         logger.info(f"▶️ Already running for {meeting_id}")
                                 except Exception as e:
                                     logger.error(f"❌ Redis resume execution error: {e}")
-                                    self._update_recording_in_redis(meeting_id, {"status": "paused"})
+                                    self._update_recording_in_redis(meeting_id, {"status": "paused"}, session_id=session_id)
                         
         except Exception as e:
             logger.error(f"Error checking Redis requests: {e}")
@@ -2337,13 +2391,6 @@ class FixedGoogleMeetRecorder:
                 "meeting_id": meeting_id
             }
         
-        with self._global_lock:
-            if meeting_id in self.active_recordings:
-                return {
-                    "status": "already_active",
-                    "message": "Recording already in progress",
-                    "meeting_id": meeting_id
-                }
         
         try:
             timestamp = int(time.time())
@@ -2375,17 +2422,20 @@ class FixedGoogleMeetRecorder:
                 
                 # Store bot instance for pause/resume
                 with self._global_lock:
-                    if meeting_id in self.active_recordings:
-                        self.active_recordings[meeting_id]["bot_instance"] = bot_instance
-                        self.active_recordings[meeting_id]["is_paused"] = False
-                        
-                        # ✅ SAVE TO REDIS for cross-pod access
-                        self._save_recording_to_redis(meeting_id, self.active_recordings[meeting_id])
+                    # ✅ FIX: Use compound key to find the recording we just created
+                    session_id = bot_instance.stream_recorder.session_id
+                    compound_key = f"{meeting_id}:{session_id}"
+                    
+                    if compound_key in self.active_recordings:
+                        self.active_recordings[compound_key]["bot_instance"] = bot_instance
+                        self.active_recordings[compound_key]["is_paused"] = False
+                        self._save_recording_to_redis(meeting_id, self.active_recordings[compound_key])
                 
                 return {
                     "status": "success",
                     "message": f"FAST recording started @ {self.target_fps} FPS",
                     "meeting_id": meeting_id,
+                    "session_id": bot_instance.stream_recorder.session_id,  # ✅ NEW: Return to frontend
                     "recording_id": recording_doc_id,
                     "recorder_identity": recorder_identity,
                     "target_fps": self.target_fps
@@ -2440,8 +2490,12 @@ class FixedGoogleMeetRecorder:
                     
                     logger.info(f"✅ Bot instance retrieved for pause/resume")
                     
+                    # ✅ FIX: Get session_id from bot for compound key
+                    session_id = bot_instance.stream_recorder.session_id
+                    compound_key = f"{meeting_id}:{session_id}"
+                    
                     with self._global_lock:
-                        self.active_recordings[meeting_id] = {
+                        self.active_recordings[compound_key] = {
                             "room_name": room_name,
                             "recording_doc_id": recording_doc_id,
                             "recorder_identity": recorder_identity,
@@ -2450,11 +2504,12 @@ class FixedGoogleMeetRecorder:
                             "stop_event": stop_event,
                             "recording_future": future,
                             "target_fps": self.target_fps,
-                            "bot_instance": bot_instance,  # ✅ PROPERLY STORED NOW
-                            "is_paused": False
+                            "bot_instance": bot_instance,
+                            "is_paused": False,
+                            "session_id": session_id,
+                            "meeting_id": meeting_id
                         }
-                    # ADD THIS LINE:
-                    self._save_recording_to_redis(meeting_id, self.active_recordings[meeting_id])
+                    self._save_recording_to_redis(meeting_id, self.active_recordings[compound_key])
                     return True, None, bot_instance
                     
                 else:
@@ -2573,52 +2628,68 @@ class FixedGoogleMeetRecorder:
     #         Replace the existing method with this:
     # =============================================================================
 
-    def stop_stream_recording(self, meeting_id: str) -> Dict:
-        """Stop recording with Redis state lookup for cross-pod support"""
-        
-        # First check local in-memory (same pod that started)
+    def _find_local_recording(self, meeting_id: str, session_id: str = None):
+        """Find local recording by meeting_id and optional session_id"""
         with self._global_lock:
-            local_recording = self.active_recordings.get(meeting_id)
+            if session_id:
+                compound_key = f"{meeting_id}:{session_id}"
+                rec = self.active_recordings.get(compound_key)
+                if rec:
+                    return compound_key, rec
+            
+            # No session_id or not found — find most recent for this meeting
+            for key in sorted(self.active_recordings.keys(), reverse=True):
+                if key.startswith(f"{meeting_id}:"):
+                    return key, self.active_recordings[key]
+            
+            return None, None
+
+    def stop_stream_recording(self, meeting_id: str, session_id: str = None) -> Dict:
+        """Stop recording with Redis state lookup for cross-pod support — session-aware"""
+        
+        # ✅ FIX: Find by compound key (meeting_id:session_id)
+        compound_key, local_recording = self._find_local_recording(meeting_id, session_id)
         
         # If not found locally, check Redis (different pod scenario)
-        redis_recording = self._get_recording_from_redis(meeting_id)
+        redis_recording = self._get_recording_from_redis(meeting_id, session_id=session_id)
+        
+        # ✅ FIX: Extract session_id from wherever we found it
+        if local_recording and not session_id:
+            session_id = local_recording.get("session_id")
+            if not session_id and compound_key and ":" in compound_key:
+                session_id = compound_key.split(":", 1)[1]
+        if redis_recording and not session_id:
+            session_id = redis_recording.get("session_id")
 
         if not local_recording and not redis_recording:
             return {
                 "status": "error",
                 "message": "No active recording found",
-                "meeting_id": meeting_id
+                "meeting_id": meeting_id,
+                "session_id": session_id
             }
 
-        # If we have local recording, use it (best case - same pod)
         if local_recording:
             recording_info = local_recording.copy()
             has_bot = True
         else:
-            # ✅ NEW: Check if it's actually a different pod
             current_pod = self._get_pod_name()
             redis_pod = redis_recording.get("pod_name", "unknown")
             
             if current_pod == redis_pod:
-                # Same pod, different worker - signal via Redis for correct worker to stop
                 logger.warning(f"⚠️ Recording found in Redis on SAME POD but not in local memory")
-                logger.warning(f"   This is a different worker scenario - will signal via Redis")
                 logger.warning(f"   Pod: {current_pod}, Worker PID: {os.getpid()}")
-                logger.warning(f"   Correct worker will pick up stop signal within 3 seconds")
-                
                 recording_info = redis_recording
                 has_bot = False
             else:
-                # Actually different pod - we have Redis info but no bot instance
                 recording_info = redis_recording
                 has_bot = False
-                logger.warning(f"⚠️ Recording found on DIFFERENT POD")
-                logger.warning(f"   Current pod: {current_pod}, Recording pod: {redis_pod}")
+                logger.warning(f"⚠️ Recording found on DIFFERENT POD ({redis_pod})")
+
         try:
-            logger.info(f"🛑 Stopping FAST recording for meeting {meeting_id}")
+            logger.info(f"🛑 Stopping FAST recording for meeting {meeting_id}, session {session_id}")
             
             if has_bot:
-                # Same pod - can properly stop
                 stop_event = recording_info.get("stop_event")
                 if stop_event:
                     stop_event.set()
@@ -2634,39 +2705,42 @@ class FixedGoogleMeetRecorder:
                         daemon=True
                     ).start()
                     
-                    # Clean up local and Redis
+                    # ✅ FIX: Delete only THIS session from local dict and Redis
                     with self._global_lock:
-                        if meeting_id in self.active_recordings:
-                            del self.active_recordings[meeting_id]
-                    self._delete_recording_from_redis(meeting_id)
+                        if compound_key and compound_key in self.active_recordings:
+                            del self.active_recordings[compound_key]
+                    self._delete_recording_from_redis(meeting_id, session_id=session_id)
 
                     return {
                         "status": "success",
                         "message": "FAST recording stopped. Processing will continue in background.",
-                        "meeting_id": meeting_id
+                        "meeting_id": meeting_id,
+                        "session_id": session_id
                     }
             else:
-                # Different pod - mark as stopped in Redis, actual pod will clean up
-                self._update_recording_in_redis(meeting_id, {"status": "stop_requested"})
-                logger.info(f"⚠️ Stop requested via Redis for {meeting_id} - recording pod will handle cleanup")
+                # Different pod — signal via Redis with session_id
+                self._update_recording_in_redis(meeting_id, {"status": "stop_requested"}, session_id=session_id)
+                logger.info(f"⚠️ Stop requested via Redis for {meeting_id}:{session_id}")
                 
                 return {
                     "status": "success",
                     "message": "Stop signal sent. Recording will be stopped by the recording pod.",
                     "meeting_id": meeting_id,
-                    "note": "Cross-pod stop - finalization will be handled by original pod"
+                    "session_id": session_id,
+                    "note": "Cross-pod stop"
                 }
             
-            # Cleanup
+            # Cleanup fallback
             with self._global_lock:
-                if meeting_id in self.active_recordings:
-                    del self.active_recordings[meeting_id]
-            self._delete_recording_from_redis(meeting_id)
+                if compound_key and compound_key in self.active_recordings:
+                    del self.active_recordings[compound_key]
+            self._delete_recording_from_redis(meeting_id, session_id=session_id)
 
             return {
                 "status": "success",
                 "message": "FAST recording stopped.",
-                "meeting_id": meeting_id
+                "meeting_id": meeting_id,
+                "session_id": session_id
             }
 
         except Exception as e:
@@ -2683,8 +2757,7 @@ class FixedGoogleMeetRecorder:
         """Pause recording - timeline freezes (with cross-pod Redis support)"""
         
         # First check local in-memory (same pod that started)
-        with self._global_lock:
-            local_recording = self.active_recordings.get(meeting_id)
+        compound_key, local_recording = self._find_local_recording(meeting_id)
         
         # If found locally, execute pause directly
         if local_recording:
@@ -2706,10 +2779,11 @@ class FixedGoogleMeetRecorder:
                         local_recording["pause_timestamp"] = pause_pts
                         local_recording["pause_time"] = datetime.now()
                     
+                    session_id = local_recording.get("session_id")
                     self._update_recording_in_redis(meeting_id, {
                         "status": "paused",
                         "pause_timestamp": pause_pts
-                    })
+                    }, session_id=session_id)
                     
                     logger.info(f"⏸️  Recording paused for {meeting_id} at {pause_pts:.3f}s")
                     
@@ -2745,17 +2819,18 @@ class FixedGoogleMeetRecorder:
             }
         
         # Found in Redis on another pod - signal via Redis
+        redis_session_id = redis_recording.get("session_id")
         current_pod = self._get_pod_name()
         recording_pod = redis_recording.get("pod_name", "unknown")
-        logger.info(f"⏸️ Pause request for {meeting_id} - recording on pod {recording_pod}, request on {current_pod}")
+        logger.info(f"⏸️ Pause request for {meeting_id}:{redis_session_id} - recording on pod {recording_pod}, request on {current_pod}")
         
-        self._update_recording_in_redis(meeting_id, {"status": "pause_requested"})
+        self._update_recording_in_redis(meeting_id, {"status": "pause_requested"}, session_id=redis_session_id)
         
         # Wait briefly for the owning pod to execute the pause (up to 5 seconds)
         import time
         for i in range(10):
             time.sleep(0.5)
-            updated = self._get_recording_from_redis(meeting_id)
+            updated = self._get_recording_from_redis(meeting_id, session_id=redis_session_id)
             if updated and updated.get("status") == "paused":
                 pause_pts = updated.get("pause_timestamp", 0)
                 logger.info(f"✅ Cross-pod pause confirmed for {meeting_id}")
@@ -2780,8 +2855,7 @@ class FixedGoogleMeetRecorder:
         """Resume recording - timeline continues (with cross-pod Redis support)"""
         
         # First check local in-memory (same pod that started)
-        with self._global_lock:
-            local_recording = self.active_recordings.get(meeting_id)
+        compound_key, local_recording = self._find_local_recording(meeting_id)
         
         # If found locally, execute resume directly
         if local_recording:
@@ -2814,9 +2888,10 @@ class FixedGoogleMeetRecorder:
                             "duration": pause_duration
                         })
                     
+                    session_id = local_recording.get("session_id")
                     self._update_recording_in_redis(meeting_id, {
                         "status": "active"
-                    })
+                    }, session_id=session_id)
                     
                     logger.info(f"▶️  Recording resumed for {meeting_id} at {resume_pts:.3f}s")
                     logger.info(f"   - Paused for {pause_duration:.1f}s")
@@ -2855,17 +2930,18 @@ class FixedGoogleMeetRecorder:
             }
         
         # Found in Redis on another pod - signal via Redis
+        redis_session_id = redis_recording.get("session_id")
         current_pod = self._get_pod_name()
         recording_pod = redis_recording.get("pod_name", "unknown")
-        logger.info(f"▶️ Resume request for {meeting_id} - recording on pod {recording_pod}, request on {current_pod}")
+        logger.info(f"▶️ Resume request for {meeting_id}:{redis_session_id} - recording on pod {recording_pod}, request on {current_pod}")
         
-        self._update_recording_in_redis(meeting_id, {"status": "resume_requested"})
+        self._update_recording_in_redis(meeting_id, {"status": "resume_requested"}, session_id=redis_session_id)
         
         # Wait briefly for the owning pod to execute the resume (up to 5 seconds)
         import time
         for i in range(10):
             time.sleep(0.5)
-            updated = self._get_recording_from_redis(meeting_id)
+            updated = self._get_recording_from_redis(meeting_id, session_id=redis_session_id)
             if updated and updated.get("status") == "active":
                 logger.info(f"✅ Cross-pod resume confirmed for {meeting_id}")
                 return {
@@ -2889,6 +2965,16 @@ class FixedGoogleMeetRecorder:
         try:
             logger.info(f"🎬 Finalizing recording for {meeting_id}")
             
+            # ✅ FIX: Extract session_id EARLY so all cleanup calls can use it
+            session_id = recording_info.get("session_id")
+            if not session_id:
+                bot = recording_info.get("bot_instance")
+                if bot and hasattr(bot, 'stream_recorder'):
+                    session_id = bot.stream_recorder.session_id
+                else:
+                    session_id = "unknown"
+            logger.info(f"📝 Session ID for finalization: {session_id}")
+            
             # Get target FPS from recording info
             self.target_fps = recording_info.get("target_fps", 20)
             
@@ -2906,7 +2992,7 @@ class FixedGoogleMeetRecorder:
             bot_instance = recording_info.get("bot_instance")
             if not bot_instance:
                 logger.error("❌ No bot instance found")
-                self._cleanup_recording(meeting_id)
+                self._cleanup_recording(meeting_id, session_id=session_id)
                 return
 
             video_file = bot_instance.stream_recorder.temp_video_path
@@ -3042,7 +3128,7 @@ class FixedGoogleMeetRecorder:
                 if os.path.exists(video_file):
                     output_file = video_file
                 else:
-                    self._cleanup_recording(meeting_id)
+                    self._cleanup_recording(meeting_id, session_id=session_id)
                     return
 
             # ==================== EXTRACT DURATION ====================
@@ -3101,20 +3187,19 @@ class FixedGoogleMeetRecorder:
             else:
                 if not os.path.exists(output_file):
                     logger.error(f"❌ Output file not found after {max_retries} attempts")
-                    self._cleanup_recording(meeting_id)
+                    self._cleanup_recording(meeting_id, session_id=session_id)
                     return
                 
                 file_size = os.path.getsize(output_file)
                 if file_size == 0:
                     logger.error(f"❌ Output file is empty after {max_retries} attempts")
-                    self._cleanup_recording(meeting_id)
+                    self._cleanup_recording(meeting_id, session_id=session_id)
                     return
 
             logger.info(f"✅ Recording file ready: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB)")
             
             # ==================== UPLOAD TO S3 ====================
-            # ✅ CRITICAL FIX: Include session ID to prevent overwriting previous recordings
-            session_id = recording_info.get("bot_instance").stream_recorder.session_id if recording_info.get("bot_instance") else "unknown"
+            # session_id already extracted at top of method
             timestamp = int(time.time())
             final_s3_key = f"videos/{meeting_id}_{session_id}_{timestamp}.mp4"
 
@@ -3157,7 +3242,7 @@ class FixedGoogleMeetRecorder:
                         
             except Exception as s3_error:
                 logger.error(f"❌ S3 operations failed: {s3_error}")
-                self._cleanup_recording(meeting_id)
+                self._cleanup_recording(meeting_id, session_id=session_id)
                 return
             
             # ==================== GET USER & MEETING METADATA ====================
@@ -3201,40 +3286,43 @@ class FixedGoogleMeetRecorder:
             try:
                 from bson import ObjectId
                 
-                # ✅ CRITICAL FIX: Get the recording start timestamp to match with custom name
-                recording_start_time = recording_info.get("start_time")
-                if recording_start_time:
-                    if isinstance(recording_start_time, datetime):
-                        recording_timestamp = int(recording_start_time.timestamp())
-                    else:
-                        recording_timestamp = int(recording_start_time)
-                else:
-                    recording_timestamp = timestamp  # Use current timestamp as fallback
+                # ✅ FIX: Match custom name by session_id FIRST (prevents name swap)
+                custom_name_doc = None
                 
-                # Query for custom name that matches THIS recording session
-                # Try timestamp match first (within 10 second window for clock skew)
-                custom_name_doc = collection.find_one({
-                    "meeting_id": meeting_id,
-                    "pending_name_update": True,
-                    "recording_timestamp": {
-                        "$gte": recording_timestamp - 10,
-                        "$lte": recording_timestamp + 10
-                    }
-                })
+                if session_id:
+                    custom_name_doc = collection.find_one({
+                        "meeting_id": meeting_id,
+                        "pending_name_update": True,
+                        "custom_name_session_id": session_id
+                    })
+                    if custom_name_doc:
+                        logger.info(f"📝 Found custom name by session_id {session_id}")
                 
-                # Fallback: Get most recent custom name for this meeting if exact match not found
+                # Fallback: Get OLDEST unclaimed name (FIFO order, not most recent)
                 if not custom_name_doc:
                     custom_name_doc = collection.find_one(
                         {
                             "meeting_id": meeting_id,
-                            "pending_name_update": True
+                            "pending_name_update": True,
+                            "claimed_by_session": {"$exists": False}
                         },
-                        sort=[("name_stored_at", -1)]  # Get most recent
+                        sort=[("name_stored_at", 1)]  # ✅ FIX: OLDEST first (FIFO)
                     )
+                    if custom_name_doc:
+                        logger.info(f"📝 Found custom name by FIFO fallback")
                 
                 if custom_name_doc:
                     custom_recording_name = custom_name_doc.get("custom_recording_name")
-                    logger.info(f"📝 Custom name: {custom_recording_name}")
+                    # ✅ FIX: Claim this name so other recordings don't grab it
+                    collection.update_one(
+                        {"_id": custom_name_doc["_id"]},
+                        {"$set": {
+                            "pending_name_update": False,
+                            "claimed_by_session": session_id or "legacy",
+                            "claimed_at": datetime.now()
+                        }}
+                    )
+                    logger.info(f"📝 Claimed custom name: {custom_recording_name}")
             except Exception as e:
                 logger.warning(f"Custom name check failed: {e}")
 
@@ -3320,24 +3408,28 @@ class FixedGoogleMeetRecorder:
             except Exception as e:
                 logger.warning(f"⚠️ Processing pipeline failed: {e}")
             
-            # Final cleanup
-            self._cleanup_recording(meeting_id)
-            
             logger.info(f"🎉 Recording finalized successfully for {meeting_id}")
             
         except Exception as e:
             logger.error(f"❌ Finalization failed: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            self._cleanup_recording(meeting_id)
+            self._cleanup_recording(meeting_id, session_id=session_id)
 
-    def _cleanup_recording(self, meeting_id: str):
-        """Helper to cleanup recording state"""
+    def _cleanup_recording(self, meeting_id: str, session_id: str = None):
+        """Helper to cleanup recording state — session-aware"""
         try:
-            self._delete_recording_from_redis(meeting_id)
+            self._delete_recording_from_redis(meeting_id, session_id=session_id)
             with self._global_lock:
-                if meeting_id in self.active_recordings:
-                    del self.active_recordings[meeting_id]
+                if session_id:
+                    compound_key = f"{meeting_id}:{session_id}"
+                    if compound_key in self.active_recordings:
+                        del self.active_recordings[compound_key]
+                else:
+                    # Fallback: remove any key starting with meeting_id
+                    keys_to_remove = [k for k in self.active_recordings if k.startswith(f"{meeting_id}:")]
+                    for k in keys_to_remove:
+                        del self.active_recordings[k]
         except:
             pass
             
@@ -3435,17 +3527,18 @@ class FixedGoogleMeetRecorder:
     def get_recording_status(self, meeting_id: str) -> Dict:
         """Get current recording status"""
         with self._global_lock:
-            if meeting_id in self.active_recordings:
-                recording_info = self.active_recordings[meeting_id]
-                return {
-                    "meeting_id": meeting_id,
-                    "status": "active",
-                    "start_time": recording_info["start_time"].isoformat(),
-                    "room_name": recording_info["room_name"],
-                    "is_active": True,
-                    "target_fps": recording_info.get("target_fps", 20),
-                    "recording_type": "fast"
-                }
+            for compound_key, recording_info in self.active_recordings.items():
+                if compound_key.startswith(f"{meeting_id}:"):
+                    return {
+                        "meeting_id": meeting_id,
+                        "session_id": recording_info.get("session_id"),
+                        "status": "active",
+                        "start_time": recording_info["start_time"].isoformat(),
+                        "room_name": recording_info["room_name"],
+                        "is_active": True,
+                        "target_fps": recording_info.get("target_fps", 20),
+                        "recording_type": "fast"
+                    }
         
         return {
             "meeting_id": meeting_id,
@@ -3458,7 +3551,8 @@ class FixedGoogleMeetRecorder:
         with self._global_lock:
             return [
                 {
-                    "meeting_id": meeting_id,
+                    "meeting_id": info.get("meeting_id", compound_key.split(":")[0]),
+                    "session_id": info.get("session_id"),
                     "recording_id": info.get("recording_doc_id"),
                     "start_time": info.get("start_time").isoformat() if info.get("start_time") else None,
                     "room_name": info.get("room_name"),
@@ -3466,7 +3560,7 @@ class FixedGoogleMeetRecorder:
                     "target_fps": info.get("target_fps", 20),
                     "recording_type": "fast"
                 }
-                for meeting_id, info in self.active_recordings.items()
+                for compound_key, info in self.active_recordings.items()
             ]
 
 # Initialize the FAST service
@@ -3481,11 +3575,15 @@ def cleanup_recording_service():
     try:
         logger.info("🛑 Shutting down FAST recording service...")
         with fixed_google_meet_recorder._global_lock:
-            for meeting_id in list(fixed_google_meet_recorder.active_recordings.keys()):
+            for compound_key in list(fixed_google_meet_recorder.active_recordings.keys()):
                 try:
-                    fixed_google_meet_recorder.stop_stream_recording(meeting_id)
+                    if ":" in compound_key:
+                        m_id, s_id = compound_key.split(":", 1)
+                        fixed_google_meet_recorder.stop_stream_recording(m_id, session_id=s_id)
+                    else:
+                        fixed_google_meet_recorder.stop_stream_recording(compound_key)
                 except Exception as e:
-                    logger.error(f"Error stopping recording {meeting_id}: {e}")
+                    logger.error(f"Error stopping recording {compound_key}: {e}")
         
         fixed_google_meet_recorder.thread_pool.shutdown(wait=False)
         loop_manager.cleanup_all_loops()

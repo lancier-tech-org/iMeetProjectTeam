@@ -607,7 +607,8 @@ def build_s3_document_path(
     meeting_id: str,
     user_id: str,
     meeting_type: str,
-    doc_type: str
+    doc_type: str,
+    session_id: str = None
 ) -> str:
     """
     Build S3 path for transcript/summary based on meeting type.
@@ -665,18 +666,32 @@ def build_s3_document_path(
 
         # ================= Default / Fallback =================
         if doc_type == "transcript":
+            if session_id:
+                return (
+                    f"{S3_FOLDERS.get('transcripts', 'transcripts')}/"
+                    f"{meeting_id}/{session_id}/"
+                    f"{meeting_id}_{session_id}_transcript.docx"
+                )
             return (
                 f"{S3_FOLDERS.get('transcripts', 'transcripts')}/"
                 f"{meeting_id}_{user_id}_transcript.docx"
             )
 
         elif doc_type == "summary":
+            if session_id:
+                return (
+                    f"{S3_FOLDERS.get('summary', 'summary')}/"
+                    f"{meeting_id}/{session_id}/"
+                    f"{meeting_id}_{session_id}_summary.docx"
+                )
             return (
                 f"{S3_FOLDERS.get('summary', 'summary')}/"
                 f"{meeting_id}_{user_id}_summary.docx"
             )
 
         elif doc_type == "subtitles":
+            if session_id:
+                return f"{S3_FOLDERS.get('subtitles', 'subtitles')}/{meeting_id}/{session_id}"
             return f"{S3_FOLDERS.get('subtitles', 'subtitles')}"
 
         logger.warning(f"Unknown doc_type: {doc_type}")
@@ -2240,8 +2255,11 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                             if os.path.exists(srt_path) and os.path.getsize(srt_path) > 0:
                                 logging.info(f"✅ {lang} SRT created ({os.path.getsize(srt_path)} bytes) via {translation_method}")
                                 
-                                subtitles_folder = build_s3_document_path(meeting_id, user_id, meeting_type, "subtitles")
-                                s3_key = f"{subtitles_folder}/{meeting_id}_{user_id}_{lang}.srt"
+                                subtitles_folder = build_s3_document_path(meeting_id, user_id, meeting_type, "subtitles", session_id=session_id)
+                                if session_id:
+                                    s3_key = f"{subtitles_folder}/{meeting_id}_{session_id}_{lang}.srt"
+                                else:
+                                    s3_key = f"{subtitles_folder}/{meeting_id}_{user_id}_{lang}.srt"
                                 subtitle_url = upload_to_aws_s3(srt_path, s3_key)
                                 
                                 if subtitle_url:
@@ -2328,9 +2346,13 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
 
                     generate_graph(dot_code, mindmap_png[:-4])
 
+                    if session_id:
+                        mindmap_s3_key = f"{meeting_id}/{session_id}/mindmap.png"
+                    else:
+                        mindmap_s3_key = f"{meeting_id}/{user_id}/mindmap.png"
                     image_url = upload_to_aws_s3(
                         mindmap_png,
-                        f"{meeting_id}/{user_id}/mindmap.png"
+                        mindmap_s3_key
                     )
 
                     summary_doc.add_page_break()
@@ -2359,11 +2381,11 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             summary_path = summary_doc_path
 
             if os.path.exists(transcript_path) and os.path.getsize(transcript_path) > 0:
-                transcript_s3_key = build_s3_document_path(meeting_id, user_id, meeting_type, "transcript")
+                transcript_s3_key = build_s3_document_path(meeting_id, user_id, meeting_type, "transcript", session_id=session_id)
                 transcript_url = upload_to_aws_s3(transcript_path, transcript_s3_key)
 
             if os.path.exists(summary_path) and os.path.getsize(summary_path) > 0:
-                summary_s3_key = build_s3_document_path(meeting_id, user_id, meeting_type, "summary")
+                summary_s3_key = build_s3_document_path(meeting_id, user_id, meeting_type, "summary", session_id=session_id)
                 summary_url = upload_to_aws_s3(summary_path, summary_s3_key)
 
             logging.info("✅ S3 uploads completed")
@@ -2378,13 +2400,42 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             # ========== CHECK CUSTOM NAME ==========
             custom_recording_name = None
             try:
-                custom_name_doc = collection.find_one({
-                    "meeting_id": meeting_id,
-                    "pending_name_update": True
-                })
+                # ✅ FIX: Match custom name by session_id first (prevents name swap between recordings)
+                custom_name_doc = None
+                if session_id:
+                    custom_name_doc = collection.find_one({
+                        "meeting_id": meeting_id,
+                        "pending_name_update": True,
+                        "custom_name_session_id": session_id
+                    })
+                    if custom_name_doc:
+                        logging.info(f"Found custom name by session_id {session_id}: {custom_name_doc.get('custom_recording_name')}")
+                
+                # Fallback: match by oldest unclaimed name for this meeting (legacy recordings)
+                if not custom_name_doc:
+                    custom_name_doc = collection.find_one(
+                        {
+                            "meeting_id": meeting_id,
+                            "pending_name_update": True,
+                            "claimed_by_session": {"$exists": False}
+                        },
+                        sort=[("name_stored_at", 1)]  # ✅ Oldest first (FIFO), not newest
+                    )
+                    if custom_name_doc:
+                        logging.info(f"Found custom name by FIFO fallback: {custom_name_doc.get('custom_recording_name')}")
+                
                 if custom_name_doc:
                     custom_recording_name = custom_name_doc.get("custom_recording_name")
-                    logging.info(f"Found custom name: {custom_recording_name}")
+                    # ✅ Mark this name as claimed so other recordings don't grab it
+                    collection.update_one(
+                        {"_id": custom_name_doc["_id"]},
+                        {"$set": {
+                            "pending_name_update": False,
+                            "claimed_by_session": session_id or "legacy",
+                            "claimed_at": datetime.now()
+                        }}
+                    )
+                    logging.info(f"Claimed custom name: {custom_recording_name}")
             except Exception as e:
                 logging.warning(f"Failed to check custom name: {e}")
 
@@ -4240,6 +4291,7 @@ def Start_Recording(request, id):
                         "is_recording": True,
                         "meeting_id": id,
                         "recording_id": result.get("recording_id"),
+                        "session_id": result.get("session_id"),  # ✅ Pass session_id to frontend
                         "recording_type": "livekit_stream",
                         "service_mode": "standalone",
                         **result
@@ -4310,10 +4362,23 @@ def Stop_Recording(request, id):
 
         # ✅ NEW: Call recording service via HTTP
         try:
+            # ✅ FIX: Accept session_id from frontend to stop the correct recording
+            stop_data = {}
+            if request.body:
+                try:
+                    stop_data = json.loads(request.body)
+                except json.JSONDecodeError:
+                    pass
+            
+            session_id = stop_data.get('session_id')
+            
             response = requests.post(
                 f"{RECORDING_SERVICE_URL}/stop",
-                json={"meeting_id": id},
-                timeout=60  # Longer timeout for stopping
+                json={
+                    "meeting_id": id,
+                    "session_id": session_id  # ✅ Tell recording service WHICH recording to stop
+                },
+                timeout=60
             )
             
             # Update database immediately
@@ -4739,22 +4804,26 @@ def store_custom_recording_name(request):
             except Exception as perm_error:
                 logger.warning(f"Permission check failed: {perm_error}")
         
-        # ✅ NEW: Generate session_id for this recording
-        import uuid
-        session_id = str(uuid.uuid4())[:8]
+        # ✅ FIX: Accept session_id from frontend (got it from start-recording response)
+        # Only generate random one if frontend didn't provide it (legacy support)
+        session_id = data.get('session_id')
+        if not session_id:
+            import uuid
+            session_id = str(uuid.uuid4())[:8]
+            logger.warning(f"No session_id provided by frontend, generated fallback: {session_id}")
 
         # Store the custom name with a pending flag
         custom_name_document = {
             "meeting_id": meeting_id,
             "custom_recording_name": custom_name,
             "pending_name_update": True,
-            "custom_name_session_id": session_id,  # ✅ NEW: Link to session
+            "custom_name_session_id": session_id,  # ✅ Linked to actual recording session
             "recording_timestamp": recording_timestamp or int(time.time()),
             "name_stored_at": datetime.now(),
             "user_id": user_id
         }
 
-        # ✅ NEW: Always insert new document (one per recording session)
+        # Always insert new document (one per recording session)
         result = collection.insert_one(custom_name_document)
         logger.info(f"Stored custom name for meeting {meeting_id}, session {session_id}: {custom_name}")
 
@@ -4763,7 +4832,7 @@ def store_custom_recording_name(request):
             "message": "Recording name stored successfully",
             "custom_name": custom_name,
             "meeting_id": meeting_id,
-            "session_id": session_id  # ✅ NEW: Return session_id
+            "session_id": session_id
         })
         
     except json.JSONDecodeError:
