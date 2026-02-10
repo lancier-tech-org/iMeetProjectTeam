@@ -1,0 +1,63 @@
+# =============================================================================
+# iMeetPro Identity Service - GPU Dockerfile (NEW)
+# =============================================================================
+# Service 2: Face Identity Verification (runs on GPU)
+# Standalone Django service running face_auth.py on Port 8220
+# Uses InsightFace + ONNX Runtime GPU for real-time face matching
+# =============================================================================
+
+FROM 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/gpu-worker-base:v1
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    APP_HOME=/app \
+    INSIGHTFACE_HOME=/app/models/.insightface \
+    MPLCONFIGDIR=/tmp/.matplotlib \
+    LOG_DIR=/app/logs \
+    CUDA_VISIBLE_DEVICES=0 \
+    CUDA_MODULE_LOADING=LAZY \
+    ORT_CUDA_UNAVAILABLE_FAIL=0 \
+    ORT_TENSORRT_UNAVAILABLE_FAIL=0 \
+    OMP_NUM_THREADS=4 \
+    PORT=8220 \
+    HOST=0.0.0.0
+
+WORKDIR $APP_HOME
+
+# Install only the dependencies needed for identity service
+COPY requirements.txt requirements-gpu.txt ./
+RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || true && \
+    pip install --no-cache-dir -r requirements-gpu.txt 2>/dev/null || true
+
+# Copy the FULL application code (face_auth.py imports from Django project structure)
+COPY --chown=appuser:appgroup . .
+
+# Create necessary directories
+RUN mkdir -p /app/logs /app/models /app/models/.insightface /tmp/.matplotlib && \
+    touch /app/logs/identity_service.log && \
+    chown -R appuser:appgroup /app && \
+    chmod -R 755 /app/models/.insightface
+
+# Pre-download InsightFace models during build (GPU-enabled)
+RUN python -c "import os; os.environ['INSIGHTFACE_HOME']='/app/models/.insightface'; \
+    import insightface; \
+    app = insightface.app.FaceAnalysis(providers=['CUDAExecutionProvider','CPUExecutionProvider']); \
+    app.prepare(ctx_id=0, det_size=(640,640))" 2>/dev/null || \
+    echo "⚠️  InsightFace model download skipped (will download on first use)"
+
+# Clean unnecessary files
+RUN rm -rf *.sql *.pem *.key *.crt .vscode .git __pycache__ tests/ docs/ *.md chromedriver* || true
+
+# Build info
+ARG BUILD_DATE
+ARG VERSION
+LABEL org.opencontainers.image.created=$BUILD_DATE
+LABEL org.opencontainers.image.version=$VERSION
+LABEL service="identity-service"
+LABEL description="Face Identity Verification Service (GPU)"
+
+EXPOSE 8220
+
+# Run face_auth.py as standalone Django service
+# face_auth.py has its own Django settings.configure() and runs on port 8220
+CMD ["python", "core/FaceAuth/face_auth.py"]
