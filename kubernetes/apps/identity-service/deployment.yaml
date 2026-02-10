@@ -1,0 +1,262 @@
+# =============================================================================
+# iMeetPro Identity Service Deployment - Production (NEW)
+# =============================================================================
+# Service 2: Face Identity Verification (GPU)
+# Runs face_auth.py as standalone Django service on Port 8220
+# 
+# NOTE: This is SEPARATE from gpu-worker (Celery). 
+#   - gpu-worker = Celery background AI tasks (transcription, mind maps, etc.)
+#   - identity-service = Real-time face verification during meetings
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity-service
+  namespace: imeetpro
+  labels:
+    app: identity-service
+    tier: ai
+    service-type: identity-verification
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: identity-service
+  template:
+    metadata:
+      labels:
+        app: identity-service
+        tier: ai
+        service-type: identity-verification
+    spec:
+      # Schedule ONLY on GPU nodes
+      nodeSelector:
+        nvidia.com/gpu: "true"
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      
+      containers:
+        - name: identity-service
+          image: 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/identity-service:latest
+          imagePullPolicy: Always
+          
+          ports:
+            - containerPort: 8220
+              name: http
+              protocol: TCP
+          
+          env:
+            # ============================================
+            # Identity Service Configuration
+            # ============================================
+            - name: PORT
+              value: "8220"
+            - name: HOST
+              value: "0.0.0.0"
+            
+            # GPU Configuration
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0"
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: "compute,utility"
+            
+            # InsightFace Configuration
+            - name: FACE_MODEL_NAME
+              value: "buffalo_l"
+            - name: FACE_DISTANCE_THRESHOLD
+              value: "0.6"
+            - name: FACE_DETECTION_SIZE
+              value: "640,640"
+            - name: INSIGHTFACE_HOME
+              value: "/app/models/.insightface"
+            
+            # Identity Tracking Configuration
+            - name: IDENTITY_CHECK_INTERVAL
+              value: "1.0"
+            - name: IDENTITY_UNKNOWN_THRESHOLD
+              value: "5"
+            - name: IDENTITY_MAX_WARNINGS
+              value: "3"
+            - name: IDENTITY_REMOVAL_PENALTY
+              value: "1.0"
+            - name: CAMERA_FRAME_GAP_THRESHOLD
+              value: "3.0"
+            
+            # Python settings
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: HOME
+              value: "/tmp"
+            - name: LOG_DIR
+              value: "/app/logs"
+            
+            # Django settings
+            - name: DJANGO_SETTINGS_MODULE
+              value: "SampleDB.settings"
+            
+            # ============================================
+            # MongoDB (reads embeddings from same DB)
+            # ============================================
+            - name: MONGO_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: MONGO_URI
+                  optional: true
+            - name: MONGO_DB
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: MONGO_DB
+                  optional: true
+            
+            # ============================================
+            # MySQL (writes identity tracking to same DB)
+            # ============================================
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DB_HOST
+                  optional: true
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DB_NAME
+                  optional: true
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DB_USER
+                  optional: true
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DB_PASSWORD
+                  optional: true
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DB_PORT
+                  optional: true
+          
+          # ============================================
+          # RESOURCES - GPU required
+          # ============================================
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "1000m"
+              nvidia.com/gpu: "1"
+            limits:
+              memory: "8Gi"
+              cpu: "4000m"
+              nvidia.com/gpu: "1"
+          
+          # ============================================
+          # PROBES - HTTP based (face_auth.py has /api/health)
+          # ============================================
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 8220
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 30
+            successThreshold: 1
+          
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8220
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+          
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8220
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+          
+          # ============================================
+          # VOLUME MOUNTS
+          # ============================================
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: models
+              mountPath: /app/models
+            - name: dshm
+              mountPath: /dev/shm
+            - name: app-logs
+              mountPath: /app/logs
+      
+      # ============================================
+      # VOLUMES
+      # ============================================
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: models
+          emptyDir: {}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+        - name: app-logs
+          emptyDir:
+            sizeLimit: 500Mi
+      
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+---
+# ============================================
+# SERVICE - ClusterIP for internal access
+# ============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-service
+  namespace: imeetpro
+  labels:
+    app: identity-service
+spec:
+  type: ClusterIP
+  selector:
+    app: identity-service
+  ports:
+    - name: http
+      port: 8220
+      targetPort: 8220
+      protocol: TCP
