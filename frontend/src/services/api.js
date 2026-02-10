@@ -1587,8 +1587,7 @@ viewParticipantReportPDF: async (meetingId, userId) => {
     const response = await api.get(`/api/meetings/host/${userId}/`);
     return response;
   },
-   // Download Meeting Participants PDF
-downloadMeetingParticipantsPDF: async (meetingId, occurrenceNumber = null) => {
+ downloadMeetingParticipantsPDF: async (meetingId, occurrenceNumber = null) => {
   try {
     console.log("📊 API: Downloading meeting participants PDF:", { meetingId, occurrenceNumber });
     
