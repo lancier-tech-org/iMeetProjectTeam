@@ -2405,44 +2405,17 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             session_id = None
             recording_sequence = int(time.time())  # Default timestamp
 
-            # Strategy 1: Extract from new session-based S3 path
-            # Format: videos/meeting_id/session_id/recording_meeting_id_session_id_timestamp.mp4
+            # Try to extract session_id from video_s3_key or video_path
             if video_s3_key and "/" in video_s3_key:
+                # Format: videos/meeting_id/session_id/recording_meeting_id_session_id.mp4
                 path_parts = video_s3_key.split("/")
-                if len(path_parts) >= 4:  # New format: videos/meeting_id/session_id/filename
+                if len(path_parts) >= 3:
+                    # Check if middle part looks like a UUID (session_id)
                     potential_session = path_parts[-2]
                     if len(potential_session) == 8 and "-" not in potential_session:
                         session_id = potential_session
-                        logging.info(f"✅ Extracted session_id from S3 path (new format): {session_id}")
+                        logging.info(f"✅ Extracted session_id from S3 key: {session_id}")
 
-            # Strategy 2: Extract from old format in filename
-            # Format: videos/meeting_id_session_id_timestamp.mp4
-            if not session_id and video_s3_key:
-                filename = os.path.basename(video_s3_key)
-                # Pattern: meeting_id_session_id_timestamp.mp4
-                parts = filename.replace('.mp4', '').split('_')
-                if len(parts) >= 2:
-                    # The session_id is typically the second-to-last part before timestamp
-                    for part in parts:
-                        if len(part) == 8 and part.isalnum() and "-" not in part:
-                            # Verify it's not the meeting_id or timestamp
-                            if part != meeting_id and not part.isdigit():
-                                session_id = part
-                                logging.info(f"✅ Extracted session_id from filename (old format): {session_id}")
-                                break
-
-            # Strategy 3: Check if already in video_path
-            if not session_id and video_path:
-                if "session_id" in os.path.basename(video_path):
-                    # Extract from temp recording path if available
-                    import re
-                    match = re.search(r'_([a-f0-9]{8})_', video_path)
-                    if match:
-                        session_id = match.group(1)
-                        logging.info(f"✅ Extracted session_id from video_path: {session_id}")
-
-            if not session_id:
-                logging.warning(f"⚠️ Could not extract session_id from S3 key: {video_s3_key}")
             video_document = {
                 "meeting_id": meeting_id,
                 "session_id": session_id,  # ✅ NEW: Track recording session
@@ -2488,48 +2461,47 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             
             logging.info(f"💾 Saving video data to MongoDB...")
 
-            # ✅ FIXED: ALWAYS UPDATE, never create duplicate
+            # ✅ CRITICAL FIX: ALWAYS query by session_id if available
             if session_id:
+                # Session-based recording - update/create with session_id
                 query_filter = {
                     "meeting_id": meeting_id,
-                    "session_id": session_id
+                    "session_id": session_id  # ✅ EXACT match on session
                 }
                 logging.info(f"Querying for existing doc with session_id: {session_id}")
                 
                 existing_doc = collection.find_one(query_filter)
                 
                 if existing_doc:
-                    # UPDATE existing document
+                    # This is the SAME recording being reprocessed - UPDATE it
                     collection.replace_one({"_id": existing_doc["_id"]}, video_document)
-                    logging.info(f"✅ Updated existing MongoDB document for session {session_id}")
+                    logging.info(f"✅ Updated existing document for session: {session_id}")
                 else:
-                    # ✅ CRITICAL ERROR: Document should exist from finalization
-                    logging.error(f"❌ CRITICAL: No document found for session {session_id}!")
-                    logging.error(f"   This should have been created in start_stream_recording")
-                    logging.error(f"   Creating emergency document as fallback")
-                    
-                    # Emergency fallback - create document
+                    # New recording session - CREATE it
                     collection.insert_one(video_document)
-                    logging.error(f"⚠️ EMERGENCY: Created new MongoDB document for session {session_id}")
-                    
+                    logging.info(f"✅ Created new document for session: {session_id}")
             else:
-                # Legacy recording without session_id
-                # ONLY match documents that also have session_id: None
+                # Legacy recording without session_id - fall back to old behavior
                 query_filter = {
                     "meeting_id": meeting_id,
                     "user_id": user_id,
                     "is_final_video": True,
-                    "session_id": None  # ✅ CRITICAL: Only match other legacy recordings
+                    "session_id": None  # ✅ Only match old recordings without session_id
                 }
                 
                 existing_doc = collection.find_one(query_filter)
                 
                 if existing_doc:
                     collection.replace_one({"_id": existing_doc["_id"]}, video_document)
-                    logging.info(f"✅ Updated existing MongoDB document")
+                    logging.info(f"✅ Updated legacy document (no session_id)")
                 else:
                     collection.insert_one(video_document)
-                    logging.info(f"✅ Created new MongoDB document")
+                    logging.info(f"✅ Created new legacy document (no session_id)")
+                    
+            # ✅ CRITICAL: Don't delete custom name here - it was already marked as used in recording service
+            # The recording service marks names as used in _async_finalize_fast_recording
+            # If we delete here, we might delete names for OTHER concurrent recordings
+            logging.info(f"ℹ️ Skipping custom name cleanup (already handled by recording service)")
 
             # ========== SEND NOTIFICATIONS ==========
             logging.info(f"📧 Sending notifications...")
@@ -2618,16 +2590,12 @@ def get_all_videos(request):
         meeting_id = request.GET.get('meeting_id')
         meeting_type = request.GET.get('meeting_type')  # ✅ NEW PARAMETER
 
-        # Build query filter - ONLY SHOW FINAL VIDEOS, EXCLUDE METADATA
-        query_filter = {
-            "is_final_video": True,
-            "processing_status": {"$exists": True},  # ✅ Must have processing status
-            "pending_name_update": {"$ne": True}     # ✅ CRITICAL: Exclude custom name metadata
-        }
-
+        # Build query filter - ONLY SHOW FINAL VIDEOS
+        query_filter = {"is_final_video": True}
+        
         if meeting_id:
             query_filter['meeting_id'] = meeting_id
-
+        
         # ✅ NEW: Filter by meeting type
         if meeting_type:
             if meeting_type in ['CalendarMeeting', 'ScheduleMeeting', 'InstantMeeting']:
@@ -4340,26 +4308,11 @@ def Stop_Recording(request, id):
                     "success": True
                 }, status=200)
 
-        # ✅ NEW: Call recording service via HTTP with optional session_id
+        # ✅ NEW: Call recording service via HTTP
         try:
-            # Try to get session_id from request if provided (for multi-recording scenarios)
-            request_data = {}
-            if request.body:
-                try:
-                    request_data = json.loads(request.body)
-                except:
-                    pass
-            
-            session_id = request_data.get('session_id')  # Optional
-            
-            payload = {"meeting_id": id}
-            if session_id:
-                payload["session_id"] = session_id
-                logger.info(f"Stopping specific recording session: {session_id}")
-            
             response = requests.post(
                 f"{RECORDING_SERVICE_URL}/stop",
-                json=payload,
+                json={"meeting_id": id},
                 timeout=60  # Longer timeout for stopping
             )
             
