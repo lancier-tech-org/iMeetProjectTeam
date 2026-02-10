@@ -875,6 +875,17 @@ def record_participant_join(request):
                     
                     if is_active:
                         logging.warning(f"[JOIN] User {user_id} already active - treating as duplicate")
+                        
+                        # ✅ FIX: Always update Full_Name even for already-active users
+                        # This corrects any fallback name ("User 47") written by sync
+                        cursor.execute("""
+                            UPDATE tbl_Participants 
+                            SET Full_Name = %s
+                            WHERE ID = %s AND (Full_Name IS NULL OR Full_Name LIKE 'User %%' OR Full_Name LIKE 'User\\_%%')
+                        """, [actual_user_name, participant_id])
+                        if cursor.rowcount > 0:
+                            logging.info(f"[JOIN] ✅ Fixed Full_Name for already-active user {user_id}: '{actual_user_name}'")
+                        
                         return JsonResponse({
                             'success': True,
                             'message': 'User already in meeting',
@@ -2659,24 +2670,29 @@ def Get_Live_Participants_Enhanced_No_Status(request, meeting_id):
                         p.Meeting_ID,                            -- 1
                         p.User_ID,                               -- 2
                         p.Full_Name,                             -- 3
-                        p.Join_Times,                            -- 4 ✅ JSON array (not Join_Time)
-                        p.Leave_Times,                           -- 5 ✅ JSON array (not Leave_Time)
+                        p.Join_Times,                            -- 4
+                        p.Leave_Times,                           -- 5
                         p.End_Meeting_Time,                      -- 6
                         p.Role,                                  -- 7
                         p.Meeting_Type,                          -- 8
-                        p.Total_Duration_Minutes,                -- 9 ✅ Calculated field (not Duration)
-                        p.Is_Currently_Active,                   -- 10 ✅ FIXED INDEX
-                        p.Attendance_Percentagebasedon_host,     -- 11 ✅ NEW COLUMN
-                        p.Participant_Attendance,                -- 12 ✅ NEW
-                        p.Overall_Attendance,                    -- 13 ✅ NEW
-                        u.email,                                 -- 14 ✅ FIXED INDEX
-                        u.full_name as user_table_name           -- 15 ✅ FIXED INDEX - Get name from tbl_Users as backup
+                        p.Total_Duration_Minutes,                -- 9
+                        p.Is_Currently_Active,                   -- 10
+                        p.Attendance_Percentagebasedon_host,     -- 11
+                        p.Participant_Attendance,                -- 12
+                        p.Overall_Attendance,                    -- 13
+                        u.email,                                 -- 14
+                        u.full_name as user_table_name           -- 15
                     FROM tbl_Participants p
+                    INNER JOIN (
+                        SELECT User_ID, MAX(occurrence_number) as max_occ
+                        FROM tbl_Participants
+                        WHERE Meeting_ID = %s
+                        GROUP BY User_ID
+                    ) latest ON p.User_ID = latest.User_ID AND p.occurrence_number = latest.max_occ
                     LEFT JOIN tbl_Users u ON p.User_ID = u.ID
                     WHERE p.Meeting_ID = %s
                     ORDER BY p.ID ASC
-                """, [meeting_id])
-                
+                """, [meeting_id, meeting_id])
                 rows = cursor.fetchall()
                 
                 for row in rows:
@@ -2699,10 +2715,24 @@ def Get_Live_Participants_Enhanced_No_Status(request, meeting_id):
                     email = row[14]                        # Fixed index
                     user_table_name = row[15]              # Fixed index                    # ✅ FIXED: was row[14] - Name from tbl_Users
                     
-                    # ✅ PRIORITY: Use tbl_Users name if available, fallback to tbl_Participants
-                    display_name = user_table_name if user_table_name else participant_name
-                    if not display_name:
-                        display_name = f"User {user_id}"
+                    # ✅ FIX: ALWAYS use tbl_Users.full_name (it is NOT NULL in schema)
+                    # tbl_Participants.Full_Name is unreliable due to sync/join race condition
+                    if user_table_name and user_table_name.strip():
+                        display_name = user_table_name.strip()
+                    elif participant_name and participant_name.strip() and not participant_name.startswith('User ') and not participant_name.startswith('User_'):
+                        display_name = participant_name.strip()
+                    else:
+                        # Last resort fallback — query tbl_Users directly
+                        try:
+                            with connection.cursor() as name_cursor:
+                                name_cursor.execute("SELECT full_name FROM tbl_Users WHERE ID = %s", [user_id])
+                                name_result = name_cursor.fetchone()
+                                if name_result and name_result[0] and name_result[0].strip():
+                                    display_name = name_result[0].strip()
+                                else:
+                                    display_name = f"User {user_id}"
+                        except Exception:
+                            display_name = f"User {user_id}"
                     
                     # ✅ Add "(You)" label for requesting user
                     if requesting_user_id and user_id == requesting_user_id:
@@ -3403,15 +3433,24 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
                                     # Append new join time
                                     join_times.append(current_time_str)
                                     
+                                    # ✅ FIX: Also update Full_Name on rejoin to prevent stale fallback names
+                                    rejoin_user_name = f"User {user_id}"
+                                    try:
+                                        cursor.execute("SELECT full_name FROM tbl_Users WHERE ID = %s", [int(user_id)])
+                                        name_row = cursor.fetchone()
+                                        if name_row and name_row[0]:
+                                            rejoin_user_name = name_row[0].strip()
+                                    except Exception as name_err:
+                                        logging.warning(f"[SYNC-FIXED] Could not get name for rejoin user {user_id}: {name_err}")
+                                    
                                     cursor.execute("""
                                         UPDATE tbl_Participants 
-                                        SET Join_Times = %s, Is_Currently_Active = TRUE
+                                        SET Join_Times = %s, Is_Currently_Active = TRUE, Full_Name = %s
                                         WHERE ID = %s
-                                    """, [json.dumps(join_times), participant_id])
+                                    """, [json.dumps(join_times), rejoin_user_name, participant_id])
                                     
                                     sync_results['rejoined'] += 1
-                                    logging.info(f"[SYNC-FIXED] User {user_id} rejoined (session #{len(join_times)})")
-                                    
+                                    logging.info(f"[SYNC-FIXED] User {user_id} rejoined (session #{len(join_times)}) with name '{rejoin_user_name}'")
                         except Exception as e:
                             logging.error(f"[SYNC-FIXED] Error rejoining user {user_id}: {e}")
                             sync_results['errors'].append(f"Failed to rejoin user {user_id}: {str(e)}")
