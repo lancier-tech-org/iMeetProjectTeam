@@ -1587,6 +1587,60 @@ viewParticipantReportPDF: async (meetingId, userId) => {
     const response = await api.get(`/api/meetings/host/${userId}/`);
     return response;
   },
+   // Download Meeting Participants PDF
+downloadMeetingParticipantsPDF: async (meetingId, occurrenceNumber = null) => {
+  try {
+    console.log("📊 API: Downloading meeting participants PDF:", { meetingId, occurrenceNumber });
+    
+    let url = `/api/meetings/${meetingId}/participants/download-pdf/`;
+    if (occurrenceNumber) {
+      url += `?occurrence_number=${occurrenceNumber}`;
+    }
+    
+    const response = await axios.get(`${API_BASE_URL}${url}`, {
+      responseType: 'blob',
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY)}`,
+      },
+      timeout: 60000,
+    });
+    
+    if (!response.data || response.data.size === 0) {
+      throw new Error('Received empty PDF file');
+    }
+    
+    // Extract filename from Content-Disposition header or generate one
+    let filename = `meeting_participants_${meetingId}.pdf`;
+    const contentDisposition = response.headers?.['content-disposition'] || '';
+    const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    if (filenameMatch && filenameMatch[1]) {
+      filename = filenameMatch[1].replace(/['"]/g, '').trim();
+    }
+    
+    // Create download link
+    const blob = new Blob([response.data], { type: 'application/pdf' });
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    
+    setTimeout(() => {
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    }, 100);
+    
+    console.log("✅ API: Meeting participants PDF downloaded:", filename);
+    return { success: true, filename };
+  } catch (error) {
+    console.error("❌ API: Failed to download meeting participants PDF:", error);
+    throw new Error(
+      error.response?.data?.error || error.message || "Failed to download participants PDF"
+    );
+  }
+},
  getMeetingParticipants: async (meetingId, occurrenceNumber = null) => {
   let url = `/api/meetings/${meetingId}/participants/`;
   if (occurrenceNumber) {

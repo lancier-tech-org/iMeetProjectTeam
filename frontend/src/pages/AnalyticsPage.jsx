@@ -631,7 +631,27 @@ const handleViewReport = async (meeting) => {
     setReportData(null);
     setReportError(null);
   };
+// Handle Download Meeting Participants PDF (Host)
+const [isDownloadingMeetingPDF, setIsDownloadingMeetingPDF] = useState(false);
 
+const handleDownloadMeetingPDF = async (meeting) => {
+  try {
+    setIsDownloadingMeetingPDF(true);
+    console.log('📊 Downloading meeting participants PDF:', meeting.meetingId);
+    console.log('📊 Occurrence number:', meeting.occurrenceNumber || meeting.occurrence_number);
+    
+    await analyticsAPI.downloadMeetingParticipantsPDF(
+      meeting.meetingId,
+      meeting.occurrenceNumber || meeting.occurrence_number || null
+    );
+    
+    console.log('✅ Meeting participants PDF downloaded');
+  } catch (error) {
+    console.error('❌ Error downloading meeting participants PDF:', error);
+  } finally {
+    setIsDownloadingMeetingPDF(false);
+  }
+};
   const handleExportReport = async () => {
     try {
       if (userRole === 'host') {
@@ -761,7 +781,7 @@ const handleViewReport = async (meeting) => {
       engagement: Math.round(item.attendance_session?.engagement_score || 0),
       focus: Math.round(item.attendance_session?.focus_score || 0),
       duration: Math.round(item.duration_analysis?.total_duration_minutes || 0),
-      status: item.status || 'Completed'
+      // status: item.status || 'Completed'
     }));
   }, [safeAnalyticsData.participantAttendance]);
 
@@ -1183,18 +1203,34 @@ const SectionHeader = ({ title, icon: Icon, section, data, subtitle, badge }) =>
   );
 
   // Professional Table Header Cell
-  const StyledTableCell = ({ children, sortKey, align = 'left' }) => (
-    <TableCell
-      align={align}
-      sx={{
-        fontWeight: 700,
+ const StyledTableCell = ({ children, sortKey, align = 'left', isSticky = false }) => (
+  <TableCell
+    align={align}
+    sx={{
+      fontWeight: 700,
+      backgroundColor: colors.background,
+      color: colors.primary,
+      borderBottom: `2px solid ${colors.primary}`,
+      py: 2,
+      whiteSpace: 'nowrap',
+      ...(isSticky && {
+        position: 'sticky',
+        right: 0,
+        zIndex: 3,
         backgroundColor: colors.background,
-        color: colors.primary,
-        borderBottom: `2px solid ${colors.primary}`,
-        py: 2,
-        whiteSpace: 'nowrap'
-      }}
-    >
+        boxShadow: '-4px 0 8px rgba(0,0,0,0.06)',
+        '&::before': {
+          content: '""',
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: '4px',
+          background: 'linear-gradient(to right, rgba(0,0,0,0.04), transparent)',
+        }
+      })
+    }}
+  >
       {sortKey ? (
         <TableSortLabel
           active={orderBy === sortKey}
@@ -1257,10 +1293,15 @@ const SectionHeader = ({ title, icon: Icon, section, data, subtitle, badge }) =>
                 <TableHead>
                   <TableRow>
                     {columns.map((col, idx) => (
-                      <StyledTableCell key={idx} sortKey={col.sortKey} align={col.align}>
-                        {col.label}
-                      </StyledTableCell>
-                    ))}
+  <StyledTableCell 
+    key={idx} 
+    sortKey={col.sortKey} 
+    align={col.align}
+    isSticky={idx === columns.length - 1}
+  >
+    {col.label}
+  </StyledTableCell>
+))}
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -1273,11 +1314,24 @@ const SectionHeader = ({ title, icon: Icon, section, data, subtitle, badge }) =>
                         transition: 'background-color 0.2s ease'
                       }}
                     >
-                      {columns.map((col, colIdx) => (
-                        <TableCell key={colIdx} align={col.align} sx={{ py: 2 }}>
-                          {col.render ? col.render(row) : row[col.field]}
-                        </TableCell>
-                      ))}
+                     {columns.map((col, colIdx) => (
+  <TableCell 
+    key={colIdx} 
+    align={col.align} 
+    sx={{ 
+      py: 2,
+      ...(colIdx === columns.length - 1 && {
+        position: 'sticky',
+        right: 0,
+        zIndex: 1,
+        backgroundColor: rowIdx % 2 === 0 ? colors.surface : alpha(colors.background, 0.5),
+        boxShadow: '-4px 0 8px rgba(0,0,0,0.06)',
+      })
+    }}
+  >
+    {col.render ? col.render(row) : row[col.field]}
+  </TableCell>
+))}
                     </TableRow>
                   ))}
                 </TableBody>
@@ -2600,36 +2654,62 @@ const CompleteOverview = () => {
         )
       },
       { label: 'Duration', field: 'totalDuration', sortKey: 'totalDuration', align: 'center', render: (row) => <Typography sx={{ fontWeight: 600, color: colors.primary }}>{row.totalDuration} min</Typography> },
-      { label: 'Status', align: 'center', render: (row) => <Chip label={row.status} size="small" color={getStatusColor(row.status)} /> },
-      { 
-        label: 'Action', 
-        align: 'center',
-        render: (row) => (
-          <Tooltip title="View Meeting Details">
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<Visibility sx={{ fontSize: 16 }} />}
-              onClick={() => handleViewMeeting(row)}
-              sx={{ 
-                borderRadius: '8px',
-                textTransform: 'none',
-                fontWeight: 600,
-                fontSize: '0.75rem',
-                py: 0.5,
-                borderColor: colors.primary,
-                color: colors.primary,
-                '&:hover': { 
-                  bgcolor: alpha(colors.primary, 0.1),
-                  borderColor: colors.primary 
-                }
-              }}
-            >
-              View
-            </Button>
-          </Tooltip>
-        )
-      }
+      // { label: 'Status', align: 'center', render: (row) => <Chip label={row.status} size="small" color={getStatusColor(row.status)} /> },
+     { 
+  label: 'Actions', 
+  align: 'center',
+  render: (row) => (
+    <Box sx={{ display: 'flex', gap: 0.75, justifyContent: 'center', alignItems: 'center' }}>
+      <Tooltip title="View Meeting Details" arrow>
+        <IconButton
+          size="small"
+          onClick={() => handleViewMeeting(row)}
+          sx={{ 
+            bgcolor: alpha(colors.primary, 0.08),
+            color: colors.primary,
+            border: `1.5px solid ${alpha(colors.primary, 0.2)}`,
+            width: 34,
+            height: 34,
+            transition: 'all 0.2s ease',
+            '&:hover': { 
+              bgcolor: alpha(colors.primary, 0.18),
+              borderColor: colors.primary,
+              transform: 'scale(1.08)'
+            }
+          }}
+        >
+          <Visibility sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+      <Tooltip title="Download Participants PDF" arrow>
+        <IconButton
+          size="small"
+          disabled={isDownloadingMeetingPDF}
+          onClick={() => handleDownloadMeetingPDF(row)}
+          sx={{ 
+            bgcolor: alpha(colors.success, 0.08),
+            color: colors.success,
+            border: `1.5px solid ${alpha(colors.success, 0.2)}`,
+            width: 34,
+            height: 34,
+            transition: 'all 0.2s ease',
+            '&:hover': { 
+              bgcolor: alpha(colors.success, 0.18),
+              borderColor: colors.success,
+              transform: 'scale(1.08)'
+            },
+            '&.Mui-disabled': {
+              bgcolor: alpha(colors.border, 0.3),
+              borderColor: colors.border,
+            }
+          }}
+        >
+          {isDownloadingMeetingPDF ? <CircularProgress size={16} color="inherit" /> : <PictureAsPdf sx={{ fontSize: 18 }} />}
+        </IconButton>
+      </Tooltip>
+    </Box>
+  )
+}
     ];
 
     // Participant columns - Updated with Host Name and Report button
@@ -2697,33 +2777,32 @@ const CompleteOverview = () => {
         render: (row) => <Chip label={row.status} size="small" color={getStatusColor(row.status)} /> 
       },
       { 
-        label: 'Report', 
-        align: 'center',
-        render: (row) => (
-          <Tooltip title="View Report">
-            <Button
-              size="small"
-              variant="contained"
-              startIcon={<DescriptionIcon sx={{ fontSize: 16 }} />}
-              onClick={() => handleViewReport(row)}
-              sx={{ 
-                borderRadius: '8px',
-                textTransform: 'none',
-                fontWeight: 600,
-                fontSize: '0.75rem',
-                py: 0.5,
-                background: colors.gradients.secondary,
-                '&:hover': { 
-                  background: colors.gradients.secondary,
-                  opacity: 0.9
-                }
-              }}
-            >
-              Report
-            </Button>
-          </Tooltip>
-        )
-      }
+  label: 'Report', 
+  align: 'center',
+  render: (row) => (
+    <Tooltip title="View Participant Report" arrow>
+      <IconButton
+        size="small"
+        onClick={() => handleViewReport(row)}
+        sx={{ 
+          bgcolor: alpha(colors.secondary, 0.08),
+          color: colors.secondary,
+          border: `1.5px solid ${alpha(colors.secondary, 0.2)}`,
+          width: 34,
+          height: 34,
+          transition: 'all 0.2s ease',
+          '&:hover': { 
+            bgcolor: alpha(colors.secondary, 0.18),
+            borderColor: colors.secondary,
+            transform: 'scale(1.08)'
+          }
+        }}
+      >
+        <DescriptionIcon sx={{ fontSize: 18 }} />
+      </IconButton>
+    </Tooltip>
+  )
+}
     ];
 
     const columns = userRole === 'host' ? hostColumns : participantColumns;
@@ -2922,13 +3001,35 @@ const QuickSummarySection = () => {
           subtitle={meetingTimeFilter ? "Filtered results" : "Key performance indicators at a glance"}
         />
         <Collapse in={expandedSections.summary}>
-          <TableContainer component={Paper} sx={{ borderRadius: '10px', boxShadow: 'none', border: `1px solid ${colors.border}` }}>
+          {/* <TableContainer component={Paper} sx={{ borderRadius: '10px', boxShadow: 'none', border: `1px solid ${colors.border}` }}>
+           */}
+           <TableContainer component={Paper} sx={{ 
+  borderRadius: '12px', 
+  boxShadow: 'none', 
+  border: `1px solid ${colors.border}`,
+  overflow: 'auto',
+  maxWidth: '100%',
+  '&::-webkit-scrollbar': {
+    height: 8,
+  },
+  '&::-webkit-scrollbar-track': {
+    backgroundColor: alpha(colors.primary, 0.05),
+    borderRadius: 4,
+  },
+  '&::-webkit-scrollbar-thumb': {
+    backgroundColor: alpha(colors.primary, 0.2),
+    borderRadius: 4,
+    '&:hover': {
+      backgroundColor: alpha(colors.primary, 0.35),
+    }
+  }
+}}>
             <Table size="small">
               <TableHead>
                 <TableRow>
                   <TableCell sx={{ fontWeight: 700, bgcolor: colors.background, color: colors.primary, borderBottom: `2px solid ${colors.primary}`, py: 1.5 }}>Metric</TableCell>
                   <TableCell align="center" sx={{ fontWeight: 700, bgcolor: colors.background, color: colors.primary, borderBottom: `2px solid ${colors.primary}`, py: 1.5 }}>Value</TableCell>
-                  <TableCell align="center" sx={{ fontWeight: 700, bgcolor: colors.background, color: colors.primary, borderBottom: `2px solid ${colors.primary}`, py: 1.5 }}>Status</TableCell>
+                  {/* <TableCell align="center" sx={{ fontWeight: 700, bgcolor: colors.background, color: colors.primary, borderBottom: `2px solid ${colors.primary}`, py: 1.5 }}>Status</TableCell> */}
                 </TableRow>
               </TableHead>
               <TableBody>
