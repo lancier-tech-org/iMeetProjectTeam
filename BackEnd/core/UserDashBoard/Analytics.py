@@ -811,6 +811,370 @@ def Get_Meeting_Participants(request, meeting_id):
 
 @require_http_methods(["GET"])
 @csrf_exempt
+def Download_Meeting_Participants_PDF(request, meeting_id):
+    """
+    Download participants list as a professionally formatted PDF.
+    Supports: ScheduleMeeting, CalendarMeeting, InstantMeeting
+    
+    GET /api/meetings/<meeting_id>/participants/download-pdf/
+    GET /api/meetings/<meeting_id>/participants/download-pdf/?occurrence_number=2
+    """
+    try:
+        if not meeting_id:
+            return JsonResponse({"success": False, "error": "meeting_id is required"}, status=BAD_REQUEST_STATUS)
+
+        occurrence_number_param = request.GET.get('occurrence_number')
+
+        with connection.cursor() as cursor:
+            # ── Get meeting details ──
+            cursor.execute("""
+                SELECT 
+                    m.ID, 
+                    CASE 
+                        WHEN m.Meeting_Type = 'ScheduleMeeting' THEN COALESCE(sm.title, m.Meeting_Name)
+                        WHEN m.Meeting_Type = 'CalendarMeeting' THEN COALESCE(cm.title, m.Meeting_Name)
+                        ELSE m.Meeting_Name
+                    END AS meeting_name,
+                    m.Meeting_Type,
+                    CASE 
+                        WHEN m.Meeting_Type = 'ScheduleMeeting' THEN sm.recurrence_type
+                        ELSE NULL
+                    END AS recurrence_type,
+                    CASE 
+                        WHEN m.Meeting_Type = 'ScheduleMeeting' THEN sm.is_recurring
+                        ELSE 0
+                    END AS is_recurring
+                FROM tbl_Meetings m
+                LEFT JOIN tbl_ScheduledMeetings sm ON m.ID = sm.id AND m.Meeting_Type = 'ScheduleMeeting'
+                LEFT JOIN tbl_CalendarMeetings cm ON m.ID = cm.ID AND m.Meeting_Type = 'CalendarMeeting'
+                WHERE m.ID = %s
+            """, [meeting_id])
+            meeting = cursor.fetchone()
+
+            if not meeting:
+                return JsonResponse({"success": False, "error": "Meeting not found"}, status=NOT_FOUND_STATUS)
+
+            meeting_name = meeting[1]
+            meeting_type = meeting[2]
+            recurrence_type = meeting[3]
+            is_recurring = bool(meeting[4]) and recurrence_type and recurrence_type != 'none'
+
+            # ── Participants query ──
+            query = """
+                SELECT 
+                    p.User_ID,
+                    p.Full_Name,
+                    p.Participant_Attendance,
+                    p.occurrence_number,
+                    p.session_start_time,
+                    p.Total_Duration_Minutes,
+                    p.Overall_Attendance,
+                    p.Is_Currently_Active,
+                    p.Join_Times,
+                    p.Leave_Times
+                FROM tbl_Participants p
+                WHERE p.Meeting_ID = %s
+                    AND p.Role = 'participant'
+            """
+            params = [meeting_id]
+
+            selected_occurrence = None
+            if occurrence_number_param:
+                selected_occurrence = int(occurrence_number_param)
+                query += " AND p.occurrence_number = %s"
+                params.append(selected_occurrence)
+
+            query += " ORDER BY p.occurrence_number ASC, p.Full_Name ASC"
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+        # ── Helper: Deduplicate timestamps ──
+        # WebRTC causes rapid reconnections creating many timestamps within seconds/minutes.
+        # This keeps only the FIRST join and then any subsequent joins that are at least
+        # 5 minutes (300 seconds) apart from the previous stable entry.
+        def deduplicate_times(times_list, threshold_seconds=300):
+            if not times_list:
+                return []
+
+            parsed = []
+            for t in times_list:
+                t_str = str(t).strip()
+                if not t_str:
+                    continue
+                try:
+                    dt = datetime.strptime(t_str, '%Y-%m-%d %H:%M:%S')
+                    parsed.append(dt)
+                except ValueError:
+                    try:
+                        dt = datetime.strptime(t_str, '%Y-%m-%d %H:%M:%S.%f')
+                        parsed.append(dt)
+                    except ValueError:
+                        try:
+                            dt = datetime.strptime(t_str, '%H:%M:%S')
+                            parsed.append(dt)
+                        except ValueError:
+                            continue
+
+            if not parsed:
+                return []
+
+            parsed.sort()
+
+            # Always keep the first entry, then only keep entries >= threshold apart
+            stable = [parsed[0]]
+            for dt in parsed[1:]:
+                if abs((dt - stable[-1]).total_seconds()) >= threshold_seconds:
+                    stable.append(dt)
+
+            return [dt.strftime('%H:%M:%S') for dt in stable]
+
+        # ── Build participant list ──
+        participants = []
+        session_date_set = set()
+
+        for row in rows:
+            # Parse and deduplicate Join Times
+            join_times_raw = row[8]
+            join_times_list = []
+            if join_times_raw:
+                join_times_parsed = safe_json_parse(join_times_raw)
+                if join_times_parsed and isinstance(join_times_parsed, list):
+                    join_times_list = deduplicate_times(join_times_parsed)
+
+            # Parse and deduplicate Leave Times
+            leave_times_raw = row[9]
+            leave_times_list = []
+            if leave_times_raw:
+                leave_times_parsed = safe_json_parse(leave_times_raw)
+                if leave_times_parsed and isinstance(leave_times_parsed, list):
+                    leave_times_list = deduplicate_times(leave_times_parsed)
+
+            session_start = row[4]
+            session_date_str = None
+            if session_start:
+                if hasattr(session_start, 'strftime'):
+                    session_date_str = session_start.strftime('%Y-%m-%d')
+                else:
+                    session_date_str = str(session_start)[:10]
+                session_date_set.add(session_date_str)
+
+            participants.append({
+                'participant_name': row[1],
+                'participant_attendance': float(row[2]) if row[2] is not None else 0.0,
+                'occurrence_number': row[3],
+                'session_date': session_date_str,
+                'total_duration_minutes': float(row[5]) if row[5] is not None else 0.0,
+                'overall_attendance': float(row[6]) if row[6] is not None else 0.0,
+                'join_times': join_times_list,
+                'leave_times': leave_times_list,
+            })
+
+        # ── Column visibility ──
+        show_occurrence = (
+            meeting_type == 'ScheduleMeeting'
+            and is_recurring
+            and selected_occurrence is None
+        )
+        show_overall = (
+            meeting_type == 'ScheduleMeeting'
+            and is_recurring
+        )
+
+        # Session date for header
+        session_date_display = ', '.join(sorted(session_date_set)) if session_date_set else '—'
+
+        # ── Generate PDF ──
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=letter,
+            leftMargin=40, rightMargin=40,
+            topMargin=70, bottomMargin=70
+        )
+
+        report_gen = ReportGenerator()
+        story = []
+
+        # ── Styles ──
+        cell_style = ParagraphStyle(
+            name='PDFCell', fontName='Helvetica', fontSize=8, leading=10,
+            textColor=colors.HexColor('#334155')
+        )
+        cell_center = ParagraphStyle(
+            name='PDFCellCenter', parent=cell_style, alignment=TA_CENTER
+        )
+        cell_right = ParagraphStyle(
+            name='PDFCellRight', parent=cell_style, alignment=TA_RIGHT
+        )
+        header_cell_style = ParagraphStyle(
+            name='PDFHeaderCell', fontName='Helvetica-Bold', fontSize=8, leading=10,
+            textColor=colors.white, alignment=TA_CENTER
+        )
+
+        # ── Title ──
+        story.append(Paragraph("Participant Attendance Report", report_gen.custom_styles['ReportTitle']))
+        story.append(Spacer(1, 8))
+
+        # ── Meeting Info Header ──
+        meeting_type_display = {
+            'InstantMeeting': 'Instant Meeting',
+            'ScheduleMeeting': 'Scheduled Meeting',
+            'CalendarMeeting': 'Calendar Meeting'
+        }.get(meeting_type, meeting_type)
+
+        info_text = (
+            f"<b>Meeting:</b> {meeting_name} &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"<b>Type:</b> {meeting_type_display} &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"<b>Participants:</b> {len(participants)} &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"<b>Session Date:</b> {session_date_display}"
+        )
+
+        if meeting_type == 'ScheduleMeeting' and is_recurring and recurrence_type:
+            info_text += f" &nbsp;&nbsp;|&nbsp;&nbsp; <b>Recurrence:</b> {recurrence_type.replace('_', ' ').title()}"
+
+        if meeting_type == 'ScheduleMeeting' and is_recurring and selected_occurrence is not None:
+            info_text += f" &nbsp;&nbsp;|&nbsp;&nbsp; <b>Occurrence:</b> #{selected_occurrence}"
+
+        story.append(Paragraph(info_text, ParagraphStyle('MInfo', fontSize=9, spaceAfter=5)))
+        story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#2C3E50'), spaceBefore=5, spaceAfter=15))
+
+        # ── Table ──
+        if not participants:
+            story.append(Spacer(1, 30))
+            story.append(Paragraph(
+                "No participants found for this meeting.",
+                ParagraphStyle('Empty', fontSize=11, textColor=colors.HexColor('#94A3B8'), alignment=TA_CENTER)
+            ))
+        else:
+            # Build headers
+            headers = ['#', 'Participant Name']
+            if show_occurrence:
+                headers.append('Occ #')
+            headers += ['Join Times', 'Leave Times', 'Duration (min)', 'Attendance %']
+            if show_overall:
+                headers.append('Overall %')
+
+            header_row = [Paragraph(h, header_cell_style) for h in headers]
+
+            MAX_DISPLAY_TIMES = 5
+
+            data_rows = []
+            for idx, p in enumerate(participants, start=1):
+                att = p['participant_attendance']
+                att_color = '#16A34A' if att >= 75 else '#CA8A04' if att >= 50 else '#DC2626'
+
+                # Join Times display
+                if p['join_times']:
+                    total_j = len(p['join_times'])
+                    visible_j = p['join_times'][:MAX_DISPLAY_TIMES]
+                    join_display = '<br/>'.join(visible_j)
+                    if total_j > MAX_DISPLAY_TIMES:
+                        join_display += f'<br/><i>+{total_j - MAX_DISPLAY_TIMES} more</i>'
+                else:
+                    join_display = '—'
+
+                # Leave Times display
+                if p['leave_times']:
+                    total_l = len(p['leave_times'])
+                    visible_l = p['leave_times'][:MAX_DISPLAY_TIMES]
+                    leave_display = '<br/>'.join(visible_l)
+                    if total_l > MAX_DISPLAY_TIMES:
+                        leave_display += f'<br/><i>+{total_l - MAX_DISPLAY_TIMES} more</i>'
+                else:
+                    leave_display = '—'
+
+                row = [
+                    Paragraph(str(idx), cell_center),
+                    Paragraph(p['participant_name'] or '—', cell_style),
+                ]
+
+                if show_occurrence:
+                    occ_val = p.get('occurrence_number')
+                    row.append(Paragraph(f'#{occ_val}' if occ_val is not None else '—', cell_center))
+
+                row += [
+                    Paragraph(join_display, cell_style),
+                    Paragraph(leave_display, cell_style),
+                    Paragraph(f"{p['total_duration_minutes']:.2f}", cell_right),
+                    Paragraph(f'<font color="{att_color}">{att:.2f}%</font>', cell_center),
+                ]
+
+                if show_overall:
+                    ovr = p['overall_attendance']
+                    ov_color = '#16A34A' if ovr >= 75 else '#CA8A04' if ovr >= 50 else '#DC2626'
+                    row.append(Paragraph(f'<font color="{ov_color}">{ovr:.2f}%</font>', cell_center))
+
+                data_rows.append(row)
+
+            table_data = [header_row] + data_rows
+
+            # Column widths
+            avail = doc.width
+            if show_occurrence and show_overall:
+                col_widths = [0.04, 0.15, 0.06, 0.20, 0.20, 0.10, 0.10, 0.10]
+            elif show_overall:
+                col_widths = [0.04, 0.17, 0.22, 0.22, 0.11, 0.11, 0.11]
+            else:
+                col_widths = [0.05, 0.19, 0.24, 0.24, 0.12, 0.12]
+
+            col_widths = [w * avail for w in col_widths]
+            total_w = sum(col_widths)
+            col_widths = [w * avail / total_w for w in col_widths]
+
+            table = Table(table_data, colWidths=col_widths, repeatRows=1)
+
+            tbl_style = [
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2C3E50')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                ('TOPPADDING', (0, 0), (-1, 0), 8),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 8),
+                ('TOPPADDING', (0, 1), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
+                ('LEFTPADDING', (0, 0), (-1, -1), 5),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]
+
+            for i in range(1, len(table_data)):
+                bg = colors.HexColor('#EBF5FB') if i % 2 == 0 else colors.white
+                tbl_style.append(('BACKGROUND', (0, i), (-1, i), bg))
+
+            table.setStyle(TableStyle(tbl_style))
+            story.append(table)
+
+        # ── Build PDF ──
+        def add_header_footer(canvas_obj, doc_obj):
+            report_gen.create_header_footer(canvas_obj, doc_obj, "Participant Attendance Report")
+
+        doc.build(story, onFirstPage=add_header_footer, onLaterPages=add_header_footer)
+        buffer.seek(0)
+
+        # ── Response ──
+        safe_name = "".join(c if c.isalnum() or c in " _-" else "_" for c in meeting_name)
+        filename = f"{safe_name}_Participants"
+        if meeting_type == 'ScheduleMeeting' and is_recurring and selected_occurrence is not None:
+            filename += f"_Occurrence{selected_occurrence}"
+        filename += f"_{datetime.now().strftime('%Y%m%d')}.pdf"
+
+        response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
+    except Exception as e:
+        logger.error(f"Error generating participants PDF for meeting {meeting_id}: {e}")
+        logger.error(traceback.format_exc())
+        return JsonResponse(
+            {"success": False, "error": f"Failed to generate PDF: {str(e)}"},
+            status=SERVER_ERROR_STATUS
+        )
+
+@require_http_methods(["GET"])
+@csrf_exempt
 def get_available_meeting_times(request):
     """
     Get available meeting times for dropdown selection
@@ -3208,6 +3572,7 @@ urlpatterns = [
     path('api/meetings/host/<int:user_id>/', Get_Host_Meetings, name='get_host_meetings'),
     path('api/meetings/<str:meeting_id>/participants/', Get_Meeting_Participants, name='get_meeting_participants'),
     path('api/meetings/participant/<int:user_id>/', Get_Participant_Meetings, name='get_participant_meetings'),
+    path('api/meetings/<str:meeting_id>/participants/download-pdf/', Download_Meeting_Participants_PDF, name='download_meeting_participants_pdf'),
     # path('api/meetings/<str:meeting_id>/participants/<int:user_id>/report/', Get_Participant_Report_For_Meeting, name='get_participant_report_for_meeting'),
     path('api/meetings/<str:meeting_id>/participants/<int:user_id>/report/pdf/', Generate_Participant_Report_PDF_For_Meeting, name='generate_participant_report_pdf_for_meeting'),
     path('api/meetings/<str:meeting_id>/participants/<int:user_id>/report/', Get_Participant_Report_For_Meeting, name='get_participant_report_for_meeting'),
