@@ -1,8 +1,11 @@
+
 # # =============================================================================
-# # iMeetPro Backend ConfigMap - Production (FINAL)
+# # iMeetPro Backend ConfigMap - Production (UPDATED FOR MICROSERVICE SPLIT)
 # # =============================================================================
-# # Updated: 2026-02-01
-# # Changes: DB_HOST updated to AWS RDS
+# # Updated: 2026-02-09
+# # Changes:
+# #   - NEW: Identity Service configuration values
+# #   - Everything else UNCHANGED
 # # =============================================================================
 # apiVersion: v1
 # kind: ConfigMap
@@ -51,6 +54,15 @@
 #   LIVEKIT_WSS_URL: "wss://imeetpro-zquw3j0i.livekit.cloud"
 #   LIVEKIT_TTL: "86400"
 
+#   # ============================================
+#   # NEW: Identity Service Configuration
+#   # ============================================
+#   IDENTITY_SERVICE_URL: "http://identity-service.imeetpro.svc.cluster.local:8220"
+#   IDENTITY_SERVICE_PORT: "8220"
+#   IDENTITY_CHECK_INTERVAL: "1.0"
+#   IDENTITY_UNKNOWN_THRESHOLD: "5"
+#   IDENTITY_MAX_WARNINGS: "3"
+#   IDENTITY_REMOVAL_PENALTY: "1.0"
 
 
 
@@ -115,7 +127,13 @@ data:
   # ============================================
   IDENTITY_SERVICE_URL: "http://identity-service.imeetpro.svc.cluster.local:8220"
   IDENTITY_SERVICE_PORT: "8220"
-  IDENTITY_CHECK_INTERVAL: "1.0"
-  IDENTITY_UNKNOWN_THRESHOLD: "5"
+  IDENTITY_CHECK_INTERVAL: "3.0"
+  IDENTITY_UNKNOWN_THRESHOLD: "10"
   IDENTITY_MAX_WARNINGS: "3"
   IDENTITY_REMOVAL_PENALTY: "1.0"
+
+  # ============================================
+  # NEW: Behavioral Service Configuration
+  # ============================================
+  BEHAVIORAL_SERVICE_URL: "http://behavioral-service.imeetpro.svc.cluster.local:8230"
+  BEHAVIORAL_SERVICE_PORT: "8230"

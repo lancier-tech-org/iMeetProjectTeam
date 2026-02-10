@@ -1,3 +1,4 @@
+
 # # face_auth.py
 
 # """
@@ -24,6 +25,18 @@
 # """
 
 # import os
+
+# # =============================================================================
+# # GPU CONFIGURATION — Service 2 uses GPU for continuous identity verification
+# # =============================================================================
+# os.environ.update({
+#     "CUDA_VISIBLE_DEVICES": "0",
+#     "CUDA_MODULE_LOADING": "LAZY",
+#     "ORT_CUDA_UNAVAILABLE_FAIL": "0",
+#     "ORT_TENSORRT_UNAVAILABLE_FAIL": "0",
+#     "OMP_NUM_THREADS": "4",
+# })
+
 # import numpy as np
 # import json
 # from io import BytesIO
@@ -124,7 +137,7 @@
 # MONGO_DB = os.getenv("MONGO_DB", "connectlydb")
 # MONGO_URI = os.getenv("MONGO_URI", "mongodb://mongodb.databases.svc.cluster.local:27017/imeetpro")
 
-# logger.info(f"🔗 Connecting to MongoDB: {MONGO_HOST}:{MONGO_PORT}/{MONGO_DB}")
+# logger.info(f"ðŸ”— Connecting to MongoDB: {MONGO_HOST}:{MONGO_PORT}/{MONGO_DB}")
 
 # try:
 #     client = MongoClient(
@@ -137,9 +150,9 @@
 #     )
 #     client.server_info()
 #     db = client[MONGO_DB]
-#     logger.info(f"✅ MongoDB connected successfully to '{MONGO_DB}' database")
+#     logger.info(f"âœ… MongoDB connected successfully to '{MONGO_DB}' database")
 # except Exception as e:
-#     logger.error(f"❌ MongoDB connection failed: {e}")
+#     logger.error(f"âŒ MongoDB connection failed: {e}")
 #     raise
 
 # # MongoDB Collections
@@ -160,12 +173,12 @@
 # SERVER_PORT = os.getenv("PORT", "8220")
 # SERVER_PROTOCOL = "https"
 
-# logger.info(f"🔒 Protocol: HTTPS")
-# logger.info(f"📌 Port: {SERVER_PORT}")
-# logger.info(f"⚙️ Face Distance Threshold: {FACE_DISTANCE_THRESHOLD}")
-# logger.info(f"⚙️ Camera Gap Threshold: {CAMERA_FRAME_GAP_THRESHOLD}s")
-# logger.info(f"⚙️ Face Model: {FACE_MODEL_NAME}")
-# logger.info(f"⚙️ Detection Size: {FACE_DETECTION_SIZE}")
+# logger.info(f"ðŸ”’ Protocol: HTTPS")
+# logger.info(f"ðŸ“Œ Port: {SERVER_PORT}")
+# logger.info(f"âš™ï¸ Face Distance Threshold: {FACE_DISTANCE_THRESHOLD}")
+# logger.info(f"âš™ï¸ Camera Gap Threshold: {CAMERA_FRAME_GAP_THRESHOLD}s")
+# logger.info(f"âš™ï¸ Face Model: {FACE_MODEL_NAME}")
+# logger.info(f"âš™ï¸ Detection Size: {FACE_DETECTION_SIZE}")
 
 # # ============================================================================
 # # NEW: SINGLE PARTICIPANT ENFORCEMENT CONFIGURATION
@@ -177,8 +190,209 @@
 #     "Multiple people detected! Only the registered participant is allowed to join the meeting. Please ensure you are alone in front of the camera."
 # )
 
-# logger.info(f"🛡️ SINGLE PARTICIPANT ENFORCEMENT: {'ENABLED' if not ALLOW_MULTIPLE_FACES else 'DISABLED'}")
-# logger.info(f"⚙️ Max Allowed Faces: {MAX_ALLOWED_FACES}")
+# logger.info(f"ðŸ›¡ï¸ SINGLE PARTICIPANT ENFORCEMENT: {'ENABLED' if not ALLOW_MULTIPLE_FACES else 'DISABLED'}")
+# logger.info(f"âš™ï¸ Max Allowed Faces: {MAX_ALLOWED_FACES}")
+
+# # ============================================================================
+# # IDENTITY TRACKING CONFIGURATION (moved from Attendance.py)
+# # ============================================================================
+# IDENTITY_CHECK_INTERVAL = float(os.getenv("IDENTITY_CHECK_INTERVAL", "1.0"))    # Check every 1 second
+# IDENTITY_UNKNOWN_THRESHOLD = int(os.getenv("IDENTITY_UNKNOWN_THRESHOLD", "5"))   # 5 consecutive sec = 1 warning
+# IDENTITY_MAX_WARNINGS = int(os.getenv("IDENTITY_MAX_WARNINGS", "3"))             # 3 warnings = removal
+# IDENTITY_REMOVAL_PENALTY = float(os.getenv("IDENTITY_REMOVAL_PENALTY", "1.0"))   # -1% per removal
+
+# logger.info(f"Identity Check Interval: {IDENTITY_CHECK_INTERVAL}s")
+# logger.info(f"Identity Unknown Threshold: {IDENTITY_UNKNOWN_THRESHOLD}s")
+# logger.info(f"Identity Max Warnings: {IDENTITY_MAX_WARNINGS}")
+# logger.info(f"Identity Removal Penalty: {IDENTITY_REMOVAL_PENALTY}%")
+
+# # ============================================================================
+# # IN-MEMORY IDENTITY TRACKING STATE (per user per meeting)
+# # ============================================================================
+# # Key: "meeting_id:user_id" -> tracking dict
+# identity_tracking = {}
+
+# import time as time_module
+
+# def get_identity_state(meeting_id, user_id):
+#     """Get or create identity tracking state for a user in a meeting"""
+#     key = f"{meeting_id}:{user_id}"
+#     if key not in identity_tracking:
+#         identity_tracking[key] = {
+#             "consecutive_unknown_seconds": 0,
+#             "total_unknown_seconds": 0,
+#             "current_cycle_warnings": 0,       # 0-3, resets after removal
+#             "total_warnings_issued": 0,         # cumulative: 1,2,3,4,5,6...
+#             "removal_count": 0,
+#             "is_removed": False,
+#             "can_rejoin": True,
+#             "last_check_time": 0.0,
+#             "attendance_penalty": 0.0,
+#             "warnings": [],                     # warning history
+#         }
+#     return identity_tracking[key]
+
+# def reset_identity_state(meeting_id, user_id):
+#     """Reset identity state when user rejoins after removal"""
+#     state = get_identity_state(meeting_id, user_id)
+#     state["consecutive_unknown_seconds"] = 0
+#     state["current_cycle_warnings"] = 0
+#     state["is_removed"] = False
+#     state["can_rejoin"] = True
+#     return state
+
+# def check_identity_with_tracking(meeting_id, user_id, is_verified, similarity):
+#     """
+#     Full identity tracking logic (moved from Attendance.py check_identity_verification).
+    
+#     Handles:
+#     - 5-second consecutive unknown counter
+#     - Warning system (1/3, 2/3, 3/3)
+#     - -1% penalty on removal
+#     - Cycle reset after removal
+    
+#     Returns:
+#         dict: Complete identity result with popup, warnings, removal status
+#     """
+#     current_time = time_module.time()
+#     state = get_identity_state(meeting_id, user_id)
+    
+#     # Check interval (1 second between checks)
+#     time_since_last = current_time - state["last_check_time"]
+#     if time_since_last < IDENTITY_CHECK_INTERVAL:
+#         return None  # Too soon, skip
+    
+#     state["last_check_time"] = current_time
+    
+#     # ================================================================
+#     # CASE A: VERIFIED (face matches)
+#     # ================================================================
+#     if is_verified:
+#         if state["consecutive_unknown_seconds"] > 0:
+#             logger.info(f"Identity VERIFIED for {user_id} - resetting consecutive counter from {state['consecutive_unknown_seconds']}s to 0")
+#         state["consecutive_unknown_seconds"] = 0
+        
+#         return {
+#             "identity_verified": True,
+#             "identity_similarity": round(similarity, 4),
+#             "identity_warning_count": state["current_cycle_warnings"],
+#             "identity_consecutive_unknown": 0,
+#             "identity_popup": None,
+#             "identity_action": None,
+#             "identity_is_removed": False,
+#             "identity_removal_count": state["removal_count"],
+#             "identity_attendance_penalty": state["attendance_penalty"],
+#             "identity_total_warnings": state["total_warnings_issued"],
+#         }
+    
+#     # ================================================================
+#     # CASE B: NOT VERIFIED (unknown person)
+#     # ================================================================
+#     state["consecutive_unknown_seconds"] += 1
+#     state["total_unknown_seconds"] += 1
+#     consecutive = state["consecutive_unknown_seconds"]
+    
+#     logger.warning(
+#         f"UNKNOWN person detected | User: {user_id} | "
+#         f"Consecutive: {consecutive}/{IDENTITY_UNKNOWN_THRESHOLD}s | "
+#         f"Cycle warnings: {state['current_cycle_warnings']}/{IDENTITY_MAX_WARNINGS}"
+#     )
+    
+#     # ================================================================
+#     # Check if threshold reached (5 seconds unknown = 1 warning)
+#     # ================================================================
+#     if consecutive >= IDENTITY_UNKNOWN_THRESHOLD:
+#         # Reset consecutive counter
+#         state["consecutive_unknown_seconds"] = 0
+        
+#         # Increment warnings
+#         state["current_cycle_warnings"] += 1
+#         state["total_warnings_issued"] += 1
+#         cycle_warning = state["current_cycle_warnings"]
+#         total_warning = state["total_warnings_issued"]
+        
+#         # Add to warning history
+#         state["warnings"].append({
+#             "warning_number": cycle_warning,
+#             "total_number": total_warning,
+#             "timestamp": current_time,
+#             "similarity": similarity,
+#         })
+        
+#         # Determine popup and action
+#         popup_message = None
+#         action = None
+        
+#         if cycle_warning == 1:
+#             popup_message = (
+#                 f"Warning 1/{IDENTITY_MAX_WARNINGS}: Unknown person detected for "
+#                 f"{IDENTITY_UNKNOWN_THRESHOLD} seconds. Please ensure the registered "
+#                 f"participant is visible."
+#             )
+#             action = "identity_warning_1"
+#             logger.warning(f"IDENTITY WARNING 1/{IDENTITY_MAX_WARNINGS} for {user_id} (Total: #{total_warning})")
+            
+#         elif cycle_warning == 2:
+#             popup_message = (
+#                 f"Warning 2/{IDENTITY_MAX_WARNINGS}: Identity verification failed again. "
+#                 f"ONE MORE failure will remove you from the meeting!"
+#             )
+#             action = "identity_warning_2"
+#             logger.error(f"IDENTITY WARNING 2/{IDENTITY_MAX_WARNINGS} for {user_id} (Total: #{total_warning}) - CRITICAL")
+            
+#         elif cycle_warning >= IDENTITY_MAX_WARNINGS:
+#             # REMOVAL
+#             state["removal_count"] += 1
+#             state["is_removed"] = True
+#             state["can_rejoin"] = True
+#             state["current_cycle_warnings"] = 0  # Reset for next cycle
+#             state["attendance_penalty"] += IDENTITY_REMOVAL_PENALTY
+            
+#             popup_message = (
+#                 f"You have been removed from the meeting due to identity "
+#                 f"verification failure ({IDENTITY_MAX_WARNINGS} warnings). "
+#                 f"You can rejoin after correcting the issue. "
+#                 f"Penalty: -{IDENTITY_REMOVAL_PENALTY}%"
+#             )
+#             action = "identity_removal"
+            
+#             logger.critical(
+#                 f"USER REMOVED - Identity Verification Failed | "
+#                 f"User: {user_id} | Removal #{state['removal_count']} | "
+#                 f"Penalty: {state['attendance_penalty']}%"
+#             )
+        
+#         return {
+#             "identity_verified": False,
+#             "identity_similarity": round(similarity, 4),
+#             "identity_warning_count": cycle_warning,
+#             "identity_consecutive_unknown": 0,
+#             "identity_popup": popup_message,
+#             "identity_action": action,
+#             "identity_is_removed": state["is_removed"],
+#             "identity_removal_count": state["removal_count"],
+#             "identity_attendance_penalty": state["attendance_penalty"],
+#             "identity_total_warnings": total_warning,
+#             "identity_can_rejoin": state["can_rejoin"],
+#         }
+    
+#     else:
+#         # Threshold not reached yet - still accumulating
+#         remaining = IDENTITY_UNKNOWN_THRESHOLD - consecutive
+        
+#         return {
+#             "identity_verified": False,
+#             "identity_similarity": round(similarity, 4),
+#             "identity_warning_count": state["current_cycle_warnings"],
+#             "identity_consecutive_unknown": consecutive,
+#             "identity_popup": None,  # No popup until threshold
+#             "identity_action": None,
+#             "identity_is_removed": state["is_removed"],
+#             "identity_removal_count": state["removal_count"],
+#             "identity_attendance_penalty": state["attendance_penalty"],
+#             "identity_total_warnings": state["total_warnings_issued"],
+#         }
+
 
 
 # # ---------------------------------------------------------------------
@@ -199,22 +413,22 @@
 
 #     def __init__(self):
 #         if not self._initialized:
-#             logger.info(f"🔹 Initializing InsightFace model: {FACE_MODEL_NAME}...")
+#             logger.info(f"ðŸ”¹ Initializing InsightFace model: {FACE_MODEL_NAME}...")
 #             try:
 #                 # Get INSIGHTFACE_HOME from environment
 #                 insightface_root = os.environ.get('INSIGHTFACE_HOME', '/tmp/.insightface')
-#                 logger.info(f"🔹 Using InsightFace root directory: {insightface_root}")
+#                 logger.info(f"ðŸ”¹ Using InsightFace root directory: {insightface_root}")
                 
 #                 self.app = FaceAnalysis(
 #                     name=FACE_MODEL_NAME,
-#                     root=insightface_root,  # ← ADD THIS
-#                     providers=['CPUExecutionProvider']
+#                     root=insightface_root,  # â† ADD THIS
+#                     providers=['CUDAExecutionProvider', 'CPUExecutionProvider']  # GPU first, CPU fallback
 #                 )
-#                 self.app.prepare(ctx_id=-1, det_size=FACE_DETECTION_SIZE)
+#                 self.app.prepare(ctx_id=0, det_size=FACE_DETECTION_SIZE)  # ctx_id=0 for GPU
 #                 self._initialized = True
-#                 logger.info("✅ InsightFace model loaded successfully")
+#                 logger.info("âœ… InsightFace model loaded successfully")
 #             except Exception as e:
-#                 logger.error(f"❌ Failed to initialize InsightFace model: {e}")
+#                 logger.error(f"âŒ Failed to initialize InsightFace model: {e}")
 #                 raise
 
 #     def extract_embedding(self, image_data, return_all_faces=False):
@@ -290,7 +504,7 @@
 #                 # Sort by bbox area (largest first)
 #                 face_list.sort(key=lambda x: x['bbox_area'], reverse=True)
                 
-#                 logger.info(f"✅ Detected {face_count} face(s) in image")
+#                 logger.info(f"âœ… Detected {face_count} face(s) in image")
                 
 #                 return {
 #                     'face_count': face_count,
@@ -303,20 +517,20 @@
 #             # ORIGINAL: Return largest face embedding only
 #             # ================================================================
 #             if face_count > 1:
-#                 logger.warning(f"⚠️ Multiple faces detected ({face_count}). Using the largest face.")
+#                 logger.warning(f"âš ï¸ Multiple faces detected ({face_count}). Using the largest face.")
             
 #             # Use largest face (by bounding box area)
 #             largest_face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
 #             embedding = largest_face.embedding.tolist()
             
-#             logger.debug(f"✅ Embedding extracted (dimension: {len(embedding)})")
+#             logger.debug(f"âœ… Embedding extracted (dimension: {len(embedding)})")
             
 #             return embedding
             
 #         except ValueError as ve:
 #             raise ve
 #         except Exception as e:
-#             logger.error(f"❌ Error extracting embedding: {e}")
+#             logger.error(f"âŒ Error extracting embedding: {e}")
 #             raise ValueError(f"Failed to process image: {str(e)}")
 
 
@@ -345,7 +559,7 @@
 #         return float(distance)
         
 #     except Exception as e:
-#         logger.error(f"❌ Error calculating cosine distance: {e}")
+#         logger.error(f"âŒ Error calculating cosine distance: {e}")
 #         raise
 
 # # ---------------------------------------------------------------------
@@ -363,22 +577,22 @@
 #                 pass
         
 #         if not record:
-#             logger.warning(f"⚠️ No embedding found for user_id: {user_id}")
+#             logger.warning(f"âš ï¸ No embedding found for user_id: {user_id}")
 #             return None
         
 #         if "embedding" not in record or not record["embedding"]:
-#             logger.error(f"❌ Record found but no valid 'embedding' field for user_id: {user_id}")
+#             logger.error(f"âŒ Record found but no valid 'embedding' field for user_id: {user_id}")
 #             return None
         
 #         if not isinstance(record["embedding"], list) or len(record["embedding"]) == 0:
-#             logger.error(f"❌ Invalid embedding format for user_id: {user_id}")
+#             logger.error(f"âŒ Invalid embedding format for user_id: {user_id}")
 #             return None
         
-#         logger.debug(f"✅ Retrieved embedding for user_id: {user_id} (dimension: {len(record['embedding'])})")
+#         logger.debug(f"âœ… Retrieved embedding for user_id: {user_id} (dimension: {len(record['embedding'])})")
 #         return record
         
 #     except Exception as e:
-#         logger.error(f"❌ Error fetching embedding for user_id {user_id}: {e}")
+#         logger.error(f"âŒ Error fetching embedding for user_id {user_id}: {e}")
 #         return None
 
 # def log_verification_attempt(user_id, distance, allowed, confidence, error=None, metadata=None):
@@ -401,9 +615,9 @@
 #             }
 #         }
 #         db[VERIFICATION_LOGS_COLLECTION].insert_one(log_entry)
-#         logger.debug(f"📝 Logged verification attempt for user_id: {user_id}")
+#         logger.debug(f"ðŸ“ Logged verification attempt for user_id: {user_id}")
 #     except Exception as e:
-#         logger.error(f"❌ Failed to log verification attempt: {e}")
+#         logger.error(f"âŒ Failed to log verification attempt: {e}")
 
 # # ---------------------------------------------------------------------
 # # Camera State Detection Functions (NEW)
@@ -413,8 +627,8 @@
 #     Automatically detect when camera is disabled/enabled based on frame data.
     
 #     Logic:
-#     - If frames stop coming for >3 seconds → Camera disabled
-#     - If frames resume after gap → Camera re-enabled → Trigger verification
+#     - If frames stop coming for >3 seconds â†’ Camera disabled
+#     - If frames resume after gap â†’ Camera re-enabled â†’ Trigger verification
     
 #     Args:
 #         session_doc: Current session document
@@ -455,17 +669,17 @@
 #     if state_changed:
 #         # Camera state changed
 #         if previous_state == "disabled" and current_state == "enabled":
-#             # Camera was OFF, now ON → TRIGGER RE-VERIFICATION
-#             logger.info(f"🎥 Camera re-enabled detected for session {session_doc['_id']}")
+#             # Camera was OFF, now ON â†’ TRIGGER RE-VERIFICATION
+#             logger.info(f"ðŸŽ¥ Camera re-enabled detected for session {session_doc['_id']}")
 #             should_reverify = True
 #         elif previous_state == "enabled" and current_state == "disabled":
 #             # Camera was ON, now OFF
-#             logger.info(f"📴 Camera disabled detected for session {session_doc['_id']}")
+#             logger.info(f"ðŸ“´ Camera disabled detected for session {session_doc['_id']}")
     
 #     elif frame_gap_detected and current_state == "enabled":
 #         # No explicit state change but gap detected and now enabled
 #         # This means camera was temporarily off
-#         logger.info(f"🔄 Frame gap detected - camera likely toggled for session {session_doc['_id']}")
+#         logger.info(f"ðŸ”„ Frame gap detected - camera likely toggled for session {session_doc['_id']}")
 #         should_reverify = True
     
 #     return {
@@ -557,11 +771,11 @@
 #         result = db[VERIFICATION_SESSIONS_COLLECTION].insert_one(session_doc)
 #         session_id = str(result.inserted_id)
         
-#         logger.info(f"📝 Created verification session {session_id} for user {user_id} in room {room_name}")
+#         logger.info(f"ðŸ“ Created verification session {session_id} for user {user_id} in room {room_name}")
 #         return session_id
         
 #     except Exception as e:
-#         logger.error(f"❌ Failed to create verification session: {e}")
+#         logger.error(f"âŒ Failed to create verification session: {e}")
 #         return None
 
 # def update_verification_session(session_id, verification_result, violation=None):
@@ -603,10 +817,10 @@
 #             {"$set": update_data}
 #         )
         
-#         logger.info(f"✅ Updated verification session {session_id}")
+#         logger.info(f"âœ… Updated verification session {session_id}")
         
 #     except Exception as e:
-#         logger.error(f"❌ Error updating verification session: {e}")
+#         logger.error(f"âŒ Error updating verification session: {e}")
 
 # def end_verification_session(session_id):
 #     """End verification session"""
@@ -620,11 +834,11 @@
 #                 }
 #             }
 #         )
-#         logger.info(f"✅ Ended verification session {session_id}")
+#         logger.info(f"âœ… Ended verification session {session_id}")
 #         return True
         
 #     except Exception as e:
-#         logger.error(f"❌ Error ending verification session: {e}")
+#         logger.error(f"âŒ Error ending verification session: {e}")
 #         return False
 
 # def get_session_status(session_id):
@@ -649,7 +863,7 @@
 #         }
         
 #     except Exception as e:
-#         logger.error(f"❌ Error getting session status: {e}")
+#         logger.error(f"âŒ Error getting session status: {e}")
 #         return None
 
 # # ---------------------------------------------------------------------
@@ -671,7 +885,7 @@
 #             image_file = request.FILES.get("image")
             
 #             logger.info(f"{'='*80}")
-#             logger.info(f"🔍 WAITING ROOM VERIFICATION - User ID: {user_id} | Port: {SERVER_PORT}")
+#             logger.info(f"ðŸ” WAITING ROOM VERIFICATION - User ID: {user_id} | Port: {SERVER_PORT}")
 #             logger.info(f"{'='*80}")
             
 #             if not user_id:
@@ -745,7 +959,7 @@
 #             # NEW: MULTI-FACE DETECTION - SINGLE PARTICIPANT ENFORCEMENT
 #             # ================================================================
 #             try:
-#                 logger.info("🔍 Detecting faces in frame...")
+#                 logger.info("ðŸ” Detecting faces in frame...")
                 
 #                 # Extract ALL faces from image
 #                 face_detection_result = face_model.extract_embedding(
@@ -757,7 +971,7 @@
 #                 primary_face = face_detection_result['primary_face']
 #                 live_embedding = face_detection_result['primary_embedding']
                 
-#                 logger.info(f"📊 Face Detection Results:")
+#                 logger.info(f"ðŸ“Š Face Detection Results:")
 #                 logger.info(f"   Detected Faces: {face_count}")
 #                 logger.info(f"   Primary Face Score: {primary_face['det_score']:.3f}")
                 
@@ -767,7 +981,7 @@
 #                 if not ALLOW_MULTIPLE_FACES and face_count > MAX_ALLOWED_FACES:
 #                     logger.error(
 #                         f"\n{'='*80}\n"
-#                         f"🚫 MULTIPLE PEOPLE DETECTED - ACCESS DENIED\n"
+#                         f"ðŸš« MULTIPLE PEOPLE DETECTED - ACCESS DENIED\n"
 #                         f"{'='*80}\n"
 #                         f"User ID: {user_id}\n"
 #                         f"Detected Faces: {face_count}\n"
@@ -826,7 +1040,7 @@
 #                         "popup_title": "Multiple People Detected",
 #                         "popup_message": MULTI_FACE_ERROR_MESSAGE,
 #                         "popup_type": "error",
-#                         "popup_icon": "🚫",
+#                         "popup_icon": "ðŸš«",
 #                         "popup_action": "retry",
 #                         "popup_instructions": [
 #                             "Ensure only you are visible in the camera",
@@ -847,7 +1061,7 @@
 #                 # ============================================================
 #                 # STEP: Single Face Detected - Proceed with Verification
 #                 # ============================================================
-#                 logger.info(f"✅ Single face detected - proceeding with face matching")
+#                 logger.info(f"âœ… Single face detected - proceeding with face matching")
                 
 #             except ValueError as ve:
 #                 # No face detected or other extraction error
@@ -880,12 +1094,12 @@
 #                     match_quality = "POOR"
                 
 #                 logger.info(f"{'='*80}")
-#                 logger.info(f"📊 VERIFICATION RESULTS:")
+#                 logger.info(f"ðŸ“Š VERIFICATION RESULTS:")
 #                 logger.info(f"   User ID: {user_id}")
-#                 logger.info(f"   Face Count: {face_count} (✅ Single Participant)")
+#                 logger.info(f"   Face Count: {face_count} (âœ… Single Participant)")
 #                 logger.info(f"   Distance: {distance:.4f}")
 #                 logger.info(f"   Threshold: {FACE_DISTANCE_THRESHOLD}")
-#                 logger.info(f"   Match: {'✅ YES' if allowed else '❌ NO'}")
+#                 logger.info(f"   Match: {'âœ… YES' if allowed else 'âŒ NO'}")
 #                 logger.info(f"   Confidence: {confidence:.2f}%")
 #                 logger.info(f"   Match Quality: {match_quality}")
 #                 logger.info(f"   Processing Time: {processing_time:.3f}s")
@@ -935,17 +1149,17 @@
 #                 }
                 
 #                 if allowed:
-#                     response_data["message"] = "✅ Face verified successfully - Single participant confirmed"
+#                     response_data["message"] = "âœ… Face verified successfully - Single participant confirmed"
 #                     response_data["status"] = "VERIFIED"
 #                 else:
-#                     response_data["message"] = "❌ Face verification failed - No match found"
+#                     response_data["message"] = "âŒ Face verification failed - No match found"
 #                     response_data["status"] = "NOT_VERIFIED"
                 
 #                 return JsonResponse(response_data, status=200)
                 
 #             except Exception as e:
 #                 error_msg = "Failed to compare face embeddings"
-#                 logger.error(f"❌ {error_msg}: {e}")
+#                 logger.error(f"âŒ {error_msg}: {e}")
 #                 return JsonResponse({
 #                     "allowed": False,
 #                     "error": error_msg,
@@ -956,7 +1170,7 @@
             
 #         except Exception as e:
 #             error_msg = "Internal server error during verification"
-#             logger.error(f"❌ Unexpected error: {e}", exc_info=True)
+#             logger.error(f"âŒ Unexpected error: {e}", exc_info=True)
 #             return JsonResponse({
 #                 "allowed": False,
 #                 "error": error_msg,
@@ -982,7 +1196,7 @@
 #             image_file = request.FILES.get("image")
             
 #             logger.info(f"{'='*80}")
-#             logger.info(f"🔄 MANUAL CONTINUOUS VERIFICATION - User: {user_id} | Session: {session_id}")
+#             logger.info(f"ðŸ”„ MANUAL CONTINUOUS VERIFICATION - User: {user_id} | Session: {session_id}")
 #             logger.info(f"{'='*80}")
             
 #             if not user_id or not session_id or not room_name:
@@ -1015,7 +1229,7 @@
 #             })
             
 #             if not session_doc:
-#                 logger.error(f"❌ Invalid or inactive session {session_id}")
+#                 logger.error(f"âŒ Invalid or inactive session {session_id}")
 #                 return JsonResponse({
 #                     "allowed": False,
 #                     "error": "Invalid or inactive verification session",
@@ -1025,7 +1239,7 @@
             
 #             violations_count = len(session_doc.get("violations", []))
 #             if violations_count >= 3:
-#                 logger.warning(f"⚠️ Session {session_id} has {violations_count} violations - auto-kick")
+#                 logger.warning(f"âš ï¸ Session {session_id} has {violations_count} violations - auto-kick")
 #                 return JsonResponse({
 #                     "allowed": False,
 #                     "error": "Too many verification violations",
@@ -1054,9 +1268,9 @@
 #             stored_embedding = user_record["embedding"]
             
 #             try:
-#                 logger.info(f"📸 Extracting face embedding for manual continuous verification...")
+#                 logger.info(f"ðŸ“¸ Extracting face embedding for manual continuous verification...")
 #                 live_embedding = face_model.extract_embedding(image_file)
-#                 logger.info(f"✅ Live embedding extracted successfully")
+#                 logger.info(f"âœ… Live embedding extracted successfully")
                 
 #             except ValueError as ve:
 #                 violation = {
@@ -1082,18 +1296,18 @@
                 
 #                 if allowed:
 #                     action = "allow"
-#                     message = "✅ Continuous verification successful"
+#                     message = "âœ… Continuous verification successful"
 #                 else:
 #                     violations_count += 1
 #                     if violations_count >= 3:
 #                         action = "kick"
-#                         message = "❌ Face verification failed - User will be removed"
+#                         message = "âŒ Face verification failed - User will be removed"
 #                     elif violations_count >= 2:
 #                         action = "warn"
-#                         message = "⚠️ Face verification failed - Final warning"
+#                         message = "âš ï¸ Face verification failed - Final warning"
 #                     else:
 #                         action = "warn"
-#                         message = "⚠️ Face verification failed - Warning"
+#                         message = "âš ï¸ Face verification failed - Warning"
                     
 #                     violation = {
 #                         "reason": "Face mismatch",
@@ -1108,7 +1322,7 @@
 #                 if allowed:
 #                     update_verification_session(session_id, {"allowed": True, "distance": distance})
                 
-#                 logger.info(f"📊 Manual Continuous Verification: {'✅ PASS' if allowed else '❌ FAIL'}")
+#                 logger.info(f"ðŸ“Š Manual Continuous Verification: {'âœ… PASS' if allowed else 'âŒ FAIL'}")
 #                 logger.info(f"   Distance: {distance:.4f} | Confidence: {confidence:.2f}%")
 #                 logger.info(f"   Action: {action.upper()} | Violations: {violations_count}")
                 
@@ -1145,7 +1359,7 @@
 #                 return JsonResponse(response_data, status=200)
                 
 #             except Exception as e:
-#                 logger.error(f"❌ Comparison error: {e}")
+#                 logger.error(f"âŒ Comparison error: {e}")
 #                 return JsonResponse({
 #                     "allowed": False,
 #                     "error": "Failed to compare face embeddings",
@@ -1154,7 +1368,7 @@
 #                 }, status=500)
             
 #         except Exception as e:
-#             logger.error(f"❌ Unexpected error: {e}", exc_info=True)
+#             logger.error(f"âŒ Unexpected error: {e}", exc_info=True)
 #             return JsonResponse({
 #                 "allowed": False,
 #                 "error": "Internal server error during continuous verification",
@@ -1188,7 +1402,7 @@
 #             is_break_paused = request.data.get("is_break_paused", False)
             
 #             logger.info(f"{'='*80}")
-#             logger.info(f"🔍 ATTENDANCE DETECTION - User: {user_id} | Camera: {camera_enabled}")
+#             logger.info(f"ðŸ” ATTENDANCE DETECTION - User: {user_id} | Camera: {camera_enabled}")
 #             logger.info(f"{'='*80}")
             
 #             # Validate inputs
@@ -1209,7 +1423,7 @@
 #                 # Create new session
 #                 session_id = create_verification_session(user_id, meeting_id, initial_verification=False)
 #                 session = db[VERIFICATION_SESSIONS_COLLECTION].find_one({"_id": ObjectId(session_id)})
-#                 logger.info(f"📝 Created new session {session_id} for user {user_id}")
+#                 logger.info(f"ðŸ“ Created new session {session_id} for user {user_id}")
             
 #             # ================================================================
 #             # AUTOMATIC CAMERA STATE DETECTION
@@ -1224,7 +1438,7 @@
 #                 frame_data
 #             )
             
-#             logger.info(f"📹 Camera State: {state_info['previous_state']} → {state_info['new_state']}")
+#             logger.info(f"ðŸ“¹ Camera State: {state_info['previous_state']} â†’ {state_info['new_state']}")
 #             if state_info.get("time_since_last_frame"):
 #                 logger.info(f"   Time since last frame: {state_info['time_since_last_frame']:.2f}s")
             
@@ -1233,11 +1447,11 @@
 #             # ================================================================
             
 #             if state_info["should_reverify"]:
-#                 logger.info(f"🔒 CAMERA RE-ENABLED - Triggering AUTOMATIC face verification!")
+#                 logger.info(f"ðŸ”’ CAMERA RE-ENABLED - Triggering AUTOMATIC face verification!")
                 
 #                 # Check if we have frame data
 #                 if not frame_data or not camera_enabled:
-#                     logger.warning("⚠️ Camera re-enabled but no frame data available yet - waiting...")
+#                     logger.warning("âš ï¸ Camera re-enabled but no frame data available yet - waiting...")
 #                     return JsonResponse({
 #                         "status": "waiting_for_frame",
 #                         "message": "Camera re-enabled - waiting for video frame",
@@ -1250,7 +1464,7 @@
                 
 #                 # Perform automatic face verification
 #                 try:
-#                     logger.info("📸 Extracting face embedding from frame...")
+#                     logger.info("ðŸ“¸ Extracting face embedding from frame...")
                     
 #                     # Extract face embedding
 #                     live_embedding = face_model.extract_embedding(frame_data)
@@ -1268,16 +1482,16 @@
 #                     confidence = max(0, min(100, (1 - distance) * 100))
                     
 #                     logger.info(f"{'='*80}")
-#                     logger.info(f"📊 AUTOMATIC FACE VERIFICATION RESULT:")
+#                     logger.info(f"ðŸ“Š AUTOMATIC FACE VERIFICATION RESULT:")
 #                     logger.info(f"   Distance: {distance:.4f}")
 #                     logger.info(f"   Threshold: {FACE_DISTANCE_THRESHOLD}")
-#                     logger.info(f"   Result: {'✅ PASS' if allowed else '❌ FAIL'}")
+#                     logger.info(f"   Result: {'âœ… PASS' if allowed else 'âŒ FAIL'}")
 #                     logger.info(f"   Confidence: {confidence:.2f}%")
 #                     logger.info(f"{'='*80}")
                     
 #                     if allowed:
-#                         # ✅ VERIFICATION PASSED
-#                         logger.info("✅ Automatic continuous verification PASSED")
+#                         # âœ… VERIFICATION PASSED
+#                         logger.info("âœ… Automatic continuous verification PASSED")
                         
 #                         # Clear pending reverification
 #                         db[VERIFICATION_SESSIONS_COLLECTION].update_one(
@@ -1301,7 +1515,7 @@
                         
 #                         return JsonResponse({
 #                             "status": "reverification_success",
-#                             "message": "✅ Face verified successfully after camera re-enable",
+#                             "message": "âœ… Face verified successfully after camera re-enable",
 #                             "allowed": True,
 #                             "distance": round(distance, 4),
 #                             "confidence": round(confidence, 2),
@@ -1314,8 +1528,8 @@
 #                         })
                     
 #                     else:
-#                         # ❌ VERIFICATION FAILED
-#                         logger.error("❌ Automatic continuous verification FAILED")
+#                         # âŒ VERIFICATION FAILED
+#                         logger.error("âŒ Automatic continuous verification FAILED")
                         
 #                         # Add violation
 #                         violation_entry = {
@@ -1341,7 +1555,7 @@
 #                         )
 #                         violation_count = len(updated_session.get("violations", []))
                         
-#                         logger.warning(f"⚠️ Violation count: {violation_count}/3")
+#                         logger.warning(f"âš ï¸ Violation count: {violation_count}/3")
                         
 #                         # Log failed verification
 #                         log_verification_attempt(
@@ -1361,8 +1575,8 @@
                         
 #                         # Determine action
 #                         if violation_count >= 3:
-#                             # 🚫 KICK USER
-#                             logger.error(f"🚫 Maximum violations ({violation_count}/3) reached - KICKING USER")
+#                             # ðŸš« KICK USER
+#                             logger.error(f"ðŸš« Maximum violations ({violation_count}/3) reached - KICKING USER")
                             
 #                             # Update session status
 #                             db[VERIFICATION_SESSIONS_COLLECTION].update_one(
@@ -1372,7 +1586,7 @@
                             
 #                             return JsonResponse({
 #                                 "status": "session_closed",
-#                                 "message": "❌ Face verification failed. Maximum violations (3/3) reached. You will be removed from the meeting.",
+#                                 "message": "âŒ Face verification failed. Maximum violations (3/3) reached. You will be removed from the meeting.",
 #                                 "allowed": False,
 #                                 "action": "kick",
 #                                 "violations": violation_count,
@@ -1383,12 +1597,12 @@
 #                             }, status=403)
                         
 #                         else:
-#                             # ⚠️ WARNING
+#                             # âš ï¸ WARNING
 #                             warnings_remaining = 3 - violation_count
                             
 #                             return JsonResponse({
 #                                 "status": "reverification_failed",
-#                                 "message": f"⚠️ Face verification failed after camera re-enable. Warning {violation_count}/3",
+#                                 "message": f"âš ï¸ Face verification failed after camera re-enable. Warning {violation_count}/3",
 #                                 "allowed": False,
 #                                 "action": "warn",
 #                                 "violations": violation_count,
@@ -1398,12 +1612,12 @@
 #                                 "attendance_percentage": 100,
 #                                 "engagement_score": 100,
 #                                 "session_active": True,
-#                                 "popup": f"⚠️ Face verification failed after camera re-enable. {warnings_remaining} attempts remaining before removal.",
+#                                 "popup": f"âš ï¸ Face verification failed after camera re-enable. {warnings_remaining} attempts remaining before removal.",
 #                                 "camera_state": state_info["new_state"]
 #                             })
                 
 #                 except Exception as e:
-#                     logger.error(f"❌ Automatic verification error: {e}", exc_info=True)
+#                     logger.error(f"âŒ Automatic verification error: {e}", exc_info=True)
                     
 #                     # Add violation for error
 #                     violation_entry = {
@@ -1466,7 +1680,7 @@
 #             })
             
 #         except Exception as e:
-#             logger.error(f"❌ Unexpected error in attendance detection: {e}", exc_info=True)
+#             logger.error(f"âŒ Unexpected error in attendance detection: {e}", exc_info=True)
 #             return JsonResponse({
 #                 "status": "error",
 #                 "error": str(e),
@@ -1672,7 +1886,7 @@
 #             }, status=404)
             
 #     except Exception as e:
-#         logger.error(f"❌ Error checking user status: {e}")
+#         logger.error(f"âŒ Error checking user status: {e}")
 #         return JsonResponse({
 #             "error": str(e),
 #             "error_code": "STATUS_CHECK_FAILED",
@@ -1756,7 +1970,7 @@
 #         })
         
 #     except Exception as e:
-#         logger.error(f"❌ Error getting stats: {e}")
+#         logger.error(f"âŒ Error getting stats: {e}")
 #         return JsonResponse({
 #             "error": str(e),
 #             "error_code": "STATS_FETCH_FAILED",
@@ -1768,10 +1982,145 @@
 # # ---------------------------------------------------------------------
 # # URL Patterns
 # # ---------------------------------------------------------------------
+# # ============================================================================
+# # NEW: Continuous Identity Check Endpoint (called by frontend every 1-5 sec)
+# # ============================================================================
+# @api_view(['POST'])
+# def continuous_identity_check(request):
+#     """
+#     NEW ENDPOINT: Frontend sends frame here every 1-5 seconds during meeting.
+    
+#     This endpoint:
+#     1. Extracts face from frame (GPU)
+#     2. Compares with stored embedding (GPU)  
+#     3. Tracks consecutive unknown seconds (0-5)
+#     4. Issues warnings (1/3, 2/3, 3/3)
+#     5. Applies -1% penalty and removes on 3rd warning
+#     6. Returns complete identity status
+    
+#     Request body (JSON):
+#         { "user_id": "123", "meeting_id": "meeting456", "frame": "<base64>" }
+    
+#     Response:
+#         { "identity_verified": true/false, "identity_popup": "...", 
+#           "identity_warning_count": 0-3, "identity_is_removed": false, ... }
+#     """
+#     try:
+#         data = json.loads(request.body)
+#         user_id = data.get("user_id")
+#         meeting_id = data.get("meeting_id")
+#         frame_data = data.get("frame")
+        
+#         if not user_id or not meeting_id:
+#             return JsonResponse({"error": "user_id and meeting_id required"}, status=400)
+        
+#         if not frame_data:
+#             return JsonResponse({"error": "frame data required"}, status=400)
+        
+#         # Check if user is already removed
+#         state = get_identity_state(meeting_id, user_id)
+#         if state["is_removed"]:
+#             return JsonResponse({
+#                 "status": "removed",
+#                 "identity_verified": False,
+#                 "identity_is_removed": True,
+#                 "identity_removal_count": state["removal_count"],
+#                 "identity_attendance_penalty": state["attendance_penalty"],
+#                 "identity_popup": "You are removed due to identity verification failure. Please rejoin.",
+#                 "identity_can_rejoin": state["can_rejoin"],
+#             })
+        
+#         # Get stored embedding from MongoDB
+#         user_record = get_user_embedding(user_id)
+#         if not user_record:
+#             return JsonResponse({
+#                 "error": f"User {user_id} not registered",
+#                 "identity_verified": False,
+#             }, status=404)
+        
+#         stored_embedding = user_record["embedding"]
+        
+#         # Extract live face embedding from frame (GPU)
+#         try:
+#             live_embedding = face_model.extract_embedding(frame_data)
+#         except ValueError as ve:
+#             # No face detected in frame - treat as unknown
+#             result = check_identity_with_tracking(meeting_id, user_id, False, 1.0)
+#             if result:
+#                 result["face_detected"] = False
+#                 return JsonResponse(result)
+#             return JsonResponse({"identity_verified": True, "face_detected": False, "identity_popup": None})
+        
+#         # Compare embeddings
+#         distance = cosine_distance(stored_embedding, live_embedding)
+#         is_verified = distance < FACE_DISTANCE_THRESHOLD
+#         similarity = max(0, min(1, 1 - distance))
+        
+#         # Run identity tracking logic (warnings, penalties, removal)
+#         result = check_identity_with_tracking(meeting_id, user_id, is_verified, similarity)
+        
+#         if result:
+#             result["face_detected"] = True
+#             result["distance"] = round(distance, 4)
+#             return JsonResponse(result)
+        
+#         # Skipped (too soon since last check)
+#         return JsonResponse({
+#             "status": "skipped",
+#             "identity_verified": True,
+#             "identity_popup": None,
+#             "message": "Check skipped (within interval)",
+#         })
+        
+#     except Exception as e:
+#         logger.error(f"Error in continuous_identity_check: {e}", exc_info=True)
+#         return JsonResponse({
+#             "error": str(e),
+#             "identity_verified": True,  # Fail-safe: don't falsely remove
+#             "identity_popup": None,
+#         }, status=500)
+
+
+# @api_view(['POST'])
+# def rejoin_after_identity_removal(request):
+#     """
+#     Called when a user who was removed for identity failure tries to rejoin.
+#     Resets the identity cycle warnings so they get fresh 1/3, 2/3, 3/3.
+#     """
+#     try:
+#         data = json.loads(request.body)
+#         user_id = data.get("user_id")
+#         meeting_id = data.get("meeting_id")
+        
+#         if not user_id or not meeting_id:
+#             return JsonResponse({"error": "user_id and meeting_id required"}, status=400)
+        
+#         state = reset_identity_state(meeting_id, user_id)
+        
+#         logger.info(f"User {user_id} rejoined meeting {meeting_id} after identity removal #{state['removal_count']}")
+        
+#         return JsonResponse({
+#             "status": "rejoined",
+#             "message": "Identity tracking reset. You have 3 fresh warnings.",
+#             "identity_removal_count": state["removal_count"],
+#             "identity_attendance_penalty": state["attendance_penalty"],
+#         })
+        
+#     except Exception as e:
+#         logger.error(f"Error in rejoin: {e}")
+#         return JsonResponse({"error": str(e)}, status=500)
+
+
 # urlpatterns = [
 #     # Face Verification endpoints
 #     path("api/face/verify", VerifyFace.as_view(), name="verify_face"),
 #     path("api/face/continuous-verify", ContinuousVerifyFace.as_view(), name="continuous_verify_face"),
+    
+#     # NEW: Continuous identity check with tracking (frontend calls this every 1-5 sec)
+#     path("api/face/identity-check", continuous_identity_check, name="continuous_identity_check"),
+    
+#     # NEW: Rejoin after identity removal
+#     path("api/face/rejoin", rejoin_after_identity_removal, name="rejoin_after_identity_removal"),
     
 #     # NEW: Enhanced Attendance Detection with Automatic Camera State Monitoring
 #     path("api/attendance/detect/", EnhancedAttendanceDetection.as_view(), name="enhanced_attendance_detect"),
@@ -1802,42 +2151,42 @@
 #     import sys
     
 #     logger.info("=" * 80)
-#     logger.info("🚀 Starting Face Verification Service - AUTOMATIC Continuous Verification")
+#     logger.info("ðŸš€ Starting Face Verification Service - AUTOMATIC Continuous Verification")
 #     logger.info("=" * 80)
 #     logger.info(f"")
-#     logger.info(f"📋 AUTOMATIC VERIFICATION PROCESS:")
+#     logger.info(f"ðŸ“‹ AUTOMATIC VERIFICATION PROCESS:")
 #     logger.info(f"   1. Initial verification when user joins meeting")
 #     logger.info(f"   2. Create verification session with camera state tracking")
-#     logger.info(f"   3. ✨ AUTOMATICALLY monitor camera state changes")
-#     logger.info(f"   4. ✨ AUTOMATICALLY detect when camera is re-enabled")
-#     logger.info(f"   5. ✨ AUTOMATICALLY verify face on camera re-enable")
+#     logger.info(f"   3. âœ¨ AUTOMATICALLY monitor camera state changes")
+#     logger.info(f"   4. âœ¨ AUTOMATICALLY detect when camera is re-enabled")
+#     logger.info(f"   5. âœ¨ AUTOMATICALLY verify face on camera re-enable")
 #     logger.info(f"   6. Track violations (3-strike system)")
 #     logger.info(f"   7. Auto-kick after 3 violations")
 #     logger.info(f"")
-#     logger.info(f"🎯 KEY FEATURES:")
-#     logger.info(f"   ✅ NO FRONTEND CHANGES REQUIRED!")
-#     logger.info(f"   ✅ Automatic camera state detection")
-#     logger.info(f"   ✅ Automatic face verification on camera re-enable")
-#     logger.info(f"   ✅ Frame gap detection ({CAMERA_FRAME_GAP_THRESHOLD}s threshold)")
-#     logger.info(f"   ✅ Smart violation tracking")
-#     logger.info(f"   ✅ Progressive warning system")
+#     logger.info(f"ðŸŽ¯ KEY FEATURES:")
+#     logger.info(f"   âœ… NO FRONTEND CHANGES REQUIRED!")
+#     logger.info(f"   âœ… Automatic camera state detection")
+#     logger.info(f"   âœ… Automatic face verification on camera re-enable")
+#     logger.info(f"   âœ… Frame gap detection ({CAMERA_FRAME_GAP_THRESHOLD}s threshold)")
+#     logger.info(f"   âœ… Smart violation tracking")
+#     logger.info(f"   âœ… Progressive warning system")
 #     logger.info(f"")
-#     logger.info(f"🔒 Protocol: HTTPS (Secure)")
-#     logger.info(f"📌 Port: {SERVER_PORT}")
-#     logger.info(f"🌐 Server: https://{SERVER_HOST}:{SERVER_PORT}")
-#     logger.info(f"🗄️ MongoDB: {MONGO_HOST}:{MONGO_PORT}/{MONGO_DB}")
-#     logger.info(f"📦 Embeddings Collection: {FACE_EMBEDDINGS_COLLECTION}")
-#     logger.info(f"📝 Logs Collection: {VERIFICATION_LOGS_COLLECTION}")
-#     logger.info(f"🔐 Sessions Collection: {VERIFICATION_SESSIONS_COLLECTION}")
-#     logger.info(f"🤖 Model: {FACE_MODEL_NAME}")
-#     logger.info(f"📊 Face Threshold: {FACE_DISTANCE_THRESHOLD} (lower = stricter matching)")
-#     logger.info(f"⏱️ Camera Gap Threshold: {CAMERA_FRAME_GAP_THRESHOLD}s")
-#     logger.info(f"🔍 Detection Size: {FACE_DETECTION_SIZE}")
+#     logger.info(f"ðŸ”’ Protocol: HTTPS (Secure)")
+#     logger.info(f"ðŸ“Œ Port: {SERVER_PORT}")
+#     logger.info(f"ðŸŒ Server: https://{SERVER_HOST}:{SERVER_PORT}")
+#     logger.info(f"ðŸ—„ï¸ MongoDB: {MONGO_HOST}:{MONGO_PORT}/{MONGO_DB}")
+#     logger.info(f"ðŸ“¦ Embeddings Collection: {FACE_EMBEDDINGS_COLLECTION}")
+#     logger.info(f"ðŸ“ Logs Collection: {VERIFICATION_LOGS_COLLECTION}")
+#     logger.info(f"ðŸ” Sessions Collection: {VERIFICATION_SESSIONS_COLLECTION}")
+#     logger.info(f"ðŸ¤– Model: {FACE_MODEL_NAME}")
+#     logger.info(f"ðŸ“Š Face Threshold: {FACE_DISTANCE_THRESHOLD} (lower = stricter matching)")
+#     logger.info(f"â±ï¸ Camera Gap Threshold: {CAMERA_FRAME_GAP_THRESHOLD}s")
+#     logger.info(f"ðŸ” Detection Size: {FACE_DETECTION_SIZE}")
 #     logger.info("=" * 80)
-#     logger.info("📡 Available HTTPS Endpoints:")
+#     logger.info("ðŸ“¡ Available HTTPS Endpoints:")
 #     logger.info(f"   POST   https://{SERVER_HOST}:{SERVER_PORT}/api/face/verify")
 #     logger.info(f"   POST   https://{SERVER_HOST}:{SERVER_PORT}/api/face/continuous-verify")
-#     logger.info(f"   POST   https://{SERVER_HOST}:{SERVER_PORT}/api/attendance/detect/  ✨ ENHANCED")
+#     logger.info(f"   POST   https://{SERVER_HOST}:{SERVER_PORT}/api/attendance/detect/  âœ¨ ENHANCED")
 #     logger.info(f"   POST   https://{SERVER_HOST}:{SERVER_PORT}/api/face/session/create")
 #     logger.info(f"   POST   https://{SERVER_HOST}:{SERVER_PORT}/api/face/session/<id>/end")
 #     logger.info(f"   GET    https://{SERVER_HOST}:{SERVER_PORT}/api/face/session/<id>/status")
@@ -1845,20 +2194,19 @@
 #     logger.info(f"   GET    https://{SERVER_HOST}:{SERVER_PORT}/api/health")
 #     logger.info(f"   GET    https://{SERVER_HOST}:{SERVER_PORT}/api/stats")
 #     logger.info("=" * 80)
-#     logger.info("⚠️ IMPORTANT NOTES:")
-#     logger.info("   • User face embeddings must be registered in MongoDB first!")
-#     logger.info("   • Frontend continues to work WITHOUT any changes!")
-#     logger.info("   • Backend automatically detects camera state from frame data!")
-#     logger.info("   • Verification triggers automatically when camera re-enabled!")
-#     logger.info("   • Frame gap > 3s = camera disabled, frames resume = camera enabled!")
+#     logger.info("âš ï¸ IMPORTANT NOTES:")
+#     logger.info("   â€¢ User face embeddings must be registered in MongoDB first!")
+#     logger.info("   â€¢ Frontend continues to work WITHOUT any changes!")
+#     logger.info("   â€¢ Backend automatically detects camera state from frame data!")
+#     logger.info("   â€¢ Verification triggers automatically when camera re-enabled!")
+#     logger.info("   â€¢ Frame gap > 3s = camera disabled, frames resume = camera enabled!")
 #     logger.info("=" * 80)
 #     logger.info("")
-#     logger.info("🎉 READY! Backend will automatically handle continuous verification!")
+#     logger.info("ðŸŽ‰ READY! Backend will automatically handle continuous verification!")
 #     logger.info("")
     
 #     sys.argv = ["manage.py", "runserver", f"{SERVER_HOST}:{SERVER_PORT}"]
-#     execute_from_command_line(sys.argv) 
-
+#     execute_from_command_line(sys.argv)
 
 
 
@@ -2059,7 +2407,7 @@ logger.info(f"âš™ï¸ Max Allowed Faces: {MAX_ALLOWED_FACES}")
 # ============================================================================
 # IDENTITY TRACKING CONFIGURATION (moved from Attendance.py)
 # ============================================================================
-IDENTITY_CHECK_INTERVAL = float(os.getenv("IDENTITY_CHECK_INTERVAL", "1.0"))    # Check every 1 second
+IDENTITY_CHECK_INTERVAL = float(os.getenv("IDENTITY_CHECK_INTERVAL", "3.0"))    # Check every 3 seconds (matches frontend frame interval)
 IDENTITY_UNKNOWN_THRESHOLD = int(os.getenv("IDENTITY_UNKNOWN_THRESHOLD", "5"))   # 5 consecutive sec = 1 warning
 IDENTITY_MAX_WARNINGS = int(os.getenv("IDENTITY_MAX_WARNINGS", "3"))             # 3 warnings = removal
 IDENTITY_REMOVAL_PENALTY = float(os.getenv("IDENTITY_REMOVAL_PENALTY", "1.0"))   # -1% per removal
@@ -3907,12 +4255,21 @@ def continuous_identity_check(request):
         try:
             live_embedding = face_model.extract_embedding(frame_data)
         except ValueError as ve:
-            # No face detected in frame - treat as unknown
-            result = check_identity_with_tracking(meeting_id, user_id, False, 1.0)
-            if result:
-                result["face_detected"] = False
-                return JsonResponse(result)
-            return JsonResponse({"identity_verified": True, "face_detected": False, "identity_popup": None})
+            # No face detected in frame — this is NOT an identity failure
+            # The person may have looked away, stepped out, or face is obscured
+            # Service 3 (Behavioral) handles "Face not visible" violation separately
+            # Identity check should only trigger when a DIFFERENT face is detected
+            logger.debug(f"No face detected for {user_id} — skipping identity check (not a violation)")
+            return JsonResponse({
+                "status": "no_face",
+                "identity_verified": True,     # Neutral — no face ≠ wrong person
+                "face_detected": False,
+                "identity_popup": None,
+                "identity_action": None,
+                "identity_warning_count": get_identity_state(meeting_id, user_id)["current_cycle_warnings"],
+                "identity_is_removed": False,
+                "identity_consecutive_unknown": get_identity_state(meeting_id, user_id)["consecutive_unknown_seconds"],
+            })
         
         # Compare embeddings
         distance = cosine_distance(stored_embedding, live_embedding)
