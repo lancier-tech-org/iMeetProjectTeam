@@ -2348,6 +2348,78 @@ console.log("📹 Remote participant name resolved:", {
         return;
       }
 
+      // ================================================================
+      // IDENTITY REMOVAL — Allow rejoin (not permanent)
+      // The participant's face didn't match 3 times. They can rejoin
+      // after correcting the issue (lighting, position, etc.)
+      // ================================================================
+      if (terminationData.reason === "identity_verification_failure") {
+        console.log("[IDENTITY REMOVAL] User removed for identity failure — rejoin allowed");
+        
+        showNotificationMessage(
+          terminationData.message || 
+          "You have been temporarily removed due to identity verification failure. You can rejoin.",
+          "error"
+        );
+
+        setAttendanceEnabled(false);
+        setVideoEnabled(false);
+        setAudioEnabled(false);
+
+        // Record the leave
+        if (realMeetingId && currentUser?.id) {
+          try {
+            await participantsAPI.recordLeave({
+              meetingId: realMeetingId,
+              userId: currentUser.id,
+              participant_id: participantId || `removed_${currentUser.id}`,
+              manual_leave: false,
+              reason: "identity_verification_failure",
+              leave_type: "identity_removal",
+              violation_reason: "identity_verification_failure",
+            });
+          } catch (recordError) {
+            console.error("❌ Failed to record identity removal leave:", recordError);
+          }
+        }
+
+        // Call the identity service rejoin endpoint to reset warnings
+        try {
+          const IDENTITY_API = import.meta.env.VITE_IDENTITY_API_URL || import.meta.env.VITE_API_URL || 'https://api.lancieretech.com';
+          await fetch(`${IDENTITY_API}/api/face/rejoin`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              user_id: currentUser.id,
+              meeting_id: realMeetingId,
+            }),
+          });
+          console.log("[IDENTITY REMOVAL] Backend identity state reset — user can rejoin");
+        } catch (rejoinError) {
+          console.warn("[IDENTITY REMOVAL] Failed to reset identity state:", rejoinError);
+        }
+
+        // Disconnect and reload — user will auto-rejoin with fresh identity state
+        setTimeout(async () => {
+          try {
+            if (disconnectFromRoom) await disconnectFromRoom();
+            if (localStream) localStream.getTracks().forEach((track) => track.stop());
+            window.location.reload();
+          } catch (error) {
+            console.error("❌ Error during identity removal:", error);
+            window.location.reload();
+          }
+        }, 3000);
+
+        return;
+      }
+
+      // ================================================================
+      // BEHAVIORAL REMOVAL — Permanent (continuous violations / 2-min)
+      // ================================================================
+      console.log("[BEHAVIORAL REMOVAL] User removed for behavioral violations — permanent");
+
       showNotificationMessage(
         terminationData.message ||
         "You have been removed from the meeting due to attendance violations",

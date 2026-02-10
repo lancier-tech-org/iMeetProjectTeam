@@ -307,13 +307,15 @@ const AttendanceConfig = {
 };
 
 // ==================== API CONFIGURATION ====================
-// Service 3 (Behavioral — CPU): All /api/attendance/* endpoints
+// All 3 services accessible through ONE domain (ingress routes by URL path)
 const API_BASE = import.meta.env.VITE_API_URL || 'https://api.lancieretech.com';
 
-// Service 2 (Identity — GPU): All /api/face/* endpoints
-// In production with K8s ingress, BOTH use the same domain (ingress routes by URL path)
-// For local dev without ingress, set VITE_IDENTITY_API_URL to the identity service URL
+// Service 2 (Identity — GPU): /api/face/* endpoints
 const IDENTITY_API_BASE = import.meta.env.VITE_IDENTITY_API_URL || API_BASE;
+
+// Service 3 (Behavioral — GPU+CPU): /api/attendance/* endpoints
+// In production, same domain as API_BASE (ingress routes /api/attendance/* → behavioral:8230)
+const BEHAVIORAL_API_BASE = import.meta.env.VITE_BEHAVIORAL_API_URL || API_BASE;
 
 // ==================== MAIN COMPONENT ====================
 const AttendanceTracker = ({
@@ -629,8 +631,14 @@ const AttendanceTracker = ({
     if (currentTrackingModeRef.current !== "participant") return;
     if (isSessionTerminatedRef.current) return;
     console.log("[TERMINATION] Starting termination process:", reason);
+
+    // Identity removal is NOT permanent — user can rejoin
+    // Behavioral removal (continuous_violations) IS permanent
+    const isIdentityRemoval = reason === "identity_verification_failure";
+    const isPermanent = !isIdentityRemoval;
+
     setIsSessionTerminated(true);
-    setIsSessionPermanentlyEnded(true);
+    setIsSessionPermanentlyEnded(isPermanent);
     setTerminationReason(reason);
     setSessionActive(false);
     setIsTracking(false);
@@ -661,7 +669,7 @@ const AttendanceTracker = ({
         if (prev <= 1) {
           clearInterval(countdownInterval);
           if (onSessionTerminated) {
-            onSessionTerminated({ userId, userName, reason, message, timestamp: Date.now(), participantSpecific: true, permanent: true });
+            onSessionTerminated({ userId, userName, reason, message, timestamp: Date.now(), participantSpecific: true, permanent: isPermanent });
           }
           return 0;
         }
