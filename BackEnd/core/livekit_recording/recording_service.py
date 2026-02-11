@@ -3609,9 +3609,14 @@ class FixedGoogleMeetRecorder:
                 for compound_key, info in self.active_recordings.items()
             ]
 
-# Initialize the FAST service
-fixed_google_meet_recorder = FixedGoogleMeetRecorder()
-stream_recording_service = fixed_google_meet_recorder
+# Initialize the FAST service (skip in celery-beat and other non-recording processes)
+if os.getenv("DISABLE_RECORDING_INIT", "false").lower() != "true":
+    fixed_google_meet_recorder = FixedGoogleMeetRecorder()
+    stream_recording_service = fixed_google_meet_recorder
+else:
+    fixed_google_meet_recorder = None
+    stream_recording_service = None
+    logging.info("⏭️ Recording service initialization skipped (DISABLE_RECORDING_INIT=true)")
 
 # Cleanup handler
 import atexit

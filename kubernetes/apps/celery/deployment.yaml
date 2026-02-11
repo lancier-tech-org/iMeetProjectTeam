@@ -222,6 +222,8 @@ spec:
               value: "/tmp"
             - name: DISABLE_SCHEDULER
               value: "true"
+            - name: DISABLE_RECORDING_INIT
+              value: "true"
             # ============================================
             # CRITICAL: Explicit secrets for transcription
             # ============================================
