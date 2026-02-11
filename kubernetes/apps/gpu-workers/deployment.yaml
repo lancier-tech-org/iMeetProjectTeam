@@ -30,10 +30,14 @@ spec:
         app: gpu-worker
     spec:
       nodeSelector:
-        nvidia.com/gpu: "true"
+        gpu-role: processing
       tolerations:
         - key: "nvidia.com/gpu"
           operator: "Exists"
+          effect: "NoSchedule"
+        - key: "gpu-workload"
+          operator: "Equal"
+          value: "true"
           effect: "NoSchedule"
       containers:
         - name: gpu-worker
