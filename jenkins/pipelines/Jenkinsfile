@@ -1,764 +1,11 @@
-// // =============================================================================
-// // iMeetPro CI/CD Pipeline - SELF-HEALING Version
-// // =============================================================================
-// // SELF-HEALING FEATURES ADDED:
-// //   - REBUILD_COUNT parameter for retry tracking
-// //   - Pre-flight check stage to verify retry limits
-// //   - Post-failure trigger to AI_Logs_Analyser
-// //   - Automatic retry for transient errors (timeouts, network issues)
-// // =============================================================================
-
-// pipeline {
-//     agent any
-    
-//     environment {
-//         // AWS Configuration
-//         AWS_REGION = 'ap-south-1'
-//         AWS_ACCOUNT_ID = '664418964913'
-//         ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-        
-//         // Repository names
-//         FRONTEND_REPO = "${ECR_REGISTRY}/imeetpro-prod/frontend"
-//         BACKEND_REPO = "${ECR_REGISTRY}/imeetpro-prod/backend"
-//         CELERY_REPO = "${ECR_REGISTRY}/imeetpro-prod/celery-worker"
-//         GPU_WORKER_REPO = "${ECR_REGISTRY}/imeetpro-prod/gpu-worker"
-//         GPU_BASE_REPO = "${ECR_REGISTRY}/imeetpro-prod/gpu-worker-base"
-//         RECORDING_SERVICE_REPO = "${ECR_REGISTRY}/imeetpro-prod/recording-service"
-        
-//         // EKS Configuration
-//         EKS_CLUSTER_NAME = 'imeetpro-prod-eks'
-        
-//         // Image Tag
-//         IMAGE_TAG = "${env.BUILD_NUMBER}"
-        
-//         // Enable BuildKit
-//         DOCKER_BUILDKIT = '1'
-//         COMPOSE_DOCKER_CLI_BUILD = '1'
-//         BUILDKIT_PROGRESS = 'plain'
-        
-//         // Self-healing configuration
-//         MAX_RETRIES = '3'
-//     }
-
-//     options {
-//         timeout(time: 90, unit: 'MINUTES')
-//         disableConcurrentBuilds()
-//         buildDiscarder(logRotator(numToKeepStr: '10'))
-//         timestamps()
-//     }
-
-//     parameters {
-//         // =================================================================
-//         // SELF-HEALING PARAMETER (NEW)
-//         // =================================================================
-//         string(
-//             name: 'REBUILD_COUNT',
-//             defaultValue: '0',
-//             description: 'Retry counter for self-healing (do not modify manually)'
-//         )
-        
-//         // =================================================================
-//         // EXISTING PARAMETERS
-//         // =================================================================
-//         choice(
-//             name: 'ENVIRONMENT',
-//             choices: ['dev', 'staging', 'prod'],
-//             description: 'Target environment for deployment'
-//         )
-//         booleanParam(
-//             name: 'SKIP_TESTS',
-//             defaultValue: false,
-//             description: 'Skip test stage'
-//         )
-//         booleanParam(
-//             name: 'SKIP_SECURITY_SCAN',
-//             defaultValue: true,
-//             description: 'Skip security scan stage'
-//         )
-//         booleanParam(
-//             name: 'DEPLOY_FRONTEND',
-//             defaultValue: true,
-//             description: 'Deploy Frontend'
-//         )
-//         booleanParam(
-//             name: 'DEPLOY_BACKEND',
-//             defaultValue: true,
-//             description: 'Deploy Backend'
-//         )
-//         booleanParam(
-//             name: 'DEPLOY_CELERY',
-//             defaultValue: false,
-//             description: 'Deploy Celery Workers'
-//         )
-//         booleanParam(
-//             name: 'DEPLOY_GPU_WORKERS',
-//             defaultValue: false,
-//             description: 'Deploy GPU Workers'
-//         )
-//         booleanParam(
-//             name: 'DEPLOY_RECORDING_SERVICE',
-//             defaultValue: false,
-//             description: 'Deploy Recording Service'
-//         )
-//         booleanParam(
-//             name: 'FORCE_REBUILD',
-//             defaultValue: false,
-//             description: 'Force rebuild without cache'
-//         )
-//     }
-
-//     stages {
-//         // =====================================================================
-//         // Stage 0: Pre-flight Check (NEW - SELF-HEALING)
-//         // =====================================================================
-//         stage('Pre-flight Check') {
-//             steps {
-//                 script {
-//                     def retryCount = params.REBUILD_COUNT.toInteger()
-//                     def maxRetries = env.MAX_RETRIES.toInteger()
-                    
-//                     echo "============================================"
-//                     echo "      🚀 iMeetPro CI/CD Pipeline"
-//                     echo "============================================"
-//                     echo "Build Number:    #${BUILD_NUMBER}"
-//                     echo "Environment:     ${params.ENVIRONMENT}"
-//                     echo "Retry Attempt:   ${retryCount}/${maxRetries}"
-//                     echo "============================================"
-                    
-//                     // Check if max retries exceeded
-//                     if (retryCount >= maxRetries) {
-//                         echo ""
-//                         echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-//                         echo "  ❌ MAX RETRY ATTEMPTS REACHED (${retryCount}/${maxRetries})"
-//                         echo "  Manual intervention required!"
-//                         echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-//                         echo ""
-                        
-//                         // Send alert email
-//                         emailext(
-//                             subject: "🚨 ALERT: iMeetPro #${BUILD_NUMBER} - Max Retries Exceeded",
-//                             body: """
-//                                 <h2>🚨 Self-Healing Failed - Manual Intervention Required</h2>
-//                                 <p><b>Job:</b> ${JOB_NAME}</p>
-//                                 <p><b>Build:</b> #${BUILD_NUMBER}</p>
-//                                 <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
-//                                 <p><b>Retry Attempts:</b> ${retryCount}/${maxRetries}</p>
-//                                 <hr>
-//                                 <p>The self-healing system has exhausted all retry attempts.</p>
-//                                 <p>Please investigate the root cause manually.</p>
-//                                 <p>🔗 <a href="${BUILD_URL}">View Build</a></p>
-//                             """,
-//                             mimeType: 'text/html',
-//                             to: 'lancieretech@googlegroups.com'
-//                         )
-                        
-//                         error("Max rebuild attempts reached (${retryCount}/${maxRetries}). Manual intervention required!")
-//                     }
-                    
-//                     if (retryCount > 0) {
-//                         echo ""
-//                         echo "🔄 This is AUTO-RETRY attempt #${retryCount}"
-//                         echo "   (Triggered by self-healing system)"
-//                         echo ""
-//                     }
-//                 }
-//             }
-//         }
-
-//         // =====================================================================
-//         // Stage 1: Checkout
-//         // =====================================================================
-//         stage('Checkout') {
-//             steps {
-//                 script {
-//                     echo "🔄 Checking out source code..."
-//                     checkout([
-//                         $class: 'GitSCM',
-//                         branches: [[name: '*/main']],
-//                         extensions: [
-//                             [$class: 'CleanBeforeCheckout'],
-//                             [$class: 'CloneOption', depth: 1, shallow: true]
-//                         ],
-//                         userRemoteConfigs: [[
-//                             url: 'https://github.com/lancier-tech-org/iMeetProjectTeam.git',
-//                             credentialsId: 'github-credentials'
-//                         ]]
-//                     ])
-                    
-//                     env.NAMESPACE = params.ENVIRONMENT == 'prod' ? 'imeetpro' : 'imeetpro-dev'
-                    
-//                     def retryInfo = params.REBUILD_COUNT.toInteger() > 0 ? " (Retry #${params.REBUILD_COUNT})" : ""
-//                     currentBuild.description = "Env: ${params.ENVIRONMENT}, Tag: ${IMAGE_TAG}${retryInfo}"
-                    
-//                     echo "📍 Target Namespace: ${env.NAMESPACE}"
-//                 }
-//             }
-//         }
-
-//         // =====================================================================
-//         // Stage 2: Setup AWS & ECR Login
-//         // =====================================================================
-//         stage('Setup AWS') {
-//             steps {
-//                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                     sh '''
-//                         echo "🔧 Configuring AWS..."
-//                         aws sts get-caller-identity
-//                         aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER_NAME}
-                        
-//                         echo "🔐 Logging into ECR..."
-//                         aws ecr get-login-password --region ${AWS_REGION} | \
-//                             docker login --username AWS --password-stdin ${ECR_REGISTRY}
-                        
-//                         echo "✅ AWS configured!"
-//                     '''
-//                 }
-//             }
-//         }
-
-//         // =====================================================================
-//         // Stage 3: Setup K8s Resources
-//         // =====================================================================
-//         stage('Setup K8s Resources') {
-//             steps {
-//                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                     sh """
-//                         echo "🔧 Setting up Kubernetes resources..."
-                        
-//                         # Create namespace if not exists
-//                         kubectl apply -f kubernetes/namespaces/namespaces.yaml || true
-                        
-//                         # Apply secrets (if file exists)
-//                         if [ -f kubernetes/secrets/secrets.yaml ]; then
-//                             kubectl apply -f kubernetes/secrets/secrets.yaml || true
-//                         fi
-                        
-//                         # Apply ingress (if file exists)
-//                         if [ -f kubernetes/ingress/ingress.yaml ]; then
-//                             kubectl apply -f kubernetes/ingress/ingress.yaml -n ${env.NAMESPACE} || true
-//                         fi
-                        
-//                         echo "✅ K8s resources ready!"
-//                     """
-//                 }
-//             }
-//         }
-
-//         // =====================================================================
-//         // Stage 4: Pull Cache Images (Parallel)
-//         // =====================================================================
-//         stage('Pull Cache') {
-//             when {
-//                 expression { !params.FORCE_REBUILD }
-//             }
-//             parallel {
-//                 stage('Cache: Frontend') {
-//                     when { expression { params.DEPLOY_FRONTEND } }
-//                     steps {
-//                         sh "docker pull ${FRONTEND_REPO}:latest || true"
-//                     }
-//                 }
-//                 stage('Cache: Backend') {
-//                     when { expression { params.DEPLOY_BACKEND } }
-//                     steps {
-//                         sh "docker pull ${BACKEND_REPO}:latest || true"
-//                     }
-//                 }
-//                 stage('Cache: GPU Base') {
-//                     when { expression { params.DEPLOY_GPU_WORKERS } }
-//                     steps {
-//                         sh "docker pull ${GPU_BASE_REPO}:v1 || true"
-//                         sh "docker pull ${GPU_WORKER_REPO}:latest || true"
-//                     }
-//                 }
-//                 stage('Cache: Recording Service') {
-//                     when { expression { params.DEPLOY_RECORDING_SERVICE } }
-//                     steps {
-//                         sh "docker pull ${RECORDING_SERVICE_REPO}:latest || true"
-//                     }
-//                 }
-//             }
-//         }
-
-//         // =====================================================================
-//         // Stage 5: Build Docker Images (Parallel with BuildKit)
-//         // =====================================================================
-//         stage('Build Images') {
-//             parallel {
-//                 stage('Build Frontend') {
-//                     when { expression { params.DEPLOY_FRONTEND } }
-//                     steps {
-//                         script {
-//                             echo "🏗️ Building Frontend..."
-//                             def cacheFlag = params.FORCE_REBUILD ? "" : "--cache-from ${FRONTEND_REPO}:latest"
-                            
-//                             sh """
-//                                 cp jenkins/docker/.dockerignore.frontend frontend/.dockerignore || true
-//                                 cp -r jenkins/docker/nginx frontend/ || true
-                                
-//                                 DOCKER_BUILDKIT=1 docker build \
-//                                     --build-arg BUILDKIT_INLINE_CACHE=1 \
-//                                     ${cacheFlag} \
-//                                     --build-arg VITE_API_URL=https://api.lancieretech.com \
-//                                     --build-arg VITE_LIVEKIT_URL=wss://imeetpro-zquw3j0i.livekit.cloud \
-//                                     -t ${FRONTEND_REPO}:${IMAGE_TAG} \
-//                                     -t ${FRONTEND_REPO}:latest \
-//                                     -f jenkins/docker/Dockerfile.frontend \
-//                                     ./frontend
-//                             """
-//                             echo "✅ Frontend built!"
-//                         }
-//                     }
-//                 }
-                
-//                 stage('Build Backend') {
-//                     when { expression { params.DEPLOY_BACKEND } }
-//                     steps {
-//                         script {
-//                             echo "🏗️ Building Backend..."
-//                             def cacheFlag = params.FORCE_REBUILD ? "" : "--cache-from ${BACKEND_REPO}:latest"
-                            
-//                             sh """
-//                                 cp jenkins/docker/.dockerignore.backend BackEnd/.dockerignore || true
-                                
-//                                 DOCKER_BUILDKIT=1 docker build \
-//                                     --build-arg BUILDKIT_INLINE_CACHE=1 \
-//                                     ${cacheFlag} \
-//                                     -t ${BACKEND_REPO}:${IMAGE_TAG} \
-//                                     -t ${BACKEND_REPO}:latest \
-//                                     -f jenkins/docker/Dockerfile.backend \
-//                                     ./BackEnd
-//                             """
-//                             echo "✅ Backend built!"
-//                         }
-//                     }
-//                 }
-                
-//                 stage('Build GPU Worker') {
-//                     when { expression { params.DEPLOY_GPU_WORKERS } }
-//                     options {
-//                         timeout(time: 60, unit: 'MINUTES')
-//                     }
-//                     steps {
-//                         script {
-//                             echo "🏗️ Building GPU Worker..."
-//                             def cacheFlag = params.FORCE_REBUILD ? "" : "--cache-from ${GPU_WORKER_REPO}:latest"
-                            
-//                             sh """
-//                                 cp jenkins/docker/.dockerignore.backend BackEnd/.dockerignore || true
-                                
-//                                 DOCKER_BUILDKIT=1 docker build \
-//                                     --build-arg BUILDKIT_INLINE_CACHE=1 \
-//                                     ${cacheFlag} \
-//                                     -t ${GPU_WORKER_REPO}:${IMAGE_TAG} \
-//                                     -t ${GPU_WORKER_REPO}:latest \
-//                                     -f jenkins/docker/Dockerfile.gpu-worker \
-//                                     ./BackEnd
-//                             """
-//                             echo "✅ GPU Worker built!"
-//                         }
-//                     }
-//                 }
-                
-//                 stage('Build Recording Service') {
-//                     when { expression { params.DEPLOY_RECORDING_SERVICE } }
-//                     steps {
-//                         script {
-//                             echo "🏗️ Building Recording Service..."
-//                             def cacheFlag = params.FORCE_REBUILD ? "" : "--cache-from ${RECORDING_SERVICE_REPO}:latest"
-                            
-//                             sh """
-//                                 cp jenkins/docker/.dockerignore.backend BackEnd/.dockerignore || true
-                                
-//                                 DOCKER_BUILDKIT=1 docker build \
-//                                     --build-arg BUILDKIT_INLINE_CACHE=1 \
-//                                     ${cacheFlag} \
-//                                     -t ${RECORDING_SERVICE_REPO}:${IMAGE_TAG} \
-//                                     -t ${RECORDING_SERVICE_REPO}:latest \
-//                                     -f jenkins/docker/Dockerfile.recording-service \
-//                                     ./BackEnd
-//                             """
-//                             echo "✅ Recording Service built!"
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-
-//         // =====================================================================
-//         // Stage 6: Tag Celery Image
-//         // =====================================================================
-//         stage('Tag Celery') {
-//             when {
-//                 expression { params.DEPLOY_CELERY && params.DEPLOY_BACKEND }
-//             }
-//             steps {
-//                 sh """
-//                     docker tag ${BACKEND_REPO}:${IMAGE_TAG} ${CELERY_REPO}:${IMAGE_TAG}
-//                     docker tag ${BACKEND_REPO}:latest ${CELERY_REPO}:latest
-//                 """
-//                 echo "✅ Celery tagged!"
-//             }
-//         }
-
-//         // =====================================================================
-//         // Stage 7: Security Scan (Optional)
-//         // =====================================================================
-//         stage('Security Scan') {
-//             when {
-//                 expression { !params.SKIP_SECURITY_SCAN }
-//             }
-//             steps {
-//                 script {
-//                     echo "🔒 Running Trivy scan..."
-//                     if (params.DEPLOY_FRONTEND) {
-//                         sh "trivy image --severity CRITICAL --exit-code 0 ${FRONTEND_REPO}:${IMAGE_TAG} || true"
-//                     }
-//                     if (params.DEPLOY_BACKEND) {
-//                         sh "trivy image --severity CRITICAL --exit-code 0 ${BACKEND_REPO}:${IMAGE_TAG} || true"
-//                     }
-//                 }
-//             }
-//         }
-
-//         // =====================================================================
-//         // Stage 8: Push to ECR (Parallel)
-//         // =====================================================================
-//         stage('Push to ECR') {
-//             parallel {
-//                 stage('Push Frontend') {
-//                     when { expression { params.DEPLOY_FRONTEND } }
-//                     steps {
-//                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                             sh """
-//                                 docker push ${FRONTEND_REPO}:${IMAGE_TAG}
-//                                 docker push ${FRONTEND_REPO}:latest
-//                             """
-//                         }
-//                         echo "✅ Frontend pushed!"
-//                     }
-//                 }
-                
-//                 stage('Push Backend') {
-//                     when { expression { params.DEPLOY_BACKEND } }
-//                     steps {
-//                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                             sh """
-//                                 docker push ${BACKEND_REPO}:${IMAGE_TAG}
-//                                 docker push ${BACKEND_REPO}:latest
-//                             """
-//                         }
-//                         echo "✅ Backend pushed!"
-//                     }
-//                 }
-                
-//                 stage('Push Celery') {
-//                     when { expression { params.DEPLOY_CELERY && params.DEPLOY_BACKEND } }
-//                     steps {
-//                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                             sh """
-//                                 docker push ${CELERY_REPO}:${IMAGE_TAG}
-//                                 docker push ${CELERY_REPO}:latest
-//                             """
-//                         }
-//                         echo "✅ Celery pushed!"
-//                     }
-//                 }
-                
-//                 stage('Push GPU Worker') {
-//                     when { expression { params.DEPLOY_GPU_WORKERS } }
-//                     steps {
-//                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                             sh """
-//                                 docker push ${GPU_WORKER_REPO}:${IMAGE_TAG}
-//                                 docker push ${GPU_WORKER_REPO}:latest
-//                             """
-//                         }
-//                         echo "✅ GPU Worker pushed!"
-//                     }
-//                 }
-                
-//                 stage('Push Recording Service') {
-//                     when { expression { params.DEPLOY_RECORDING_SERVICE } }
-//                     steps {
-//                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                             sh """
-//                                 docker push ${RECORDING_SERVICE_REPO}:${IMAGE_TAG}
-//                                 docker push ${RECORDING_SERVICE_REPO}:latest
-//                             """
-//                         }
-//                         echo "✅ Recording Service pushed!"
-//                     }
-//                 }
-//             }
-//         }
-
-//         // =====================================================================
-//         // Stage 9: Deploy to EKS
-//         // =====================================================================
-//         stage('Deploy to EKS') {
-//             parallel {
-//                 stage('Deploy Frontend') {
-//                     when { expression { params.DEPLOY_FRONTEND } }
-//                     steps {
-//                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                             sh """
-//                                 echo "🚀 Deploying Frontend..."
-                                
-//                                 # CRITICAL: Apply deployment first (creates if not exists, updates if exists)
-//                                 kubectl apply -f kubernetes/apps/frontend/deployment.yaml -n ${env.NAMESPACE}
-                                
-//                                 # Then update image to current build
-//                                 kubectl set image deployment/frontend \
-//                                     frontend=${FRONTEND_REPO}:${IMAGE_TAG} \
-//                                     -n ${env.NAMESPACE}
-                                
-//                                 # Wait for rollout
-//                                 kubectl rollout status deployment/frontend \
-//                                     -n ${env.NAMESPACE} --timeout=5m
-//                             """
-//                         }
-//                         echo "✅ Frontend deployed!"
-//                     }
-//                 }
-                
-//                 stage('Deploy Backend') {
-//                     when { expression { params.DEPLOY_BACKEND } }
-//                     steps {
-//                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                             sh """
-//                                 echo "🚀 Deploying Backend..."
-                                
-//                                 # CRITICAL: Apply configmap and deployment first
-//                                 kubectl apply -f kubernetes/apps/backend/configmap.yaml -n ${env.NAMESPACE}
-//                                 kubectl apply -f kubernetes/apps/backend/deployment.yaml -n ${env.NAMESPACE}
-                                
-//                                 # Then update image to current build
-//                                 kubectl set image deployment/backend \
-//                                     backend=${BACKEND_REPO}:${IMAGE_TAG} \
-//                                     -n ${env.NAMESPACE}
-                                
-//                                 # Wait for rollout
-//                                 kubectl rollout status deployment/backend \
-//                                     -n ${env.NAMESPACE} --timeout=5m
-//                             """
-//                         }
-//                         echo "✅ Backend deployed!"
-//                     }
-//                 }
-                
-//                 stage('Deploy Celery') {
-//                     when { expression { params.DEPLOY_CELERY } }
-//                     steps {
-//                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                             sh """
-//                                 echo "🚀 Deploying Celery..."
-                                
-//                                 # Apply deployment first
-//                                 kubectl apply -f kubernetes/apps/celery/deployment.yaml -n ${env.NAMESPACE}
-                                
-//                                 # Then update image
-//                                 kubectl set image deployment/celery-worker \
-//                                     celery-worker=${CELERY_REPO}:${IMAGE_TAG} \
-//                                     -n ${env.NAMESPACE}
-                                
-//                                 kubectl rollout status deployment/celery-worker \
-//                                     -n ${env.NAMESPACE} --timeout=5m
-//                             """
-//                         }
-//                         echo "✅ Celery deployed!"
-//                     }
-//                 }
-                
-//                 stage('Deploy GPU Worker') {
-//                     when { expression { params.DEPLOY_GPU_WORKERS } }
-//                     steps {
-//                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                             sh """
-//                                 echo "🚀 Deploying GPU Worker..."
-                                
-//                                 # Apply deployment first
-//                                 kubectl apply -f kubernetes/apps/gpu-workers/deployment.yaml -n ${env.NAMESPACE}
-                                
-//                                 # Then update image
-//                                 kubectl set image deployment/gpu-worker \
-//                                     gpu-worker=${GPU_WORKER_REPO}:${IMAGE_TAG} \
-//                                     -n ${env.NAMESPACE}
-                                
-//                                 kubectl rollout status deployment/gpu-worker \
-//                                     -n ${env.NAMESPACE} --timeout=10m
-//                             """
-//                         }
-//                         echo "✅ GPU Worker deployed!"
-//                     }
-//                 }
-                
-//                 stage('Deploy Recording Service') {
-//                     when { expression { params.DEPLOY_RECORDING_SERVICE } }
-//                     steps {
-//                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                             sh """
-//                                 echo "🚀 Deploying Recording Service..."
-                                
-//                                 # Apply deployment first
-//                                 kubectl apply -f kubernetes/apps/recording-service/deployment.yaml -n ${env.NAMESPACE}
-                                
-//                                 # Then update image
-//                                 kubectl set image deployment/recording-service \
-//                                     recording-service=${RECORDING_SERVICE_REPO}:${IMAGE_TAG} \
-//                                     -n ${env.NAMESPACE}
-                                
-//                                 kubectl rollout status deployment/recording-service \
-//                                     -n ${env.NAMESPACE} --timeout=10m
-//                             """
-//                         }
-//                         echo "✅ Recording Service deployed!"
-//                     }
-//                 }
-//             }
-//         }
-
-//         // =====================================================================
-//         // Stage 10: Verify Deployment
-//         // =====================================================================
-//         stage('Verify') {
-//             steps {
-//                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-//                     sh """
-//                         echo "============================================="
-//                         echo "        🔍 DEPLOYMENT VERIFICATION"
-//                         echo "============================================="
-//                         kubectl get pods -n ${env.NAMESPACE}
-//                         kubectl get svc -n ${env.NAMESPACE}
-//                         echo "============================================="
-//                     """
-                    
-//                     script {
-//                         if (params.ENVIRONMENT == 'prod') {
-//                             sh '''
-//                                 sleep 10
-//                                 curl -sf --max-time 10 https://www.lancieretech.com -o /dev/null && echo "✅ Frontend: OK" || echo "⚠️ Frontend: Check needed"
-//                                 curl -sf --max-time 10 https://api.lancieretech.com/api/videos/lists -o /dev/null && echo "✅ Backend API: OK" || echo "⚠️ Backend API: Check needed"
-//                             '''
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-//     }
-
-//     // =========================================================================
-//     // POST ACTIONS - SELF-HEALING TRIGGER (MODIFIED)
-//     // =========================================================================
-//     post {
-//         success {
-//             script {
-//                 def retryCount = params.REBUILD_COUNT.toInteger()
-//                 def retryInfo = retryCount > 0 ? " (Succeeded on retry #${retryCount})" : ""
-                
-//                 echo "✅ Pipeline completed in ${currentBuild.durationString.replace(' and counting', '')}!${retryInfo}"
-                
-//                 emailext(
-//                     subject: "✅ SUCCESS: iMeetPro #${BUILD_NUMBER}${retryInfo}",
-//                     body: """
-//                         <h2>✅ iMeetPro CI/CD - SUCCESS</h2>
-//                         <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
-//                         <p><b>Build Tag:</b> ${IMAGE_TAG}</p>
-//                         <p><b>Duration:</b> ${currentBuild.durationString.replace(' and counting', '')}</p>
-//                         ${retryCount > 0 ? "<p><b>🔄 Self-Healing:</b> Succeeded on retry attempt #${retryCount}</p>" : ""}
-//                         <hr>
-//                         <p>🎯 <a href="https://www.lancieretech.com">Frontend</a> | <a href="https://api.lancieretech.com">Backend API</a></p>
-//                     """,
-//                     mimeType: 'text/html',
-//                     to: 'lancieretech@googlegroups.com'
-//                 )
-//             }
-//         }
-        
-//         failure {
-//             script {
-//                 def retryCount = params.REBUILD_COUNT.toInteger()
-//                 def maxRetries = env.MAX_RETRIES.toInteger()
-                
-//                 echo "❌ Pipeline failed!"
-                
-//                 // =============================================================
-//                 // SELF-HEALING: Trigger AI_Logs_Analyser on failure
-//                 // =============================================================
-//                 if (retryCount < maxRetries) {
-//                     echo ""
-//                     echo "============================================"
-//                     echo "  🤖 SELF-HEALING: Triggering AI Analyzer"
-//                     echo "============================================"
-//                     echo "Current Retry Count: ${retryCount}"
-//                     echo "Max Retries: ${maxRetries}"
-//                     echo ""
-                    
-//                     try {
-//                         build job: 'AI_Logs_Analyser',
-//                               parameters: [
-//                                   string(name: 'FAILED_JOB_NAME', value: env.JOB_NAME),
-//                                   string(name: 'FAILED_BUILD_NUMBER', value: env.BUILD_NUMBER),
-//                                   string(name: 'REBUILD_COUNT', value: "${retryCount}")
-//                               ],
-//                               wait: false,
-//                               propagate: false
-                        
-//                         echo "✅ AI_Logs_Analyser triggered successfully!"
-//                         echo "   The analyzer will decide whether to retry."
-                        
-//                     } catch (Exception e) {
-//                         echo "⚠️ Failed to trigger AI_Logs_Analyser: ${e.message}"
-//                         echo "   Manual intervention required."
-//                     }
-                    
-//                 } else {
-//                     echo ""
-//                     echo "============================================"
-//                     echo "  ❌ MAX RETRIES EXCEEDED - NO AUTO-RETRY"
-//                     echo "============================================"
-//                     echo "Retry attempts: ${retryCount}/${maxRetries}"
-//                     echo "Manual intervention required!"
-//                     echo ""
-//                 }
-                
-//                 // Send failure email (only for first failure, not retries)
-//                 if (retryCount == 0) {
-//                     emailext(
-//                         subject: "❌ FAILURE: iMeetPro #${BUILD_NUMBER} - Self-Healing Activated",
-//                         body: """
-//                             <h2>❌ iMeetPro CI/CD - FAILURE</h2>
-//                             <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
-//                             <p><b>Build Tag:</b> ${IMAGE_TAG}</p>
-//                             <p>🔗 <a href="${env.BUILD_URL}">Jenkins Build</a></p>
-//                             <hr>
-//                             <p>🤖 <b>Self-Healing Status:</b> AI Analyzer has been triggered to diagnose the issue.</p>
-//                             <p>If the error is transient (timeout, network), automatic retry will occur.</p>
-//                         """,
-//                         mimeType: 'text/html',
-//                         to: 'lancieretech@googlegroups.com'
-//                     )
-//                 }
-//             }
-//         }
-        
-//         always {
-//             sh 'docker system prune -f || true'
-//             cleanWs()
-//         }
-//     }
-// }
-
-
-
 // =============================================================================
 // iMeetPro CI/CD Pipeline - SELF-HEALING Version
 // =============================================================================
-// SELF-HEALING FEATURES ADDED:
-//   - REBUILD_COUNT parameter for retry tracking
-//   - Pre-flight check stage to verify retry limits
-//   - Post-failure trigger to AI_Logs_Analyser
-//   - Automatic retry for transient errors (timeouts, network issues)
+// Updated: 2026-02-11
+// Changes:
+//   - REMOVED: Identity Service (IDENTITY_SERVICE_REPO, DEPLOY_IDENTITY_SERVICE,
+//     Build/Push/Deploy Identity Service stages)
+//   - Everything else UNCHANGED
 // =============================================================================
 
 pipeline {
@@ -777,7 +24,6 @@ pipeline {
         GPU_WORKER_REPO = "${ECR_REGISTRY}/imeetpro-prod/gpu-worker"
         GPU_BASE_REPO = "${ECR_REGISTRY}/imeetpro-prod/gpu-worker-base"
         RECORDING_SERVICE_REPO = "${ECR_REGISTRY}/imeetpro-prod/recording-service"
-        IDENTITY_SERVICE_REPO = "${ECR_REGISTRY}/imeetpro-prod/identity-service"
         
         // EKS Configuration
         EKS_CLUSTER_NAME = 'imeetpro-prod-eks'
@@ -803,7 +49,7 @@ pipeline {
 
     parameters {
         // =================================================================
-        // SELF-HEALING PARAMETER (NEW)
+        // SELF-HEALING PARAMETER
         // =================================================================
         string(
             name: 'REBUILD_COUNT',
@@ -850,11 +96,6 @@ pipeline {
             description: 'Deploy GPU Workers (Celery background AI tasks)'
         )
         booleanParam(
-            name: 'DEPLOY_IDENTITY_SERVICE',
-            defaultValue: false,
-            description: 'Deploy Identity Service (Face verification - GPU)'
-        )
-        booleanParam(
             name: 'DEPLOY_RECORDING_SERVICE',
             defaultValue: false,
             description: 'Deploy Recording Service'
@@ -873,7 +114,7 @@ pipeline {
 
     stages {
         // =====================================================================
-        // Stage 0: Pre-flight Check (NEW - SELF-HEALING)
+        // Stage 0: Pre-flight Check (SELF-HEALING)
         // =====================================================================
         stage('Pre-flight Check') {
             steps {
@@ -954,7 +195,7 @@ pipeline {
                     def retryInfo = params.REBUILD_COUNT.toInteger() > 0 ? " (Retry #${params.REBUILD_COUNT})" : ""
                     currentBuild.description = "Env: ${params.ENVIRONMENT}, Tag: ${IMAGE_TAG}${retryInfo}"
                     
-                    echo "📍 Target Namespace: ${env.NAMESPACE}"
+                    echo "🔑 Target Namespace: ${env.NAMESPACE}"
                 }
             }
         }
@@ -970,7 +211,7 @@ pipeline {
                         aws sts get-caller-identity
                         aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER_NAME}
                         
-                        echo "🔐 Logging into ECR..."
+                        echo "🔑 Logging into ECR..."
                         aws ecr get-login-password --region ${AWS_REGION} | \
                             docker login --username AWS --password-stdin ${ECR_REGISTRY}
                         
@@ -1029,11 +270,10 @@ pipeline {
                     }
                 }
                 stage('Cache: GPU Base') {
-                    when { expression { params.DEPLOY_GPU_WORKERS || params.DEPLOY_IDENTITY_SERVICE } }
+                    when { expression { params.DEPLOY_GPU_WORKERS } }
                     steps {
                         sh "docker pull ${GPU_BASE_REPO}:v1 || true"
                         sh "docker pull ${GPU_WORKER_REPO}:latest || true"
-                        sh "docker pull ${IDENTITY_SERVICE_REPO}:latest || true"
                     }
                 }
                 stage('Cache: Recording Service') {
@@ -1121,32 +361,6 @@ pipeline {
                                     ./BackEnd
                             """
                             echo "✅ GPU Worker built!"
-                        }
-                    }
-                }
-                
-                stage('Build Identity Service') {
-                    when { expression { params.DEPLOY_IDENTITY_SERVICE } }
-                    options {
-                        timeout(time: 60, unit: 'MINUTES')
-                    }
-                    steps {
-                        script {
-                            echo "🏗️ Building Identity Service..."
-                            def cacheFlag = params.FORCE_REBUILD ? "" : "--cache-from ${IDENTITY_SERVICE_REPO}:latest"
-                            
-                            sh """
-                                cp jenkins/docker/.dockerignore.backend BackEnd/.dockerignore || true
-                                
-                                DOCKER_BUILDKIT=1 docker build \
-                                    --build-arg BUILDKIT_INLINE_CACHE=1 \
-                                    ${cacheFlag} \
-                                    -t ${IDENTITY_SERVICE_REPO}:${IMAGE_TAG} \
-                                    -t ${IDENTITY_SERVICE_REPO}:latest \
-                                    -f jenkins/docker/Dockerfile.identity \
-                                    ./BackEnd
-                            """
-                            echo "✅ Identity Service built!"
                         }
                     }
                 }
@@ -1269,19 +483,6 @@ pipeline {
                     }
                 }
                 
-                stage('Push Identity Service') {
-                    when { expression { params.DEPLOY_IDENTITY_SERVICE } }
-                    steps {
-                        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-                            sh """
-                                docker push ${IDENTITY_SERVICE_REPO}:${IMAGE_TAG}
-                                docker push ${IDENTITY_SERVICE_REPO}:latest
-                            """
-                        }
-                        echo "✅ Identity Service pushed!"
-                    }
-                }
-                
                 stage('Push Recording Service') {
                     when { expression { params.DEPLOY_RECORDING_SERVICE } }
                     steps {
@@ -1397,29 +598,6 @@ pipeline {
                     }
                 }
                 
-                stage('Deploy Identity Service') {
-                    when { expression { params.DEPLOY_IDENTITY_SERVICE } }
-                    steps {
-                        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-                            sh """
-                                echo "🚀 Deploying Identity Service..."
-                                
-                                # Apply deployment first
-                                kubectl apply -f kubernetes/apps/identity-service/deployment.yaml -n ${env.NAMESPACE}
-                                
-                                # Then update image
-                                kubectl set image deployment/identity-service \
-                                    identity-service=${IDENTITY_SERVICE_REPO}:${IMAGE_TAG} \
-                                    -n ${env.NAMESPACE}
-                                
-                                kubectl rollout status deployment/identity-service \
-                                    -n ${env.NAMESPACE} --timeout=10m
-                            """
-                        }
-                        echo "✅ Identity Service deployed!"
-                    }
-                }
-                
                 stage('Deploy Recording Service') {
                     when { expression { params.DEPLOY_RECORDING_SERVICE } }
                     steps {
@@ -1498,7 +676,7 @@ pipeline {
     }
 
     // =========================================================================
-    // POST ACTIONS - SELF-HEALING TRIGGER (MODIFIED)
+    // POST ACTIONS - SELF-HEALING TRIGGER
     // =========================================================================
     post {
         success {
