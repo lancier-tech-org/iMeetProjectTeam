@@ -200,6 +200,7 @@ spec:
             - beat
             - -l
             - INFO
+            - --schedule=/tmp/celerybeat-schedule
           envFrom:
             - configMapRef:
                 name: backend-config
