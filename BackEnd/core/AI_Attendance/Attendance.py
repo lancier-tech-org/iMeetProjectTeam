@@ -10719,3 +10719,4 @@ urlpatterns = [
     path('api/attendance/pause-resume/', pause_resume_attendance, name='attendance_pause_resume'),
     path('api/attendance/verify-camera/', verify_camera_resumed, name='attendance_verify_camera'),
 ]
+
