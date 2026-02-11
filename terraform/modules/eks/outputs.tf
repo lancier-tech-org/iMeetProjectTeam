@@ -46,3 +46,9 @@ output "oidc_provider_url" {
   description = "URL of the OIDC Provider"
   value       = aws_iam_openid_connect_provider.eks.url
 }
+
+
+output "cluster_autoscaler_role_arn" {
+  description = "IAM Role ARN for Cluster Autoscaler"
+  value       = aws_iam_role.cluster_autoscaler.arn
+}

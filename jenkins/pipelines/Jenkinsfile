@@ -860,6 +860,11 @@ pipeline {
             description: 'Deploy Recording Service'
         )
         booleanParam(
+            name: 'DEPLOY_AUTOSCALING',
+            defaultValue: false,
+            description: 'Deploy Autoscaling (HPA + Cluster Autoscaler)'
+        )
+        booleanParam(
             name: 'FORCE_REBUILD',
             defaultValue: false,
             description: 'Force rebuild without cache'
@@ -1435,6 +1440,29 @@ pipeline {
                             """
                         }
                         echo "✅ Recording Service deployed!"
+                    }
+                }
+                
+                stage('Deploy Autoscaling') {
+                    when { expression { params.DEPLOY_AUTOSCALING } }
+                    steps {
+                        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                            sh """
+                                echo "🚀 Deploying Autoscaling Resources..."
+                                
+                                # Deploy Cluster Autoscaler
+                                kubectl apply -f kubernetes/apps/autoscaling/cluster-autoscaler.yaml
+                                
+                                # Deploy HPAs
+                                kubectl apply -f kubernetes/apps/autoscaling/hpa.yaml
+                                
+                                # Verify
+                                kubectl get hpa -n ${env.NAMESPACE}
+                                kubectl get deployment cluster-autoscaler -n kube-system
+                                
+                                echo "✅ Autoscaling deployed!"
+                            """
+                        }
                     }
                 }
             }

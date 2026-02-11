@@ -35,16 +35,12 @@ spec:
         tier: ai
         service-type: identity-verification
     spec:
-      # Schedule ONLY on identity GPU node
+      # Schedule on GPU nodes
       nodeSelector:
-        gpu-role: identity
+        nvidia.com/gpu: "true"
       tolerations:
         - key: "nvidia.com/gpu"
           operator: "Exists"
-          effect: "NoSchedule"
-        - key: "gpu-workload"
-          operator: "Equal"
-          value: "true"
           effect: "NoSchedule"
       
       securityContext:

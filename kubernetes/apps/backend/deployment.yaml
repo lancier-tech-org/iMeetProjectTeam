@@ -659,7 +659,7 @@ spec:
               memory: "2Gi"
               cpu: "250m"
             limits:
-              memory: "4Gi"
+              memory: "6Gi"
               cpu: "1000m"
           volumeMounts:
             - name: tmp-volume

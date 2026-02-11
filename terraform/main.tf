@@ -88,6 +88,8 @@ module "eks" {
   # GPU Nodes
   gpu_node_instance_types = var.eks_gpu_node_instance_types
   gpu_node_desired_size   = var.eks_gpu_node_desired_size
+  gpu_node_min_size       = var.eks_gpu_node_min_size
+  gpu_node_max_size       = var.eks_gpu_node_max_size
   
   tags = local.common_tags
 

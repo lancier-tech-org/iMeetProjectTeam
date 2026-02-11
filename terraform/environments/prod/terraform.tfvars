@@ -23,7 +23,9 @@ eks_node_desired_size       = 3
 eks_node_min_size           = 2
 eks_node_max_size           = 6
 eks_gpu_node_instance_types = ["g4dn.xlarge"]
-eks_gpu_node_desired_size   = 2
+eks_gpu_node_desired_size   = 3
+eks_gpu_node_min_size       = 2
+eks_gpu_node_max_size       = 6
 
 # RDS Configuration
 rds_instance_class    = "db.t3.medium"

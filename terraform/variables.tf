@@ -78,7 +78,7 @@ variable "eks_node_min_size" {
 variable "eks_node_max_size" {
   description = "Maximum number of worker nodes"
   type        = number
-  default     = 5
+  default     = 10
 }
 
 variable "eks_gpu_node_instance_types" {
@@ -91,6 +91,18 @@ variable "eks_gpu_node_desired_size" {
   description = "Desired number of GPU worker nodes"
   type        = number
   default     = 2
+}
+
+variable "eks_gpu_node_min_size" {
+  description = "Minimum number of GPU worker nodes"
+  type        = number
+  default     = 0
+}
+
+variable "eks_gpu_node_max_size" {
+  description = "Maximum number of GPU worker nodes"
+  type        = number
+  default     = 6
 }
 
 # RDS Variables

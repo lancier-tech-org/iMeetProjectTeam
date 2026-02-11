@@ -64,3 +64,16 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+
+variable "gpu_node_min_size" {
+  description = "Minimum number of GPU nodes"
+  type        = number
+  default     = 0
+}
+
+variable "gpu_node_max_size" {
+  description = "Maximum number of GPU nodes"
+  type        = number
+  default     = 6
+}

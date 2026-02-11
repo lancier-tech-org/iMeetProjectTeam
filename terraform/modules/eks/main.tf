@@ -225,6 +225,8 @@ resource "aws_eks_node_group" "general" {
 
   tags = merge(var.tags, {
     Name = "${var.name_prefix}-general-nodes"
+    "k8s.io/cluster-autoscaler/enabled"                = "true"
+    "k8s.io/cluster-autoscaler/${var.name_prefix}-eks" = "owned"
   })
 
   depends_on = [
@@ -248,8 +250,8 @@ resource "aws_eks_node_group" "gpu" {
 
   scaling_config {
     desired_size = var.gpu_node_desired_size
-    min_size     = 0
-    max_size     = var.gpu_node_desired_size + 2
+    min_size     = var.gpu_node_min_size
+    max_size     = var.gpu_node_max_size
   }
 
   update_config {
@@ -269,6 +271,8 @@ resource "aws_eks_node_group" "gpu" {
 
   tags = merge(var.tags, {
     Name = "${var.name_prefix}-gpu-nodes"
+    "k8s.io/cluster-autoscaler/enabled"                = "true"
+    "k8s.io/cluster-autoscaler/${var.name_prefix}-eks" = "owned"
   })
 
   depends_on = [
@@ -311,4 +315,62 @@ resource "aws_eks_addon" "kube_proxy" {
   addon_name   = "kube-proxy"
 
   depends_on = [aws_eks_node_group.general]
+}
+
+
+# =============================================================================
+# Cluster Autoscaler IAM Role (IRSA)
+# =============================================================================
+resource "aws_iam_role" "cluster_autoscaler" {
+  name = "${var.name_prefix}-cluster-autoscaler"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.eks.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:kube-system:cluster-autoscaler"
+            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "cluster_autoscaler" {
+  name = "${var.name_prefix}-cluster-autoscaler-policy"
+  role = aws_iam_role.cluster_autoscaler.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:DescribeAutoScalingInstances",
+          "autoscaling:DescribeLaunchConfigurations",
+          "autoscaling:DescribeScalingActivities",
+          "autoscaling:DescribeTags",
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:TerminateInstanceInAutoScalingGroup",
+          "ec2:DescribeLaunchTemplateVersions",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeImages",
+          "ec2:GetInstanceTypesFromInstanceRequirements",
+          "eks:DescribeNodegroup"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
 }
