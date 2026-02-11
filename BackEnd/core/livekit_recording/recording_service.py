@@ -3624,6 +3624,9 @@ import atexit
 def cleanup_recording_service():
     """Cleanup function to properly shut down recordings on exit"""
     try:
+        if fixed_google_meet_recorder is None:
+            logger.info("⏭️ Recording service not initialized, skipping cleanup")
+            return
         logger.info("🛑 Shutting down FAST recording service...")
         with fixed_google_meet_recorder._global_lock:
             for compound_key in list(fixed_google_meet_recorder.active_recordings.keys()):
