@@ -220,6 +220,8 @@ spec:
               value: "SampleDB.settings"
             - name: HOME
               value: "/tmp"
+            - name: DISABLE_SCHEDULER
+              value: "true"
             # ============================================
             # CRITICAL: Explicit secrets for transcription
             # ============================================
