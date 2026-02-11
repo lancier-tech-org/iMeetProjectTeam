@@ -656,7 +656,7 @@ spec:
             successThreshold: 1
           resources:
             requests:
-              memory: "2Gi"
+              memory: "3Gi"
               cpu: "250m"
             limits:
               memory: "6Gi"

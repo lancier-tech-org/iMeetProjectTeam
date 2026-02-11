@@ -157,7 +157,7 @@ spec:
               mountPath: /tmp       
           resources:
             requests:
-              memory: "1Gi"
+              memory: "1536Mi"
               cpu: "250m"
             limits:
               memory: "4Gi"
