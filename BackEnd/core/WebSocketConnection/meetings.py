@@ -2209,8 +2209,8 @@ Meet Pro Team"""
                     logging.info(f"Trying LAST RESORT smtplib for batch: {batch}")
                 
                 # ==========================================================
-                # TRY 2: Direct smtplib Gmail (LAST RESORT)
-                # Same approach as your working send_OTP_email function
+                # TRY 2: Direct smtplib SMTP (LAST RESORT)
+                # Same approach as send_OTP_email function
                 # ==========================================================
                 try:
                     import smtplib
@@ -2225,7 +2225,8 @@ Meet Pro Team"""
                     smtp_from = fallback.get('FROM_EMAIL', '') or smtp_user
                     
                     if not smtp_user or not smtp_password:
-                        logging.error(f"[SMTP] No Gmail credentials in EMAIL_FALLBACK")
+                        # logging.error(f"[SMTP] No Gmail credentials in EMAIL_FALLBACK")
+                        logging.error(f"[SMTP] No SMTP credentials in EMAIL_FALLBACK")
                         logging.error(f"[SMTP] USER={smtp_user}, PASSWORD={'SET' if smtp_password else 'EMPTY'}")
                         failed_emails.extend(batch)
                         continue
@@ -2252,11 +2253,11 @@ Meet Pro Team"""
                     
                     server.quit()
                     successful_sends += batch_sent
-                    logging.info(f"[SMTP] Batch complete: {batch_sent}/{len(batch)} sent via Gmail")
+                    logging.info(f"[SMTP] Batch complete: {batch_sent}/{len(batch)} sent via SMTP")
                     
                 except Exception as smtp_err:
                     import traceback
-                    logging.error(f"[SMTP] Gmail ALSO FAILED: {smtp_err}")
+                    logging.error(f"[SMTP] SMTP ALSO FAILED: {smtp_err}")
                     logging.error(f"[SMTP] Traceback: {traceback.format_exc()}")
                     failed_emails.extend(batch)
             
@@ -3134,6 +3135,8 @@ def Create_Schedule_Meeting(request):
     except Exception as e:
         logging.error(f"Unexpected error in Create_Schedule_Meeting: {str(e)}")
         return JsonResponse({"Error": f"Internal server error: {str(e)}"}, status=500)
+
+
 
 @require_http_methods(["POST"])
 @csrf_exempt
