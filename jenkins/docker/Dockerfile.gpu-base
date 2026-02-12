@@ -1,6 +1,17 @@
 # =============================================================================
-# iMeetPro GPU Worker BASE Image - BUILD THIS ONCE!
+# FILE 5 OF 7: Dockerfile.gpu-base (UPDATED)
 # =============================================================================
+# Location: docker/Dockerfile.gpu-base  (REPLACE EXISTING FILE)
+#
+# WHAT CHANGED: Added onnxruntime-gpu and insightface packages (lines 73-79)
+#               Without these, InsightFace silently falls back to CPU.
+#
+# AFTER REPLACING THIS FILE, YOU MUST REBUILD:
+#   cd docker/
+#   bash build-gpu-base.sh
+#   (Takes 30-45 minutes, one-time only)
+# =============================================================================
+
 FROM nvidia/cuda:11.8.0-devel-ubuntu22.04
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -64,12 +75,22 @@ RUN pip install --no-cache-dir \
     boto3 \
     python-dotenv
 
-# GPU/ML packages
+# GPU/ML packages — PyTorch with CUDA 11.8
 RUN pip install --no-cache-dir \
     torch==2.0.1+cu118 \
     torchvision==0.15.2+cu118 \
     torchaudio==2.0.2+cu118 \
     --index-url https://download.pytorch.org/whl/cu118
+
+# =============================================================================
+# NEW: InsightFace + ONNX Runtime GPU
+# These are REQUIRED for identity verification to actually use the GPU.
+# Without onnxruntime-gpu, InsightFace silently falls back to CPU.
+# =============================================================================
+RUN pip install --no-cache-dir \
+    onnxruntime-gpu==1.16.3 \
+    insightface==0.7.3 \
+    pymongo
 
 # =============================================================================
 # DLIB FIX: Remove broken pip cmake, install dlib build deps, then build dlib

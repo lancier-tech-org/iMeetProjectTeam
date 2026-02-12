@@ -408,3 +408,24 @@ CELERY_TASK_ROUTES = {
 }
 
 CELERY_TASK_DEFAULT_QUEUE = 'default'
+
+
+
+ =============================================================================
+# ADD THESE LINES TO YOUR settings.py (in the CELERY section)
+# =============================================================================
+
+# Celery Broker and Backend (you likely already have these)
+CELERY_BROKER_URL = 'redis://redis.databases.svc.cluster.local:6379/0'
+CELERY_RESULT_BACKEND = 'redis://redis.databases.svc.cluster.local:6379/1'
+
+# ---- NEW: Add these if not already present ----
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_RESULT_EXPIRES = 30
+
+# ---- NEW: Task routing for identity GPU ----
+CELERY_TASK_ROUTES = {
+    'verify_identity_gpu': {'queue': 'identity_gpu_tasks'},
+}

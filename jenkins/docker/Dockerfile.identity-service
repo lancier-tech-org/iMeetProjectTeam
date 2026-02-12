@@ -1,0 +1,88 @@
+# =============================================================================
+# FILE 3 OF 7: Dockerfile.identity-service
+# =============================================================================
+# Location: docker/Dockerfile.identity-service  (CREATE NEW FILE)
+#
+# Purpose: Docker image for the dedicated Identity Verification GPU pod.
+#          Uses the same gpu-worker-base image (CUDA 11.8 + PyTorch).
+#          Only runs Celery worker on 'identity_gpu_tasks' queue.
+#          Separate from gpu-worker (which runs on 'gpu_tasks' queue).
+# =============================================================================
+
+FROM 664418964913.dkr.ecr.ap-south-1.amazonaws.com/imeetpro-prod/gpu-worker-base:v1
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    APP_HOME=/app \
+    INSIGHTFACE_HOME=/app/models/.insightface \
+    MPLCONFIGDIR=/tmp/.matplotlib \
+    FONTCONFIG_PATH=/tmp/.fontconfig \
+    LOG_DIR=/app/logs
+
+WORKDIR $APP_HOME
+
+# =============================================================================
+# Install identity-specific packages
+# onnxruntime-gpu: Provides CUDAExecutionProvider for InsightFace
+# insightface: Face recognition model (buffalo_l)
+# pymongo: For reading face embeddings from MongoDB
+# =============================================================================
+RUN pip install --no-cache-dir \
+    onnxruntime-gpu==1.16.3 \
+    insightface==0.7.3 \
+    pymongo \
+    2>/dev/null || true
+
+# Install Graphviz (in case shared code references it)
+RUN apt-get update && apt-get install -y graphviz && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install any updates
+COPY requirements.txt requirements-gpu.txt ./
+RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || true && \
+    pip install --no-cache-dir -r requirements-gpu.txt 2>/dev/null || true
+
+# Copy application code
+COPY --chown=appuser:appgroup . .
+
+# Create necessary directories & log files
+RUN mkdir -p /app/logs /app/models /app/temp /app/mediafiles /app/staticfiles \
+             /app/models/.insightface /tmp/.matplotlib /tmp/.fontconfig && \
+    touch /app/attendance_verification.log \
+          /app/django.log \
+          /app/celery.log \
+          /app/meetings_debug.log \
+          /app/recurring_meetings.log \
+          /app/notifications_debug.log \
+          /app/participants_debug.log \
+          /app/recording_service_debug.log && \
+    chown -R appuser:appgroup /app && \
+    chmod -R 755 /app/models/.insightface
+
+# Pre-download InsightFace models during build (GPU-enabled)
+RUN python -c "import os; os.environ['INSIGHTFACE_HOME']='/app/models/.insightface'; \
+    import insightface; \
+    app = insightface.app.FaceAnalysis(providers=['CUDAExecutionProvider','CPUExecutionProvider']); \
+    app.prepare(ctx_id=0, det_size=(640,640))" 2>/dev/null || \
+    echo "InsightFace model download skipped (will download on first use)"
+
+# Clean unnecessary files
+RUN rm -rf *.sql *.pem *.key *.crt .env .vscode .git __pycache__ tests/ docs/ *.md chromedriver* || true
+
+# Collect static files
+RUN python manage.py collectstatic --noinput 2>/dev/null || true
+
+# Build info
+ARG BUILD_DATE
+ARG VERSION
+LABEL org.opencontainers.image.created=$BUILD_DATE
+LABEL org.opencontainers.image.version=$VERSION
+LABEL description="Identity Verification GPU Service - Dedicated GPU"
+
+EXPOSE 8000
+
+# =============================================================================
+# CRITICAL: Only listens on identity_gpu_tasks queue
+# This keeps identity verification on THIS pod's GPU (GPU 2)
+# and does NOT interfere with gpu-worker pod's GPU (GPU 1)
+# =============================================================================
+CMD ["celery", "-A", "SampleDB", "worker", "-l", "INFO", "-Q", "identity_gpu_tasks", "--concurrency=2", "--hostname=identity-worker@%h"]

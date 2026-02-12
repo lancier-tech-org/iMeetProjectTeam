@@ -1540,18 +1540,89 @@ def restore_session_from_db(meeting_id: str, user_id: str, session_key: str) -> 
 
 # ==================== IDENTITY VERIFICATION HELPER FUNCTIONS ====================
 
+
 def run_async_verification(frame, user_id):
     """
-    ✅ NEW FUNCTION - Helper function to run identity verification in sync context
+    GPU-ACCELERATED: Sends identity verification to dedicated Identity Service
+    pod via Celery (identity_gpu_tasks queue).
+
+    Flow:
+    1. Convert numpy frame back to base64 (for Redis transport)
+    2. Send as Celery task to 'identity_gpu_tasks' queue
+    3. Identity Service pod runs InsightFace on dedicated GPU (GPU 2)
+    4. Result returned via Redis
+
+    Fallback: If Celery/GPU fails, runs locally on CPU (same as before)
+    """
+    try:
+        # ==============================================================
+        # ATTEMPT 1: Send to Identity Service GPU via Celery
+        # ==============================================================
+        from core.FaceAuth.tasks_gpu import verify_identity_gpu
+
+        # Convert numpy array (BGR) back to base64 for Redis transport
+        # frame is numpy BGR from decode_image()
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_frame)
+
+        buffer = io.BytesIO()
+        pil_image.save(buffer, format='JPEG', quality=85)
+        frame_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+        # Send to Identity Service GPU pod (timeout: 5 seconds)
+        async_result = verify_identity_gpu.apply_async(
+            args=[frame_base64, user_id, AttendanceConfig.IDENTITY_FACE_THRESHOLD],
+            queue='identity_gpu_tasks',
+            expires=10,
+        )
+
+        # Wait for result (max 5 seconds)
+        result = async_result.get(timeout=5)
+
+        is_verified = result.get('verified', True)
+        similarity = result.get('similarity', 1.0)
+        gpu_used = result.get('gpu_used', False)
+        error = result.get('error', None)
+
+        if error:
+            logger.warning(f"GPU verification had error for {user_id}: {error}")
+
+        logger.info(
+            f"Identity verification for {user_id}: "
+            f"verified={is_verified}, similarity={similarity:.3f}, "
+            f"gpu_used={gpu_used}"
+        )
+
+        return (is_verified, similarity)
+
+    except ImportError as e:
+        # ==============================================================
+        # FALLBACK: Celery task not available, run locally (CPU)
+        # ==============================================================
+        logger.warning(f"GPU task not available, falling back to local CPU: {e}")
+        return _run_local_verification(frame, user_id)
+
+    except Exception as e:
+        # ==============================================================
+        # FALLBACK: Celery/Redis/GPU error, run locally (CPU)
+        # ==============================================================
+        logger.warning(f"GPU verification failed, falling back to local CPU: {e}")
+        return _run_local_verification(frame, user_id)
+
+
+def _run_local_verification(frame, user_id):
+    """
+    CPU fallback: Same as the original run_async_verification.
+    Used when Identity Service GPU pod is unavailable.
     """
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
+
         try:
             from core.FaceAuth.unified_face_service import get_unified_face_service
             face_service = get_unified_face_service()
-            
+
             result = loop.run_until_complete(
                 face_service.verify_face(
                     frame=frame,
@@ -1560,27 +1631,26 @@ def run_async_verification(frame, user_id):
                     method='cosine'
                 )
             )
-            
+
             logger.debug(
-                f"Identity verification result for {user_id}: "
+                f"LOCAL (CPU) Identity verification result for {user_id}: "
                 f"verified={result[0]}, similarity={result[1]:.3f}"
             )
-            
+
             return result
-            
+
         finally:
             loop.close()
-            
+
     except ImportError as e:
         logger.error(f"Failed to import unified_face_service: {e}")
         logger.error("Identity verification will be skipped")
         return (True, 1.0)
-        
+
     except Exception as e:
-        logger.error(f"Error in identity verification for {user_id}: {e}")
+        logger.error(f"Local verification also failed for {user_id}: {e}")
         logger.error(traceback.format_exc())
         return (True, 1.0)
-
 
 def check_identity_verification(session, db_session, frame, user_id, current_time):
     """
