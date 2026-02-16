@@ -225,8 +225,16 @@ deploy_kubernetes_resources() {
     log_info "Deploying Celery Workers..."
     kubectl apply -f ${K8S_DIR}/apps/celery/deployment.yaml
     
+    NEW:
     log_info "Deploying GPU Workers..."
     kubectl apply -f ${K8S_DIR}/apps/gpu-workers/deployment.yaml
+    
+    log_info "Deploying Recording Service..."
+    kubectl apply -f ${K8S_DIR}/apps/recording-service/deployment.yaml
+    
+    log_info "Deploying Autoscaling (Cluster Autoscaler + HPA)..."
+    kubectl apply -f ${K8S_DIR}/apps/autoscaling/cluster-autoscaler.yaml
+    kubectl apply -f ${K8S_DIR}/apps/autoscaling/hpa.yaml
     
     # Deploy Ingress
     log_info "Deploying Ingress..."

@@ -14,20 +14,20 @@ spec:
     kind: Deployment
     name: backend
   minReplicas: 2
-  maxReplicas: 6
+  maxReplicas: 10
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 70
+          averageUtilization: 40
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
-          averageUtilization: 75
+          averageUtilization: 50
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 300
@@ -55,20 +55,20 @@ spec:
     kind: Deployment
     name: recording-service
   minReplicas: 2
-  maxReplicas: 6
+  maxReplicas: 8
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 70
+          averageUtilization: 40
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
-          averageUtilization: 75
+          averageUtilization: 50
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 300
@@ -96,20 +96,20 @@ spec:
     kind: Deployment
     name: celery-worker
   minReplicas: 2
-  maxReplicas: 6
+  maxReplicas: 8
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 70
+          averageUtilization: 40
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
-          averageUtilization: 75
+          averageUtilization: 50
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 300
@@ -144,7 +144,7 @@ spec:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 70
+          averageUtilization: 40
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 300
@@ -179,54 +179,13 @@ spec:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 70
+          averageUtilization: 40
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
-          averageUtilization: 75
-  behavior:
-    scaleDown:
-      stabilizationWindowSeconds: 600
-      policies:
-        - type: Pods
-          value: 1
-          periodSeconds: 120
-    scaleUp:
-      stabilizationWindowSeconds: 60
-      policies:
-        - type: Pods
-          value: 1
-          periodSeconds: 60
-
----
-# Identity Service HPA
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: identity-service-hpa
-  namespace: imeetpro
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: identity-service
-  minReplicas: 1
-  maxReplicas: 3
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70
-    - type: Resource
-      resource:
-        name: memory
-        target:
-          type: Utilization
-          averageUtilization: 75
+          averageUtilization: 50
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 600

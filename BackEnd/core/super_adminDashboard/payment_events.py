@@ -8,6 +8,7 @@ from django.urls import path
 from django.db.utils import ProgrammingError, OperationalError
 from django.utils import timezone
 import json
+from django.db import models
 import logging
 import hmac
 import hashlib
@@ -41,6 +42,56 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(message)s'
 )
 
+class PaymentEvent(models.Model):
+    id = models.AutoField(primary_key=True)
+    razorpay_event_id = models.CharField(max_length=50, unique=True)
+    event_type = models.CharField(max_length=100)
+    razorpay_payment_id = models.CharField(max_length=50, blank=True, null=True)
+    razorpay_order_id = models.CharField(max_length=50, blank=True, null=True)
+    payload = models.JSONField()
+    processed = models.BooleanField(default=False)
+    processed_at = models.DateTimeField(blank=True, null=True)
+    received_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'tbl_payment_events'
+        app_label = 'core'
+        indexes = [
+            models.Index(fields=['event_type'], name='idx_pe_event_type'),
+            models.Index(fields=['processed'], name='idx_pe_processed'),
+            models.Index(fields=['razorpay_payment_id'], name='idx_pe_payment_id'),
+            models.Index(fields=['razorpay_order_id'], name='idx_pe_order_id'),
+        ]
+
+
+def create_payment_events_table():
+    """Create tbl_payment_events table for Razorpay webhook events"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_payment_events (
+                    id INT NOT NULL AUTO_INCREMENT,
+                    razorpay_event_id VARCHAR(50) NOT NULL COMMENT 'event_xxx from Razorpay',
+                    event_type VARCHAR(100) NOT NULL COMMENT 'payment.captured/payment.failed/refund.processed',
+                    razorpay_payment_id VARCHAR(50) DEFAULT NULL,
+                    razorpay_order_id VARCHAR(50) DEFAULT NULL,
+                    payload JSON NOT NULL COMMENT 'Complete webhook payload for debugging',
+                    processed TINYINT(1) DEFAULT 0 COMMENT 'Has this event been processed',
+                    processed_at DATETIME DEFAULT NULL,
+                    received_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (id),
+                    UNIQUE KEY razorpay_event_id (razorpay_event_id),
+                    INDEX idx_event_type (event_type),
+                    INDEX idx_processed (processed),
+                    INDEX idx_payment_id (razorpay_payment_id),
+                    INDEX idx_order_id (razorpay_order_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+            """)
+            logger.info("✓ tbl_payment_events table ready")
+            return True
+    except Exception as e:
+        logger.error(f"✗ Error creating payment events table: {e}")
+        return False
 
 # ==================== HELPER FUNCTIONS ====================
 
