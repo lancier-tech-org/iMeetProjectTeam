@@ -6,6 +6,8 @@ from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 from django.urls import path
 from django.db.utils import ProgrammingError, OperationalError
+from django.db import models
+from django.utils import timezone as dj_timezone
 import json
 import logging
 
@@ -26,7 +28,91 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(message)s'
 )
 
+class UserSubscription(models.Model):
+    id = models.AutoField(primary_key=True)
+    user_id = models.ForeignKey(
+        'core.User', on_delete=models.CASCADE, db_column='user_id',
+        related_name='subscriptions'
+    )
+    transaction_id = models.ForeignKey(
+        'core.PaymentTransaction', on_delete=models.CASCADE, db_column='transaction_id',
+        related_name='subscriptions'
+    )
+    order_id = models.ForeignKey(
+        'core.PaymentOrder', on_delete=models.CASCADE, db_column='order_id',
+        related_name='subscriptions'
+    )
+    invoice_id = models.ForeignKey(
+        'core.Invoice', on_delete=models.SET_NULL, db_column='invoice_id',
+        blank=True, null=True, related_name='subscriptions'
+    )
+    plan_id = models.ForeignKey(
+        'core.Plan', on_delete=models.RESTRICT, db_column='plan_id',
+        related_name='subscriptions'
+    )
+    plan_name = models.CharField(max_length=50)
+    plan_type = models.CharField(max_length=10)
+    billing_period = models.CharField(max_length=10)
+    subscription_start_date = models.DateField()
+    subscription_end_date = models.DateField()
+    duration_days = models.IntegerField()
+    subscription_status = models.CharField(max_length=10, default='ACTIVE')
+    base_price = models.DecimalField(max_digits=10, decimal_places=2)
+    gst_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    total_price = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=3, default='INR')
+    created_at = models.DateTimeField(default=dj_timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        db_table = 'tbl_user_subscriptions'
+        app_label = 'core'
+
+
+def create_user_subscriptions_table():
+    """Create tbl_user_subscriptions table with all required columns and indexes"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_user_subscriptions (
+                    id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT NOT NULL,
+                    transaction_id INT NOT NULL,
+                    order_id INT NOT NULL,
+                    invoice_id INT DEFAULT NULL,
+                    plan_id INT NOT NULL,
+                    plan_name VARCHAR(50) NOT NULL,
+                    plan_type ENUM('basic','pro','pro_max') NOT NULL,
+                    billing_period ENUM('monthly','yearly') NOT NULL,
+                    subscription_start_date DATE NOT NULL COMMENT 'When subscription starts',
+                    subscription_end_date DATE NOT NULL COMMENT 'When subscription expires',
+                    duration_days INT NOT NULL COMMENT 'Total subscription duration (30 or 365 days)',
+                    subscription_status ENUM('ACTIVE','EXPIRED','CANCELLED') NOT NULL DEFAULT 'ACTIVE',
+                    base_price DECIMAL(10,2) NOT NULL COMMENT 'Base price before GST',
+                    gst_amount DECIMAL(10,2) NOT NULL COMMENT 'GST amount',
+                    total_price DECIMAL(10,2) NOT NULL COMMENT 'Total amount paid',
+                    currency VARCHAR(3) DEFAULT 'INR',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    KEY idx_user_id (user_id),
+                    KEY idx_transaction_id (transaction_id),
+                    KEY idx_subscription_status (subscription_status),
+                    KEY idx_subscription_end_date (subscription_end_date),
+                    KEY idx_user_status (user_id, subscription_status) COMMENT 'Find user active subscription fast',
+                    KEY order_id (order_id),
+                    KEY invoice_id (invoice_id),
+                    KEY plan_id (plan_id),
+                    CONSTRAINT tbl_user_subscriptions_ibfk_1 FOREIGN KEY (user_id) REFERENCES tbl_Users (ID) ON DELETE CASCADE,
+                    CONSTRAINT tbl_user_subscriptions_ibfk_2 FOREIGN KEY (transaction_id) REFERENCES tbl_payment_transactions (id) ON DELETE CASCADE,
+                    CONSTRAINT tbl_user_subscriptions_ibfk_3 FOREIGN KEY (order_id) REFERENCES tbl_payment_orders (id) ON DELETE CASCADE,
+                    CONSTRAINT tbl_user_subscriptions_ibfk_4 FOREIGN KEY (invoice_id) REFERENCES tbl_invoices (id) ON DELETE SET NULL,
+                    CONSTRAINT tbl_user_subscriptions_ibfk_5 FOREIGN KEY (plan_id) REFERENCES tbl_Plans (id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='User subscription tracking with auto-expiry management'
+            """)
+            logging.debug("tbl_user_subscriptions table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_user_subscriptions table: {e}")
+  
 # ==================== SUBSCRIPTION APIs ====================
 
 @require_http_methods(["GET"])

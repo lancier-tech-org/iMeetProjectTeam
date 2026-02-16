@@ -8,6 +8,10 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.pdfgen import canvas
 from datetime import datetime
+from django.db.utils import ProgrammingError, OperationalError
+from django.db import connection
+from django.utils import timezone as dj_timezone
+from django.db import models
 import logging
 
 logger = logging.getLogger(__name__)
@@ -19,6 +23,90 @@ TABLE_BORDER = colors.HexColor('#a0b8d1')  # Border color
 TEXT_DARK = colors.HexColor('#2c3e50')
 TEXT_GRAY = colors.HexColor('#5a6c7d')
 
+class Invoice(models.Model):
+    id = models.AutoField(primary_key=True)
+    invoice_number = models.CharField(max_length=100, unique=True)
+    transaction_id = models.ForeignKey(
+        'core.PaymentTransaction', on_delete=models.CASCADE, db_column='transaction_id',
+        related_name='invoices'
+    )
+    user_id = models.ForeignKey(
+        'core.User', on_delete=models.CASCADE, db_column='user_id',
+        related_name='invoices'
+    )
+    customer_name = models.CharField(max_length=100)
+    customer_email = models.CharField(max_length=100)
+    customer_state = models.CharField(max_length=100)
+    plan_name = models.CharField(max_length=50)
+    plan_type = models.CharField(max_length=10)
+    billing_period = models.CharField(max_length=10)
+    base_price = models.DecimalField(max_digits=10, decimal_places=2)
+    gst_rate = models.DecimalField(max_digits=5, decimal_places=2)
+    gst_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    total_price = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=3, default='INR')
+    gst_type = models.CharField(max_length=12)
+    cgst = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    sgst = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    igst = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    invoice_s3_url = models.CharField(max_length=500)
+    invoice_mongodb_id = models.CharField(max_length=50)
+    invoice_status = models.CharField(max_length=10, default='GENERATED')
+    email_sent = models.BooleanField(default=False)
+    email_sent_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(default=dj_timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'tbl_invoices'
+        app_label = 'core'
+
+
+def create_invoices_table():
+    """Create tbl_invoices table with all required columns and indexes"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_invoices (
+                    id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    invoice_number VARCHAR(100) NOT NULL UNIQUE COMMENT 'Unique invoice number (e.g., iMeetPro-INV-2026-01-0007)',
+                    transaction_id INT NOT NULL COMMENT 'Foreign key to tbl_payment_transactions',
+                    user_id INT NOT NULL COMMENT 'Foreign key to tbl_Users',
+                    customer_name VARCHAR(100) NOT NULL,
+                    customer_email VARCHAR(100) NOT NULL,
+                    customer_state VARCHAR(100) NOT NULL COMMENT 'Customer billing state for GST',
+                    plan_name VARCHAR(50) NOT NULL,
+                    plan_type ENUM('basic','pro','pro_max') NOT NULL,
+                    billing_period ENUM('monthly','yearly') NOT NULL,
+                    base_price DECIMAL(10,2) NOT NULL COMMENT 'Price before GST',
+                    gst_rate DECIMAL(5,2) NOT NULL COMMENT 'GST percentage applied',
+                    gst_amount DECIMAL(10,2) NOT NULL COMMENT 'GST amount',
+                    total_price DECIMAL(10,2) NOT NULL COMMENT 'Total with GST',
+                    currency VARCHAR(3) DEFAULT 'INR',
+                    gst_type ENUM('INTRASTATE','INTERSTATE') NOT NULL COMMENT 'Type of GST applied',
+                    cgst DECIMAL(10,2) DEFAULT 0.00 COMMENT 'CGST amount (intrastate only)',
+                    sgst DECIMAL(10,2) DEFAULT 0.00 COMMENT 'SGST amount (intrastate only)',
+                    igst DECIMAL(10,2) DEFAULT 0.00 COMMENT 'IGST amount (interstate only)',
+                    invoice_s3_url VARCHAR(500) NOT NULL COMMENT 'S3 path to PDF file',
+                    invoice_mongodb_id VARCHAR(50) NOT NULL COMMENT 'MongoDB ObjectId for full invoice data',
+                    invoice_status ENUM('GENERATED','EMAILED','FAILED') DEFAULT 'GENERATED',
+                    email_sent TINYINT(1) DEFAULT 0 COMMENT '1 if email sent successfully',
+                    email_sent_at DATETIME DEFAULT NULL COMMENT 'When email was sent',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    KEY idx_transaction_id (transaction_id),
+                    KEY idx_user_id (user_id),
+                    KEY idx_invoice_number (invoice_number),
+                    KEY idx_invoice_status (invoice_status),
+                    KEY idx_created_at (created_at),
+                    KEY idx_customer_email (customer_email),
+                    CONSTRAINT tbl_invoices_ibfk_1 FOREIGN KEY (transaction_id) REFERENCES tbl_payment_transactions (id) ON DELETE CASCADE,
+                    CONSTRAINT tbl_invoices_ibfk_2 FOREIGN KEY (user_id) REFERENCES tbl_Users (ID) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Stores invoice metadata and references to S3/MongoDB'
+            """)
+            logging.debug("tbl_invoices table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_invoices table: {e}")
 
 def generate_gst_invoice(transaction_data, order_data, plan_data, company_data, gst_breakdown, invoice_number, output_path):
     """

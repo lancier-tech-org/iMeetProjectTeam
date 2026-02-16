@@ -6,6 +6,7 @@ from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 from django.urls import path
 from django.db.utils import ProgrammingError, OperationalError
+from django.db import models
 import json
 import logging
 import re
@@ -41,6 +42,67 @@ logging.basicConfig(
 )
 
 
+class CompanyDetails(models.Model):
+    id = models.AutoField(primary_key=True)
+    company_legal_name = models.CharField(max_length=200)
+    company_trade_name = models.CharField(max_length=200)
+    gstin = models.CharField(max_length=15, unique=True)
+    address_line1 = models.CharField(max_length=200)
+    address_line2 = models.CharField(max_length=200, blank=True, null=True)
+    city = models.CharField(max_length=100)
+    state = models.CharField(max_length=100)
+    pincode = models.CharField(max_length=10)
+    country = models.CharField(max_length=50, default='India')
+    email = models.CharField(max_length=100)
+    phone = models.CharField(max_length=20)
+    website = models.CharField(max_length=100, blank=True, null=True)
+    bank_name = models.CharField(max_length=100, blank=True, null=True)
+    account_number = models.CharField(max_length=50, blank=True, null=True)
+    ifsc_code = models.CharField(max_length=15, blank=True, null=True)
+    account_holder_name = models.CharField(max_length=200, blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'tbl_company_details'
+        app_label = 'core'
+
+
+def create_company_details_table():
+    """Create tbl_company_details table with all required columns and indexes"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_company_details (
+                    id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    company_legal_name VARCHAR(200) NOT NULL COMMENT 'Legal registered name of company',
+                    company_trade_name VARCHAR(200) NOT NULL COMMENT 'Trade name for invoices',
+                    gstin VARCHAR(15) NOT NULL UNIQUE COMMENT 'GST Identification Number',
+                    address_line1 VARCHAR(200) NOT NULL COMMENT 'Company address line 1',
+                    address_line2 VARCHAR(200) DEFAULT NULL COMMENT 'Company address line 2 (optional)',
+                    city VARCHAR(100) NOT NULL COMMENT 'Company city',
+                    state VARCHAR(100) NOT NULL COMMENT 'Company registered state - CRITICAL for GST',
+                    pincode VARCHAR(10) NOT NULL COMMENT 'Company pincode',
+                    country VARCHAR(50) NOT NULL DEFAULT 'India' COMMENT 'Company country',
+                    email VARCHAR(100) NOT NULL COMMENT 'Company contact email',
+                    phone VARCHAR(20) NOT NULL COMMENT 'Company contact phone',
+                    website VARCHAR(100) DEFAULT NULL COMMENT 'Company website (optional)',
+                    bank_name VARCHAR(100) DEFAULT NULL COMMENT 'Bank name for payment reference',
+                    account_number VARCHAR(50) DEFAULT NULL COMMENT 'Bank account number',
+                    ifsc_code VARCHAR(15) DEFAULT NULL COMMENT 'Bank IFSC code',
+                    account_holder_name VARCHAR(200) DEFAULT NULL COMMENT 'Account holder name',
+                    is_active TINYINT(1) NOT NULL DEFAULT 1 COMMENT 'Is this company profile active',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    KEY idx_company_state (state),
+                    KEY idx_company_active (is_active)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Company details for invoice generation'
+            """)
+            logging.debug("tbl_company_details table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_company_details table: {e}")
+   
 # ==================== HELPER FUNCTIONS ====================
 
 def validate_email(email):

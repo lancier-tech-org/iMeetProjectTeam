@@ -11,10 +11,12 @@ from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 from django.urls import path
 from django.utils import timezone
+from django.db.utils import ProgrammingError, OperationalError
 import json
 import logging
 import re
 import os
+from django.db import models
 from datetime import datetime, timedelta
 
 # Try to import user-agents library
@@ -40,6 +42,7 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(name)s %(message)s'
 )
 
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -49,50 +52,66 @@ IP_API_TIMEOUT = int(os.getenv("IP_API_TIMEOUT", 3))
 SESSION_EXPIRY_HOURS = int(os.getenv("SESSION_EXPIRY_HOURS", 24))
 
 
-# ============================================================================
-# DATABASE TABLE CREATION
-# ============================================================================
+class UserLoginHistory(models.Model):
+    ID = models.AutoField(primary_key=True)
+    User_ID = models.ForeignKey(
+        'core.User', on_delete=models.CASCADE, db_column='User_ID',
+        related_name='login_history'
+    )
+    Device_Info = models.CharField(max_length=255)
+    Device_Type = models.CharField(max_length=10, default='Desktop')
+    Login_Time = models.DateTimeField(default=timezone.now)
+    IP_Address = models.CharField(max_length=45)
+    MAC_Address = models.CharField(max_length=20, blank=True, null=True)
+    Location = models.CharField(max_length=255, blank=True, null=True)
+    Latitude = models.DecimalField(max_digits=10, decimal_places=8, blank=True, null=True)
+    Longitude = models.DecimalField(max_digits=11, decimal_places=8, blank=True, null=True)
+    Location_Accuracy = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
+    Location_Source = models.CharField(max_length=50, default='unknown')
+    Session_ID = models.CharField(max_length=100, blank=True, null=True)
+    Login_Method = models.CharField(max_length=20, default='password')
+    Status_field = models.CharField(max_length=10, default='active', db_column='Status')
+    Logout_Time = models.DateTimeField(blank=True, null=True)
+    Created_At = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'tbl_User_Login_History'
+        app_label = 'core'
+
 
 def create_login_history_table():
-    """
-    Create tbl_User_Login_History table if not exists
-    Includes location fields matching check_in pattern
-    """
+    """Create tbl_User_Login_History table with all required columns and indexes"""
     try:
         with connection.cursor() as cursor:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tbl_User_Login_History (
-                    ID INT AUTO_INCREMENT PRIMARY KEY,
+                    ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
                     User_ID INT NOT NULL,
                     Device_Info VARCHAR(255) NOT NULL,
-                    Device_Type ENUM('Desktop', 'Mobile') NOT NULL DEFAULT 'Desktop',
+                    Device_Type ENUM('Desktop','Mobile') NOT NULL DEFAULT 'Desktop',
                     Login_Time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     IP_Address VARCHAR(45) NOT NULL,
                     MAC_Address VARCHAR(20) DEFAULT NULL,
                     Location VARCHAR(255) DEFAULT NULL,
-                    Latitude DECIMAL(10, 8) DEFAULT NULL,
-                    Longitude DECIMAL(11, 8) DEFAULT NULL,
-                    Location_Accuracy DECIMAL(10, 2) DEFAULT NULL,
+                    Latitude DECIMAL(10,8) DEFAULT NULL,
+                    Longitude DECIMAL(11,8) DEFAULT NULL,
+                    Location_Accuracy DECIMAL(10,2) DEFAULT NULL,
                     Location_Source VARCHAR(50) DEFAULT 'unknown',
                     Session_ID VARCHAR(100) DEFAULT NULL,
-                    Login_Method ENUM('password', 'face_recognition', 'token', 'auto') DEFAULT 'password',
-                    Status ENUM('active', 'logged_out', 'expired') DEFAULT 'active',
+                    Login_Method ENUM('password','face_recognition','token','auto') DEFAULT 'password',
+                    Status ENUM('active','logged_out','expired') DEFAULT 'active',
                     Logout_Time DATETIME DEFAULT NULL,
                     Created_At DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    CONSTRAINT FK_LoginHistory_User FOREIGN KEY (User_ID) 
-                        REFERENCES tbl_Users(ID) ON DELETE CASCADE ON UPDATE CASCADE,
-                    INDEX idx_user_login (User_ID, Login_Time),
-                    INDEX idx_login_time (Login_Time),
-                    INDEX idx_status (Status),
-                    INDEX idx_ip_address (IP_Address)
+                    KEY idx_user_login (User_ID, Login_Time),
+                    KEY idx_login_time (Login_Time),
+                    KEY idx_status (Status),
+                    KEY idx_ip_address (IP_Address),
+                    CONSTRAINT FK_LoginHistory_User FOREIGN KEY (User_ID) REFERENCES tbl_Users (ID) ON DELETE CASCADE ON UPDATE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """)
-            logger.info("✓ tbl_User_Login_History table ready")
-            return True
-    except Exception as e:
-        logger.error(f"✗ Error creating login history table: {e}")
-        return False
-
+            logging.debug("tbl_User_Login_History table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_User_Login_History table: {e}")
 
 # ============================================================================
 # HELPER FUNCTIONS

@@ -15,6 +15,7 @@ import random
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from BackEnd.core.FaceAuth.face_auth import MONGO_DB
 from pymongo import MongoClient
 from bson import ObjectId
 import base64
@@ -236,11 +237,43 @@ class User(models.Model):
     face_embedding_id = models.CharField(max_length=100, blank=True, null=True)
     liveness_photos_id = models.CharField(max_length=100, blank=True, null=True)
     edited_photo_id = models.CharField(max_length=100, blank=True, null=True)
-    photo_code = models.IntegerField(default=0)
+    photo_code = models.SmallIntegerField(default=0)
 
     class Meta:
         db_table = 'tbl_Users'
         app_label = 'core'
+
+
+def create_user_table():
+    """Create tbl_Users table with all required columns"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_Users (
+                    ID INT AUTO_INCREMENT PRIMARY KEY,
+                    full_name VARCHAR(100) NOT NULL,
+                    email VARCHAR(100) NOT NULL UNIQUE,
+                    password VARCHAR(255) NOT NULL,
+                    phone_number VARCHAR(20) DEFAULT NULL,
+                    address VARCHAR(255) DEFAULT NULL,
+                    country VARCHAR(50) DEFAULT NULL,
+                    Status TINYINT(1) DEFAULT 1,
+                    status_Code CHAR(1) DEFAULT 'u',
+                    country_code VARCHAR(10) DEFAULT NULL,
+                    languages VARCHAR(100) DEFAULT NULL,
+                    agreeToTerms TINYINT(1) DEFAULT 0,
+                    Created_At DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    Updated_At DATETIME DEFAULT NULL,
+                    profile_photo_id VARCHAR(50) DEFAULT NULL,
+                    face_embedding_id VARCHAR(100) DEFAULT NULL,
+                    liveness_photos_id VARCHAR(100) DEFAULT NULL,
+                    edited_photo_id VARCHAR(100) DEFAULT NULL,
+                    photo_code TINYINT DEFAULT 0
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+            """)
+            logging.debug("tbl_Users table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_Users table: {e}")
 
 def validate_password(password):
     """Validate password: 8+ chars, 1 upper, 1 lower, 1 number, 1 special char"""
@@ -413,96 +446,6 @@ def generate_OTP():
     return ''.join([str(random.randint(0, 9)) for _ in range(6)])
 
 
-# def send_OTP_email(email, OTP):
-#     """
-#     Send OTP to the provided email address
-    
-#     Flow:
-#     1. Django send_mail() → uses EMAIL_BACKEND (SESWithFallbackBackend)
-#        → Tries SES (noreply@lancieretech.com)
-#        → If SES fails → tries Gmail SMTP (prathigudupuj@gmail.com)
-#     2. If Django send_mail() completely fails → manual smtplib as last resort
-#     """
-#     subject = 'Your Password Reset OTP - iMeetPro'
-#     body = f"""Hello,
-
-# Your OTP for password reset is: {OTP}
-
-# This OTP is valid for 10 minutes.
-
-# If you did not request this, please ignore this email.
-
-# Best regards,
-# iMeetPro Team
-# """
-    
-#     # ============================================================
-#     # TRY 1: Django send_mail() → SESWithFallbackBackend
-#     # This automatically tries SES first, then Gmail SMTP fallback
-#     # ============================================================
-#     try:
-#         from django.core.mail import send_mail
-#         from django.conf import settings
-        
-#         logging.info(f"[OTP] Sending OTP to {email} via Django send_mail (backend: {settings.EMAIL_BACKEND})")
-        
-#         send_mail(
-#             subject=subject,
-#             message=body,
-#             from_email=settings.DEFAULT_FROM_EMAIL,
-#             recipient_list=[email],
-#             fail_silently=False,
-#         )
-#         logging.info(f"[OTP] OTP sent successfully to {email}")
-#         return True
-        
-#     except Exception as django_error:
-#         logging.error(f"[OTP] Django send_mail failed: {django_error}")
-#         import traceback
-#         logging.error(f"[OTP] Traceback: {traceback.format_exc()}")
-    
-#     # ============================================================
-#     # TRY 2: Direct smtplib as LAST RESORT
-#     # Only reaches here if Django backend completely failed
-#     # ============================================================
-#     try:
-#         from django.conf import settings
-        
-#         fallback = getattr(settings, 'EMAIL_FALLBACK', {})
-#         smtp_user = fallback.get('USER', '')
-#         smtp_password = fallback.get('PASSWORD', '')
-#         smtp_host = fallback.get('HOST', 'smtp.gmail.com')
-#         smtp_port = fallback.get('PORT', 587)
-#         smtp_from = fallback.get('FROM_EMAIL', '') or smtp_user
-        
-#         if not smtp_user or not smtp_password:
-#             logging.error("[OTP] LAST RESORT also failed — no SMTP credentials in EMAIL_FALLBACK")
-#             logging.error(f"[OTP] EMAIL_FALLBACK = HOST={smtp_host}, USER={smtp_user}, PASSWORD={'SET' if smtp_password else 'EMPTY'}")
-#             return False
-        
-#         logging.info(f"[OTP] Trying LAST RESORT direct smtplib: {smtp_user}@{smtp_host}:{smtp_port} → {email}")
-        
-#         msg = MIMEMultipart()
-#         msg['From'] = smtp_from
-#         msg['To'] = email
-#         msg['Subject'] = subject
-#         msg.attach(MIMEText(body, 'plain'))
-
-#         server = smtplib.SMTP(smtp_host, smtp_port)
-#         server.starttls()
-#         server.login(smtp_user, smtp_password)
-#         server.sendmail(smtp_from, email, msg.as_string())
-#         server.quit()
-        
-#         logging.info(f"[OTP] OTP sent via LAST RESORT smtplib to {email} from {smtp_from}")
-#         return True
-        
-#     except Exception as smtp_error:
-#         logging.error(f"[OTP] LAST RESORT smtplib ALSO failed: {smtp_error}")
-#         import traceback
-#         logging.error(f"[OTP] Traceback: {traceback.format_exc()}")
-#         return False
-
 def send_OTP_email(email, OTP):
     """
     Send OTP to the provided email address
@@ -593,37 +536,6 @@ iMeetPro Team
         logging.error(f"[OTP] Traceback: {traceback.format_exc()}")
         return False
 
-def create_user_table():
-    """Create tbl_Users table with all required columns"""
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS tbl_Users (
-                    ID INT AUTO_INCREMENT PRIMARY KEY,
-                    full_name VARCHAR(100) NOT NULL,
-                    email VARCHAR(100) NOT NULL UNIQUE,
-                    password VARCHAR(255) NOT NULL,
-                    phone_number VARCHAR(20) DEFAULT NULL,
-                    address VARCHAR(255) DEFAULT NULL,
-                    country VARCHAR(50) DEFAULT NULL,
-                    Status TINYINT(1) DEFAULT 1,
-                    status_Code CHAR(1) DEFAULT 'u',
-                    country_code VARCHAR(10) DEFAULT NULL,
-                    languages VARCHAR(100) DEFAULT NULL,
-                    agreeToTerms TINYINT(1) DEFAULT 0,
-                    Created_At DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    Updated_At DATETIME DEFAULT NULL,
-                    profile_photo_id VARCHAR(50) DEFAULT NULL,
-                    face_embedding_id VARCHAR(100) DEFAULT NULL,
-                    liveness_photos_id VARCHAR(100) DEFAULT NULL,
-                    edited_photo_id VARCHAR(100) DEFAULT NULL,
-                    photo_code TINYINT DEFAULT 0
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-            """)
-            logging.debug("tbl_Users table created successfully")
-    except (ProgrammingError, OperationalError) as e:
-        logging.error(f"Failed to create tbl_Users table: {e}")
-
 class OTPReset(models.Model):
     id = models.AutoField(primary_key=True)
     email = models.CharField(max_length=100)
@@ -636,13 +548,14 @@ class OTPReset(models.Model):
         db_table = 'tbl_OTP_Reset'
         app_label = 'core'
 
+
 def create_otp_reset_table():
-    """Create tbl_OTP_Reset table"""
+    """Create tbl_OTP_Reset table with all required columns"""
     try:
         with connection.cursor() as cursor:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tbl_OTP_Reset (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
                     email VARCHAR(100) NOT NULL,
                     otp VARCHAR(6) NOT NULL,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

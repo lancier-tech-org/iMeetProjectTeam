@@ -7,6 +7,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.urls import path
 from django.db.utils import ProgrammingError, OperationalError
 from django.utils import timezone
+from django.db import models
 import json
 import logging
 import hmac
@@ -42,7 +43,85 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(message)s'
 )
 
+class PaymentTransaction(models.Model):
+    id = models.AutoField(primary_key=True)
+    razorpay_payment_id = models.CharField(max_length=50, unique=True)
+    order_id = models.ForeignKey(
+        'core.PaymentOrder', on_delete=models.RESTRICT, db_column='order_id',
+        related_name='transactions'
+    )
+    razorpay_order_id = models.CharField(max_length=50)
+    user_id = models.ForeignKey(
+        'core.User', on_delete=models.RESTRICT, db_column='user_id',
+        related_name='payment_transactions'
+    )
+    amount = models.IntegerField()
+    currency = models.CharField(max_length=10, default='INR')
+    payment_method = models.CharField(max_length=50, blank=True, null=True)
+    bank = models.CharField(max_length=100, blank=True, null=True)
+    vpa = models.CharField(max_length=100, blank=True, null=True)
+    payment_status = models.CharField(max_length=10, default='CREATED')
+    razorpay_signature = models.CharField(max_length=255, blank=True, null=True)
+    verified = models.BooleanField(default=False)
+    error_code = models.CharField(max_length=50, blank=True, null=True)
+    error_reason = models.CharField(max_length=255, blank=True, null=True)
+    error_description = models.TextField(blank=True, null=True)
+    invoice_pdf_path = models.CharField(max_length=255, blank=True, null=True)
+    invoice_number = models.CharField(max_length=100, blank=True, null=True)
+    invoice_s3_url = models.CharField(max_length=500, blank=True, null=True)
+    invoice_mongodb_id = models.CharField(max_length=50, blank=True, null=True)
+    invoice_generated_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        db_table = 'tbl_payment_transactions'
+        app_label = 'core'
+
+
+def create_payment_transactions_table():
+    """Create tbl_payment_transactions table with all required columns and indexes"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_payment_transactions (
+                    id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    razorpay_payment_id VARCHAR(50) NOT NULL UNIQUE COMMENT 'pay_xxx from Razorpay',
+                    order_id INT NOT NULL COMMENT 'FK to tbl_payment_orders',
+                    razorpay_order_id VARCHAR(50) NOT NULL COMMENT 'order_xxx for quick lookup',
+                    user_id INT NOT NULL,
+                    amount INT NOT NULL COMMENT 'Amount in paise',
+                    currency VARCHAR(10) DEFAULT 'INR',
+                    payment_method VARCHAR(50) DEFAULT NULL COMMENT 'card/upi/netbanking/wallet',
+                    bank VARCHAR(100) DEFAULT NULL COMMENT 'Bank name if applicable',
+                    vpa VARCHAR(100) DEFAULT NULL COMMENT 'UPI ID if UPI payment',
+                    payment_status ENUM('CREATED','AUTHORIZED','CAPTURED','FAILED','REFUNDED') DEFAULT 'CREATED',
+                    razorpay_signature VARCHAR(255) DEFAULT NULL COMMENT 'Signature for verification',
+                    verified TINYINT(1) DEFAULT 0 COMMENT 'Backend verification status',
+                    error_code VARCHAR(50) DEFAULT NULL,
+                    error_reason VARCHAR(255) DEFAULT NULL,
+                    error_description TEXT,
+                    invoice_pdf_path VARCHAR(255) DEFAULT NULL,
+                    invoice_number VARCHAR(100) DEFAULT NULL COMMENT 'Invoice number reference',
+                    invoice_s3_url VARCHAR(500) DEFAULT NULL COMMENT 'S3 path to invoice PDF',
+                    invoice_mongodb_id VARCHAR(50) DEFAULT NULL COMMENT 'MongoDB ObjectId reference',
+                    invoice_generated_at DATETIME DEFAULT NULL COMMENT 'When invoice was generated',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    KEY idx_order_id (order_id),
+                    KEY idx_user_id (user_id),
+                    KEY idx_payment_status (payment_status),
+                    KEY idx_verified (verified),
+                    KEY idx_invoice_number (invoice_number),
+                    KEY idx_invoice_generated_at (invoice_generated_at),
+                    CONSTRAINT FK_PaymentTxn_Orders FOREIGN KEY (order_id) REFERENCES tbl_payment_orders (id) ON DELETE RESTRICT,
+                    CONSTRAINT FK_PaymentTxn_Users FOREIGN KEY (user_id) REFERENCES tbl_Users (ID) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+            """)
+            logging.debug("tbl_payment_transactions table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_payment_transactions table: {e}")
+   
 # ==================== HELPER FUNCTIONS ====================
 
 def verify_razorpay_signature(razorpay_order_id, razorpay_payment_id, razorpay_signature):

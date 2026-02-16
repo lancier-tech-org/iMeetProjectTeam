@@ -6,6 +6,7 @@ import numpy as np
 import base64
 import io
 from PIL import Image
+from psycopg2 import OperationalError, ProgrammingError
 import mediapipe as mp
 from scipy.spatial.distance import euclidean
 from datetime import datetime, timedelta
@@ -467,620 +468,123 @@ VIOLATION_SEVERITY = {
 }
 
 # ==================== MODELS ====================
-
+     
 class AttendanceSession(models.Model):
-    """Enhanced attendance tracking with grace period support and identity verification and 120-second removal tracking"""
-    meeting_id = models.CharField(max_length=20, db_column='Meeting_ID')
-    user_id = models.CharField(max_length=100, db_column='User_ID')
-    
-    # ==================== BEHAVIOR VIOLATION FIELDS (EXISTING - NO CHANGES) ====================
+    id = models.AutoField(primary_key=True)
+    Meeting_ID = models.CharField(max_length=20)
+    User_ID = models.CharField(max_length=100)
     popup_count = models.IntegerField(default=0)
-    detection_counts = models.TextField(default='0')
-    violation_start_times = models.TextField(default='{}')
+    detection_counts = models.TextField(blank=True, null=True)
+    violation_start_times = models.TextField(blank=True, null=True)
     total_detections = models.IntegerField(default=0)
-    attendance_penalty = models.FloatField(default=0.0)
+    attendance_penalty = models.FloatField(default=0)
     session_active = models.BooleanField(default=False)
     break_used = models.BooleanField(default=False)
-    violations = models.TextField(default='[]')
+    violations = models.TextField(blank=True, null=True)
     session_start_time = models.DateTimeField(default=timezone.now)
     last_activity = models.DateTimeField(default=timezone.now)
-    
-    last_face_movement_time = models.FloatField(default=0.0)
+    frame_processing_count = models.IntegerField(default=0)
+    engagement_score = models.IntegerField(default=0)
+    attendance_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=100.00)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+    break_count = models.IntegerField(default=0)
+    break_sessions = models.TextField(default='[]')
+    current_break_start_time = models.FloatField(blank=True, null=True)
+    is_currently_on_break = models.BooleanField(default=False)
+    last_break_calculation = models.FloatField(default=0)
+    max_break_time_allowed = models.IntegerField(default=300)
+    total_break_time_used = models.IntegerField(default=0)
+    last_face_movement_time = models.FloatField(default=0)
     inactivity_popup_shown = models.BooleanField(default=False)
-    last_popup_time = models.FloatField(default=0.0)
-    
+    last_popup_time = models.FloatField(default=0)
     total_session_time = models.IntegerField(default=0)
     active_participation_time = models.IntegerField(default=0)
-    violation_severity_score = models.FloatField(default=0.0)
-    frame_processing_count = models.IntegerField(default=0)
-    last_violation_type = models.CharField(max_length=50, blank=True)
+    violation_severity_score = models.FloatField(default=0)
+    last_violation_type = models.CharField(max_length=50, default='')
     continuous_violation_time = models.IntegerField(default=0)
-    
-    # ==================== BREAK MANAGEMENT FIELDS (EXISTING - NO CHANGES) ====================
-    total_break_time_used = models.IntegerField(default=0)
-    current_break_start_time = models.FloatField(null=True, blank=True)
-    break_sessions = models.TextField(default='[]')
-    max_break_time_allowed = models.IntegerField(default=300)
-    is_currently_on_break = models.BooleanField(default=False)
-    break_count = models.IntegerField(default=0)
-    last_break_calculation = models.FloatField(default=0.0)
-    
-    # ==================== PERFORMANCE METRICS (EXISTING - NO CHANGES) ====================
-    engagement_score = models.DecimalField(max_digits=5, decimal_places=2, default=100.00)
-    attendance_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=100.00)
     focus_score = models.DecimalField(max_digits=5, decimal_places=2, default=100.00)
-    
-    # ==================== IDENTITY VERIFICATION FIELDS (EXISTING - NO CHANGES) ====================
-    identity_warning_count = models.IntegerField(default=0)  # 0-3 warnings for identity mismatch
-    identity_consecutive_unknown_seconds = models.IntegerField(default=0)  # Current consecutive streak
-    identity_total_unknown_seconds = models.IntegerField(default=0)  # Total unknown time across session
-    identity_is_removed = models.BooleanField(default=False)  # Removed due to identity verification failure
-    identity_removal_time = models.DateTimeField(null=True, blank=True)  # When removed for identity issues
-    identity_can_rejoin = models.BooleanField(default=True)  # Permission to rejoin after identity removal
-    identity_warnings = models.TextField(default='[]')  # JSON list of warning events with timestamps
-    identity_last_check_time = models.FloatField(default=0.0)  # Last identity verification check timestamp
-    
-    # ==================== REMOVAL TRACKING COLUMNS ====================
-    identity_removal_count = models.IntegerField(default=0)  # Number of times removed for identity issues
-    identity_total_warnings_issued = models.IntegerField(default=0)  # Total warnings: 1,2,3,4,5,6... (cumulative)
-    identity_current_cycle_warnings = models.IntegerField(default=0)  # Current cycle: 0-3 (resets after removal)
-    behavior_removal_count = models.IntegerField(default=0)  # Number of times removed for 2-min violations
-    continuous_violation_removal_count = models.IntegerField(default=0)  # ✅ NEW: Number of 120-second removals
-    
-    # ==================== SYSTEM FIELDS (EXISTING - NO CHANGES) ====================
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    
+    identity_warning_count = models.IntegerField(default=0)
+    identity_consecutive_unknown_seconds = models.IntegerField(default=0)
+    identity_total_unknown_seconds = models.IntegerField(default=0)
+    identity_is_removed = models.BooleanField(default=False)
+    identity_removal_time = models.DateTimeField(blank=True, null=True)
+    identity_can_rejoin = models.BooleanField(default=True)
+    identity_warnings = models.TextField(blank=True, null=True)
+    identity_last_check_time = models.FloatField(default=0)
+    identity_removal_count = models.IntegerField(default=0)
+    identity_total_warnings_issued = models.IntegerField(default=0)
+    identity_current_cycle_warnings = models.IntegerField(default=0)
+    behavior_removal_count = models.IntegerField(default=0)
+    continuous_violation_removal_count = models.IntegerField(default=0)
+
     class Meta:
         db_table = 'tbl_Attendance_Sessions'
-        unique_together = ['meeting_id', 'user_id']
-        indexes = [
-            models.Index(fields=['meeting_id']),
-            models.Index(fields=['user_id']),
-            models.Index(fields=['session_active']),
-            models.Index(fields=['created_at']),
-        ]
         app_label = 'core'
-    
-    def get_violation_list(self) -> List[Dict]:
-        """
-        Get list of behavior violations
-        EXISTING METHOD - No changes
-        """
-        try:
-            return json.loads(self.violations) if self.violations else []
-        except json.JSONDecodeError:
-            return []
-    
-    def get_identity_warnings(self) -> List[Dict]:
-        """
-        ✅ EXISTING METHOD - Get identity warning history
-        
-        Returns:
-            List of warning dictionaries with timestamps and details
-        
-        Example return:
-        [
-            {
-                'timestamp': 1234567890.0,
-                'warning_number': 1,
-                'consecutive_seconds': 5,
-                'similarity': 0.45,
-                'total_unknown_seconds': 5
-            },
-            ...
-        ]
-        """
-        try:
-            return json.loads(self.identity_warnings) if self.identity_warnings else []
-        except json.JSONDecodeError:
-            return []
 
-        
-    def get_behavior_messages(self) -> Dict:
-        """
-        ✅ ENHANCED METHOD - Get behavior warning, detection, and 120-second removal messages from violations column
-        
-        Returns:
-            Dict: {
-                'warnings': [
-                    {
-                        'timestamp': 1763356547.09,
-                        'warning_number': 1,
-                        'violation_type': 'Eyes closed',
-                        'message': '⚠️ Warning 1/4: Eyes closed',
-                        'time_range': '0-20s',
-                        'duration': 21.3
-                    },
-                    ...
-                ],
-                'detections': [
-                    {
-                        'timestamp': 1763357233.76,
-                        'detection_number': 1,
-                        'violation_type': 'Hand near face',
-                        'message': '🔴 Detection 1: Hand near face',
-                        'time_range': '60-80s',
-                        'penalty_applied': 0.0,
-                        'duration': 65.1
-                    },
-                    ...
-                ],
-                'continuous_removals': [
-                    {
-                        'timestamp': 1763377500.123456,
-                        'removal_number': 1,
-                        'violation_type': 'Face not visible',
-                        'duration': 125.5,
-                        'time_range': '120s+',
-                        'removal_type': '120_second_continuous',
-                        'penalty_applied': 1.0,
-                        'message': '🚫 Removed: Continuous Face not visible for 125 seconds'
-                    },
-                    ...
-                ]
-            }
-        
-        Example:
-            >>> session = AttendanceSession.objects.get(meeting_id='123', user_id='456')
-            >>> messages = session.get_behavior_messages()
-            >>> print(f"Warnings: {len(messages['warnings'])}")
-            >>> print(f"Detections: {len(messages['detections'])}")
-            >>> print(f"120s Removals: {len(messages['continuous_removals'])}")
-        """
-        try:
-            messages = json.loads(self.violations) if self.violations else {}
-            
-            # Handle legacy format (if violations was a simple list)
-            if isinstance(messages, list):
-                return {'warnings': [], 'detections': [], 'continuous_removals': []}
-            
-            # Ensure all keys exist
-            if not isinstance(messages, dict):
-                return {'warnings': [], 'detections': [], 'continuous_removals': []}
-            
-            return {
-                'warnings': messages.get('warnings', []),
-                'detections': messages.get('detections', []),
-                'continuous_removals': messages.get('continuous_removals', [])  # ✅ NEW
-            }
-        except json.JSONDecodeError:
-            logger.warning(f"Failed to parse violations for {self.user_id}")
-            return {'warnings': [], 'detections': [], 'continuous_removals': []}
-    
-    def add_behavior_warning(self, warning_number: int, violation_type: str,
-                            duration: float, timestamp: float):
-        """
-        ✅ EXISTING METHOD - Add a behavior warning message to violations column
-        
-        Args:
-            warning_number (int): Warning number (1, 2, 3, or 4)
-            violation_type (str): Type of violation (e.g., "Eyes closed")
-            duration (float): Duration of violation in seconds
-            timestamp (float): Unix timestamp when warning was issued
-        
-        Example:
-            >>> session.add_behavior_warning(
-            ...     warning_number=1,
-            ...     violation_type="Eyes closed",
-            ...     duration=21.5,
-            ...     timestamp=1763356547.09
-            ... )
-            >>> session.save()
-        
-        Notes:
-            - Automatically categorizes duration into time ranges
-            - Stores in violations column as JSON
-            - Does NOT save to database (call .save() after)
-        """
-        messages = self.get_behavior_messages()
-        
-        # Categorize duration into time range
-        time_range = self._get_time_range(duration)
-        
-        # Create warning event
-        warning = {
-            'timestamp': timestamp,
-            'warning_number': warning_number,
-            'violation_type': violation_type,
-            'message': f"⚠️ Warning {warning_number}/{AttendanceConfig.MAX_WARNING_MESSAGES}: {violation_type}",
-            'time_range': time_range,
-            'duration': round(duration, 2),
-            'description': AttendanceConfig.DESCRIPTIONS.get(violation_type, ''),
-        }
-        
-        # Add to warnings list
-        messages['warnings'].append(warning)
-        
-        # Save back to violations column
-        self.violations = json.dumps(messages)
-        
-        logger.debug(
-            f"Added warning #{warning_number} for {self.user_id}: "
-            f"{violation_type} ({duration:.1f}s)"
-        )
-    
-    def add_behavior_detection(self, detection_number: int, violation_type: str,
-                               duration: float, timestamp: float, penalty: float):
-        """
-        ✅ EXISTING METHOD - Add a behavior detection message to violations column
-        
-        Args:
-            detection_number (int): Detection number (1, 2, 3, ...)
-            violation_type (str): Type of violation (e.g., "Hand near face")
-            duration (float): Duration of violation in seconds
-            timestamp (float): Unix timestamp when detection was issued
-            penalty (float): Penalty percentage applied (0.0 or 0.25)
-        
-        Example:
-            >>> session.add_behavior_detection(
-            ...     detection_number=3,
-            ...     violation_type="Hand near face",
-            ...     duration=65.1,
-            ...     timestamp=1763357233.76,
-            ...     penalty=0.25
-            ... )
-            >>> session.save()
-        
-        Notes:
-            - Automatically categorizes duration into time ranges
-            - Stores in violations column as JSON
-            - Does NOT save to database (call .save() after)
-        """
-        messages = self.get_behavior_messages()
-        
-        # Categorize duration into time range
-        time_range = self._get_time_range(duration)
-        
-        # Create detection event
-        detection = {
-            'timestamp': timestamp,
-            'detection_number': detection_number,
-            'violation_type': violation_type,
-            'message': f"🔴 Detection {detection_number}: {violation_type}. Penalty applied: {penalty:.2f}%",
-            'time_range': time_range,
-            'penalty_applied': round(penalty, 4),
-            'duration': round(duration, 2),
-            'description': AttendanceConfig.DESCRIPTIONS.get(violation_type, ''),
-        }
-        
-        # Add to detections list
-        messages['detections'].append(detection)
-        
-        # Save back to violations column
-        self.violations = json.dumps(messages)
-        
-        logger.debug(
-            f"Added detection #{detection_number} for {self.user_id}: "
-            f"{violation_type} ({duration:.1f}s) - Penalty: {penalty:.4f}%"
-        )
-    
-    def add_continuous_violation_removal(self, duration: float, timestamp: float, violation_type: str):
-        """
-        ✅ NEW METHOD - Record a 120-second continuous violation removal event
-        
-        Args:
-            duration (float): Actual duration of continuous violation (should be 120+)
-            timestamp (float): Unix timestamp when removal occurred
-            violation_type (str): Type of violation that caused removal
-        
-        Stores in violations column under 'continuous_removals' key with actual 120+ seconds duration
-        
-        Example:
-            >>> session.add_continuous_violation_removal(
-            ...     duration=125.5,
-            ...     timestamp=1763377500.123456,
-            ...     violation_type="Face not visible"
-            ... )
-            >>> session.save()
-        
-        Notes:
-            - Stores ACTUAL continuous duration (120+), not individual violation periods (21s)
-            - Automatically sets time_range to "120s+"
-            - Increments continuous_violation_removal_count automatically in calling code
-            - Does NOT save to database (call .save() after)
-        """
-        try:
-            messages = self.get_behavior_messages()
-            
-            # Ensure continuous_removals key exists
-            if 'continuous_removals' not in messages:
-                messages['continuous_removals'] = []
-            
-            # Create removal event
-            removal_event = {
-                'timestamp': timestamp,
-                'removal_number': self.continuous_violation_removal_count + 1,
-                'violation_type': violation_type,
-                'duration': round(duration, 2),  # ✅ ACTUAL 120+ seconds
-                'message': f"🚫 Removed: Continuous {violation_type} for {duration:.0f} seconds",
-                'time_range': '120s+',  # ✅ Always 120s+ for continuous removals
-                'removal_type': '120_second_continuous',
-                'penalty_applied': 1.0,  # 1% penalty for 120-second removal
-                'description': f'User removed due to continuous {violation_type} for over 2 minutes'
-            }
-            
-            # Add to removals list
-            messages['continuous_removals'].append(removal_event)
-            
-            # Save back to violations column
-            self.violations = json.dumps(messages)
-            
-            logger.info(
-                f"📝 120-SECOND REMOVAL EVENT RECORDED:\n"
-                f"   User: {self.user_id}\n"
-                f"   Removal #{self.continuous_violation_removal_count + 1}\n"
-                f"   Duration: {duration:.1f}s (ACTUAL continuous time)\n"
-                f"   Violation: {violation_type}\n"
-                f"   Time Range: 120s+"
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to record continuous violation removal: {e}")
-            logger.error(traceback.format_exc())
-    
-    def get_continuous_removal_events(self) -> List[Dict]:
-        """
-        ✅ NEW METHOD - Get list of 120-second removal events
-        
-        Returns:
-            List[Dict]: List of removal event dictionaries with actual 120+ durations
-        
-        Example return:
-        [
-            {
-                'timestamp': 1763377500.123456,
-                'removal_number': 1,
-                'violation_type': 'Face not visible',
-                'duration': 125.5,
-                'time_range': '120s+',
-                'removal_type': '120_second_continuous',
-                'penalty_applied': 1.0,
-                'message': '🚫 Removed: Continuous Face not visible for 125 seconds'
-            },
-            {
-                'timestamp': 1763378600.789012,
-                'removal_number': 2,
-                'violation_type': 'Hand near face',
-                'duration': 132.3,
-                'time_range': '120s+',
-                'removal_type': '120_second_continuous',
-                'penalty_applied': 1.0,
-                'message': '🚫 Removed: Continuous Hand near face for 132 seconds'
-            }
-        ]
-        
-        Example:
-            >>> session = AttendanceSession.objects.get(meeting_id='123', user_id='456')
-            >>> removals = session.get_continuous_removal_events()
-            >>> print(f"Total 120-second removals: {len(removals)}")
-            >>> for event in removals:
-            ...     print(f"Removal #{event['removal_number']}: {event['violation_type']} - {event['duration']}s")
-        
-        Notes:
-            - Returns events from violations column's 'continuous_removals' array
-            - Duration values are ACTUAL 120+ seconds, not 21 seconds
-            - Count should match continuous_violation_removal_count column
-        """
-        try:
-            messages = self.get_behavior_messages()
-            return messages.get('continuous_removals', [])
-        except Exception as e:
-            logger.warning(f"Failed to get continuous removal events for {self.user_id}: {e}")
-            return []
-    
-    def _get_time_range(self, duration: float) -> str:
-        """
-        ✅ EXISTING METHOD - Categorize violation duration into time range
-        
-        Args:
-            duration (float): Duration in seconds
-        
-        Returns:
-            str: Time range category
-        
-        Time Range Categories:
-            - '0-20s': 0 to <20 seconds
-            - '20-40s': 20 to <40 seconds
-            - '40-60s': 40 to <60 seconds
-            - '60-80s': 60 to <80 seconds
-            - '80-100s': 80 to <100 seconds
-            - '100-120s': 100 to <120 seconds
-            - '120s+': 120+ seconds
-        
-        Example:
-            >>> session._get_time_range(15.5)
-            '0-20s'
-            >>> session._get_time_range(45.2)
-            '40-60s'
-            >>> session._get_time_range(125.0)
-            '120s+'
-        
-        Notes:
-            - Used for analytics and message categorization
-            - Helps identify violation patterns by duration
-        """
-        if duration < 20:
-            return '0-20s'
-        elif duration < 40:
-            return '20-40s'
-        elif duration < 60:
-            return '40-60s'
-        elif duration < 80:
-            return '60-80s'
-        elif duration < 100:
-            return '80-100s'
-        elif duration < 120:
-            return '100-120s'
-        else:
-            return '120s+'
-    
-    def get_behavior_warning_count(self) -> int:
-        """
-        ✅ EXISTING METHOD - Get total number of behavior warnings issued
-        
-        Returns:
-            int: Number of warnings in history
-        
-        Example:
-            >>> session.get_behavior_warning_count()
-            4
-        """
-        messages = self.get_behavior_messages()
-        return len(messages.get('warnings', []))
-    
-    def get_behavior_detection_count(self) -> int:
-        """
-        ✅ EXISTING METHOD - Get total number of behavior detections issued
-        
-        Returns:
-            int: Number of detections in history
-        
-        Example:
-            >>> session.get_behavior_detection_count()
-            3
-        """
-        messages = self.get_behavior_messages()
-        return len(messages.get('detections', []))
-    
-    def get_continuous_removal_count(self) -> int:
-        """
-        ✅ NEW METHOD - Get total number of 120-second removal events
-        
-        Returns:
-            int: Number of 120-second removal events in history
-        
-        Example:
-            >>> session.get_continuous_removal_count()
-            2
-        
-        Notes:
-            - Returns count from violations column's 'continuous_removals' array
-            - Should match continuous_violation_removal_count column value
-        """
-        messages = self.get_behavior_messages()
-        return len(messages.get('continuous_removals', []))
-    
-    def get_latest_behavior_warning(self) -> Optional[Dict]:
-        """
-        ✅ EXISTING METHOD - Get the most recent behavior warning
-        
-        Returns:
-            Optional[Dict]: Latest warning message or None if no warnings
-        
-        Example:
-            >>> latest = session.get_latest_behavior_warning()
-            >>> if latest:
-            ...     print(f"Last warning: {latest['violation_type']} at {latest['timestamp']}")
-        """
-        messages = self.get_behavior_messages()
-        warnings = messages.get('warnings', [])
-        return warnings[-1] if warnings else None
-    
-    def get_latest_behavior_detection(self) -> Optional[Dict]:
-        """
-        ✅ EXISTING METHOD - Get the most recent behavior detection
-        
-        Returns:
-            Optional[Dict]: Latest detection message or None if no detections
-        
-        Example:
-            >>> latest = session.get_latest_behavior_detection()
-            >>> if latest:
-            ...     print(f"Last detection: {latest['violation_type']} - Penalty: {latest['penalty_applied']}%")
-        """
-        messages = self.get_behavior_messages()
-        detections = messages.get('detections', [])
-        return detections[-1] if detections else None
-    
-    def get_latest_continuous_removal(self) -> Optional[Dict]:
-        """
-        ✅ NEW METHOD - Get the most recent 120-second removal event
-        
-        Returns:
-            Optional[Dict]: Latest removal event or None if no removals
-        
-        Example:
-            >>> latest = session.get_latest_continuous_removal()
-            >>> if latest:
-            ...     print(f"Last 120s removal: {latest['violation_type']} - Duration: {latest['duration']}s")
-        """
-        messages = self.get_behavior_messages()
-        removals = messages.get('continuous_removals', [])
-        return removals[-1] if removals else None
-    
-    def clear_behavior_messages(self):
-        """
-        ✅ ENHANCED METHOD - Clear all behavior warning/detection/removal messages
-        
-        Use Cases:
-            - Manual reset by admin
-            - Session restart
-            - Testing/debugging
-        
-        Example:
-            >>> session.clear_behavior_messages()
-            >>> session.save()
-        
-        Warning:
-            - This will permanently delete all warning/detection/removal history
-            - Cannot be undone
-        """
-        self.violations = json.dumps({'warnings': [], 'detections': [], 'continuous_removals': []})
-        logger.info(f"Cleared all behavior messages for {self.user_id}")
-    
-    def get_total_removals(self) -> int:
-        """
-        ✅ NEW METHOD - Get total number of removals (all types)
-        
-        Returns:
-            int: Sum of identity_removal_count + behavior_removal_count
-        
-        Example:
-            >>> session.get_total_removals()
-            5  # 2 identity + 3 behavior
-        
-        Notes:
-            - Does NOT include continuous_violation_removal_count 
-              (that's a subset of behavior_removal_count)
-        """
-        return self.identity_removal_count + self.behavior_removal_count
-    
-    def get_removal_summary(self) -> Dict:
-        """
-        ✅ NEW METHOD - Get comprehensive removal statistics
-        
-        Returns:
-            Dict: Summary of all removal types with counts and events
-        
-        Example:
-            >>> summary = session.get_removal_summary()
-            >>> print(summary)
-            {
-                'identity_removals': 2,
-                'behavior_removals': 3,
-                'continuous_120s_removals': 2,
-                'total_removals': 5,
-                'identity_warnings_issued': 6,
-                'identity_current_cycle': 0,
-                'continuous_removal_events': [...]
-            }
-        """
-        return {
-            'identity_removals': self.identity_removal_count,
-            'behavior_removals': self.behavior_removal_count,
-            'continuous_120s_removals': self.continuous_violation_removal_count,
-            'total_removals': self.get_total_removals(),
-            'identity_warnings_issued': self.identity_total_warnings_issued,
-            'identity_current_cycle': self.identity_current_cycle_warnings,
-            'continuous_removal_events': self.get_continuous_removal_events(),
-            'behavior_warnings': self.get_behavior_warning_count(),
-            'behavior_detections': self.get_behavior_detection_count(),
-            'continuous_violation_time': self.continuous_violation_time,
-            'last_violation_type': self.last_violation_type,
-        }
-        
 
+def create_attendance_sessions_table():
+    """Create tbl_Attendance_Sessions table with all required columns and indexes"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_Attendance_Sessions (
+                    id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    Meeting_ID VARCHAR(20) NOT NULL,
+                    User_ID VARCHAR(100) NOT NULL,
+                    popup_count INT DEFAULT 0,
+                    detection_counts TEXT,
+                    violation_start_times TEXT,
+                    total_detections INT DEFAULT 0,
+                    attendance_penalty FLOAT DEFAULT 0,
+                    session_active TINYINT(1) DEFAULT 0,
+                    break_used TINYINT(1) DEFAULT 0,
+                    violations TEXT,
+                    session_start_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    frame_processing_count INT DEFAULT 0,
+                    engagement_score INT DEFAULT 0,
+                    attendance_percentage DECIMAL(5,2) DEFAULT 100.00,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    break_count INT DEFAULT 0,
+                    break_sessions LONGTEXT NOT NULL DEFAULT (_utf8mb4'[]'),
+                    current_break_start_time DOUBLE DEFAULT NULL,
+                    is_currently_on_break TINYINT(1) DEFAULT 0,
+                    last_break_calculation DOUBLE DEFAULT 0,
+                    max_break_time_allowed INT DEFAULT 300,
+                    total_break_time_used INT DEFAULT 0,
+                    last_face_movement_time DOUBLE DEFAULT 0,
+                    inactivity_popup_shown TINYINT(1) DEFAULT 0,
+                    last_popup_time DOUBLE DEFAULT 0,
+                    total_session_time INT DEFAULT 0,
+                    active_participation_time INT DEFAULT 0,
+                    violation_severity_score DOUBLE DEFAULT 0,
+                    last_violation_type VARCHAR(50) DEFAULT '',
+                    continuous_violation_time INT DEFAULT 0,
+                    focus_score DECIMAL(5,2) DEFAULT 100.00,
+                    identity_warning_count INT DEFAULT 0 COMMENT 'Number of identity verification warnings (0-3)',
+                    identity_consecutive_unknown_seconds INT DEFAULT 0 COMMENT 'Consecutive seconds of unknown person detection',
+                    identity_total_unknown_seconds INT DEFAULT 0 COMMENT 'Total seconds of unknown person detection in session',
+                    identity_is_removed TINYINT(1) DEFAULT 0 COMMENT 'Whether user was removed due to identity verification failure',
+                    identity_removal_time DATETIME DEFAULT NULL COMMENT 'Timestamp when user was removed due to identity failure',
+                    identity_can_rejoin TINYINT(1) DEFAULT 1 COMMENT 'Whether user can rejoin after identity removal',
+                    identity_warnings TEXT COMMENT 'JSON array of identity warning events with timestamps',
+                    identity_last_check_time DOUBLE DEFAULT 0 COMMENT 'Unix timestamp of last identity verification check',
+                    identity_removal_count INT NOT NULL DEFAULT 0 COMMENT 'Number of times removed from meeting due to identity verification failure',
+                    identity_total_warnings_issued INT NOT NULL DEFAULT 0 COMMENT 'Total identity warnings issued across all sessions (cumulative: 1,2,3,4,5...)',
+                    identity_current_cycle_warnings INT NOT NULL DEFAULT 0 COMMENT 'Identity warnings in current cycle (resets to 0 after removal, shows as 0-3)',
+                    behavior_removal_count INT NOT NULL DEFAULT 0 COMMENT 'Number of times removed from meeting due to 2-minute continuous behavior violations',
+                    continuous_violation_removal_count INT NOT NULL DEFAULT 0,
+                    KEY idx_meeting_id (Meeting_ID),
+                    KEY idx_user_id (User_ID),
+                    KEY idx_session_active (session_active),
+                    KEY idx_created_at (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+            """)
+            logging.debug("tbl_Attendance_Sessions table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_Attendance_Sessions table: {e}")
 
 # ==================== MEDIAPIPE INITIALIZATION ====================
 

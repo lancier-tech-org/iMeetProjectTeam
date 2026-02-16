@@ -234,22 +234,48 @@ def delete_photo_reference_mongodb(user_id, user_type):
 
 class SuperAdmin(models.Model):
     ID = models.AutoField(primary_key=True)
-    Full_Name = models.CharField(max_length=100)
-    Mobile_Number = models.CharField(max_length=15)
-    Email = models.EmailField(max_length=100, unique=True)
-    Password = models.CharField(max_length=50)
+    Full_Name = models.CharField(max_length=100, blank=True, null=True)
+    Mobile_Number = models.CharField(max_length=15, blank=True, null=True)
+    Email = models.EmailField(max_length=100, unique=True, blank=True, null=True)
+    Password = models.CharField(max_length=50, blank=True, null=True)
     Address = models.CharField(max_length=150, blank=True, null=True)
     Country = models.CharField(max_length=50, blank=True, null=True)
-    Country_Code = models.CharField(max_length=10, blank=True, null=True)
-    Timezone = models.CharField(max_length=50, blank=True, null=True)
-    Languages = models.CharField(max_length=50, blank=True, null=True)
     status_code = models.CharField(max_length=1, default='s')
     status = models.BooleanField(default=True)
-    Photo_upload = models.CharField(max_length=500, blank=True, null=True)  # ✅ Increased size for S3 URLs
+    Photo_upload = models.CharField(max_length=500, blank=True, null=True)
+    Country_Code = models.CharField(max_length=10, default='+91')
+    Timezone = models.CharField(max_length=50, default='Asia/Kolkata')
+    Languages = models.CharField(max_length=50, default='English')
 
     class Meta:
         db_table = 'tbl_Super_Admin'
+        app_label = 'core'
 
+
+def create_super_admin_table():
+    """Create tbl_Super_Admin table with all required columns"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_Super_Admin (
+                    ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    Full_Name VARCHAR(100) DEFAULT NULL,
+                    Mobile_Number VARCHAR(15) DEFAULT NULL,
+                    Email VARCHAR(100) DEFAULT NULL UNIQUE,
+                    Password VARCHAR(50) DEFAULT NULL,
+                    Address VARCHAR(150) DEFAULT NULL,
+                    Country VARCHAR(50) DEFAULT NULL,
+                    status_code CHAR(1) DEFAULT 's',
+                    status TINYINT(1) DEFAULT 1,
+                    Photo_upload VARCHAR(500) DEFAULT NULL,
+                    Country_Code VARCHAR(10) DEFAULT '+91',
+                    Timezone VARCHAR(50) DEFAULT 'Asia/Kolkata',
+                    Languages VARCHAR(50) DEFAULT 'English'
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+            """)
+            logging.debug("tbl_Super_Admin table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_Super_Admin table: {e}")
 
 def validate_password(password):
     """Validate password: 8+ chars, 1 upper, 1 lower, 1 number, 1 special char"""
@@ -395,32 +421,6 @@ def upload_to_s3(file_data, file_name):
         import traceback
         logging.error(traceback.format_exc())
         return None
-
-def create_super_admin_table():
-    """Create tbl_Super_Admin table if it doesn't exist"""
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS tbl_Super_Admin (
-                    ID INT AUTO_INCREMENT PRIMARY KEY,
-                    Full_Name VARCHAR(100) NOT NULL,
-                    Mobile_Number VARCHAR(15) NOT NULL,
-                    Email VARCHAR(100) NOT NULL UNIQUE,
-                    Password VARCHAR(50) NOT NULL,
-                    Address VARCHAR(150) NULL,
-                    Country VARCHAR(50) NULL,
-                    Country_Code VARCHAR(10) NULL,
-                    Timezone VARCHAR(50) NULL,
-                    Languages VARCHAR(50) NULL,
-                    status_code CHAR(1) DEFAULT 's',
-                    status BOOLEAN DEFAULT 1,
-                    Photo_upload VARCHAR(500) NULL
-                )
-            """)
-            logging.debug("tbl_Super_Admin table created or exists")
-    except (ProgrammingError, OperationalError) as e:
-        logging.error(f"Failed to create tbl_Super_Admin table: {e}")
-
 
 def create_otp_table():
     """Create tbl_OTP_Reset table if it doesn't exist"""

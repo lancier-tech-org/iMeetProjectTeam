@@ -7,6 +7,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.urls import path
 from django.db.utils import ProgrammingError, OperationalError
 from django.utils import timezone
+from django.db import models
 import json
 import logging
 import razorpay
@@ -53,7 +54,73 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(message)s'
 )
 
+class PaymentOrder(models.Model):
+    id = models.AutoField(primary_key=True)
+    razorpay_order_id = models.CharField(max_length=50, unique=True)
+    user_id = models.ForeignKey(
+        'core.User', on_delete=models.RESTRICT, db_column='user_id',
+        related_name='payment_orders'
+    )
+    name = models.CharField(max_length=100)
+    email = models.CharField(max_length=100)
+    mobile_number = models.CharField(max_length=15)
+    purpose = models.CharField(max_length=100)
+    reference_id = models.CharField(max_length=50, blank=True, null=True)
+    amount = models.IntegerField()
+    currency = models.CharField(max_length=10, default='INR')
+    receipt = models.CharField(max_length=100, blank=True, null=True)
+    order_status = models.CharField(max_length=10, default='CREATED')
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+    address_line1 = models.CharField(max_length=200, blank=True, null=True)
+    address_line2 = models.CharField(max_length=200, blank=True, null=True)
+    city = models.CharField(max_length=100, blank=True, null=True)
+    state = models.CharField(max_length=100, blank=True, null=True)
+    pincode = models.CharField(max_length=10, blank=True, null=True)
+    country = models.CharField(max_length=50, default='India')
 
+    class Meta:
+        db_table = 'tbl_payment_orders'
+        app_label = 'core'
+
+
+def create_payment_orders_table():
+    """Create tbl_payment_orders table with all required columns and indexes"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_payment_orders (
+                    id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    razorpay_order_id VARCHAR(50) NOT NULL UNIQUE COMMENT 'order_xxx from Razorpay',
+                    user_id INT NOT NULL COMMENT 'Who is paying',
+                    name VARCHAR(100) NOT NULL,
+                    email VARCHAR(100) NOT NULL,
+                    mobile_number VARCHAR(15) NOT NULL,
+                    purpose VARCHAR(100) NOT NULL COMMENT 'meeting/subscription/test/interview',
+                    reference_id VARCHAR(50) DEFAULT NULL COMMENT 'meeting_id/plan_id/test_id',
+                    amount INT NOT NULL COMMENT 'Amount in paise (₹100 = 10000 paise)',
+                    currency VARCHAR(10) DEFAULT 'INR',
+                    receipt VARCHAR(100) DEFAULT NULL COMMENT 'Your internal reference',
+                    order_status ENUM('CREATED','PAID','EXPIRED','CANCELLED') DEFAULT 'CREATED',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    address_line1 VARCHAR(200) DEFAULT NULL COMMENT 'Customer address line 1',
+                    address_line2 VARCHAR(200) DEFAULT NULL COMMENT 'Customer address line 2 (optional)',
+                    city VARCHAR(100) DEFAULT NULL COMMENT 'Customer city',
+                    state VARCHAR(100) DEFAULT NULL COMMENT 'Customer state - used for GST calculation',
+                    pincode VARCHAR(10) DEFAULT NULL COMMENT 'Customer pincode',
+                    country VARCHAR(50) DEFAULT 'India' COMMENT 'Customer country',
+                    KEY idx_user_id (user_id),
+                    KEY idx_order_status (order_status),
+                    KEY idx_reference (purpose, reference_id),
+                    KEY idx_payment_orders_state (state),
+                    CONSTRAINT FK_PaymentOrders_Users FOREIGN KEY (user_id) REFERENCES tbl_Users (ID) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+            """)
+            logging.debug("tbl_payment_orders table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_payment_orders table: {e}")
+ 
 # ==================== HELPER FUNCTIONS ====================
 
 def validate_email(email):
