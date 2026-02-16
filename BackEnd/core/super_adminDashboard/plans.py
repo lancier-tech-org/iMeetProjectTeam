@@ -3,7 +3,6 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 from django.urls import path
-from django.db import models
 from django.db.utils import ProgrammingError, OperationalError
 from decimal import Decimal, ROUND_HALF_UP
 import json
@@ -21,65 +20,32 @@ SERVER_ERROR_STATUS = 500
 
 logging.basicConfig(filename='plans_debug.log', level=logging.DEBUG, format='%(asctime)s %(levelname)s %(message)s')
 
-class Plan(models.Model):
-    PLAN_TYPE_CHOICES = [
-        ('basic', 'basic'),
-        ('pro', 'pro'),
-        ('pro_max', 'pro_max'),
-    ]
-    BILLING_PERIOD_CHOICES = [
-        ('monthly', 'monthly'),
-        ('yearly', 'yearly'),
-    ]
-
-    id = models.AutoField(primary_key=True)
-    plan_name = models.CharField(max_length=50)
-    plan_type = models.CharField(max_length=7, choices=PLAN_TYPE_CHOICES)
-    billing_period = models.CharField(max_length=7, choices=BILLING_PERIOD_CHOICES)
-    base_price = models.DecimalField(max_digits=10, decimal_places=2)
-    gst_rate = models.DecimalField(max_digits=5, decimal_places=2, default=18.00)
-    gst_amount = models.DecimalField(max_digits=10, decimal_places=2, editable=False, default=0)
-    total_price = models.DecimalField(max_digits=10, decimal_places=2, editable=False, default=0)
-    currency = models.CharField(max_length=3, default='INR')
-    features = models.TextField(blank=True, null=True)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = 'tbl_Plans'
-        app_label = 'core'
-        unique_together = ('plan_type', 'billing_period')
-
-
 def create_plans_table():
-    """Create tbl_Plans table with all required columns including generated columns"""
+    """Create tbl_Plans table if it doesn't exist with GST fields"""
     try:
         with connection.cursor() as cursor:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tbl_Plans (
-                    id INT NOT NULL AUTO_INCREMENT,
+                    id INT AUTO_INCREMENT PRIMARY KEY,
                     plan_name VARCHAR(50) NOT NULL,
-                    plan_type ENUM('basic','pro','pro_max') NOT NULL,
-                    billing_period ENUM('monthly','yearly') NOT NULL,
-                    base_price DECIMAL(10,2) NOT NULL COMMENT 'Price before GST',
-                    gst_rate DECIMAL(5,2) NOT NULL DEFAULT 18.00 COMMENT 'GST percentage',
-                    gst_amount DECIMAL(10,2) GENERATED ALWAYS AS (round((`base_price` * (`gst_rate` / 100)),2)) STORED COMMENT 'Auto-calculated GST amount',
-                    total_price DECIMAL(10,2) GENERATED ALWAYS AS (round((`base_price` + (`base_price` * (`gst_rate` / 100))),2)) STORED COMMENT 'Auto-calculated total with GST',
+                    plan_type ENUM('basic', 'pro', 'pro_max') NOT NULL,
+                    billing_period ENUM('monthly', 'yearly') NOT NULL,
+                    base_price DECIMAL(10, 2) NOT NULL COMMENT 'Price before GST',
+                    gst_rate DECIMAL(5, 2) NOT NULL DEFAULT 18.00 COMMENT 'GST percentage',
+                    gst_amount DECIMAL(10, 2) GENERATED ALWAYS AS (ROUND(base_price * (gst_rate / 100), 2)) STORED COMMENT 'Auto-calculated GST amount',
+                    total_price DECIMAL(10, 2) GENERATED ALWAYS AS (ROUND(base_price + (base_price * (gst_rate / 100)), 2)) STORED COMMENT 'Auto-calculated total with GST',
                     currency VARCHAR(3) DEFAULT 'INR',
-                    features TEXT DEFAULT NULL,
+                    features TEXT,
                     is_active TINYINT(1) DEFAULT 1,
-                    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    PRIMARY KEY (id),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     UNIQUE KEY unique_plan (plan_type, billing_period)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+                )
             """)
-            logger.info("✓ tbl_Plans table ready")
-            return True
-    except Exception as e:
-        logger.error(f"✗ Error creating plans table: {e}")
-        return False
+            logging.debug("tbl_Plans table created or exists with GST fields")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_Plans table: {e}")
+
 
 def calculate_gst_components(base_price, gst_rate):
     """

@@ -8,7 +8,6 @@ from django.urls import path
 from django.db.utils import ProgrammingError, OperationalError
 import json
 import logging
-from django.db import models
 
 # Table Names
 TBL_USER_SUBSCRIPTIONS = 'tbl_user_subscriptions'
@@ -27,101 +26,7 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(message)s'
 )
 
-class UserSubscription(models.Model):
-    PLAN_TYPE_CHOICES = [
-        ('basic', 'basic'),
-        ('pro', 'pro'),
-        ('pro_max', 'pro_max'),
-    ]
-    BILLING_PERIOD_CHOICES = [
-        ('monthly', 'monthly'),
-        ('yearly', 'yearly'),
-    ]
-    SUBSCRIPTION_STATUS_CHOICES = [
-        ('ACTIVE', 'ACTIVE'),
-        ('EXPIRED', 'EXPIRED'),
-        ('CANCELLED', 'CANCELLED'),
-    ]
 
-    id = models.AutoField(primary_key=True)
-    user_id = models.ForeignKey('User', on_delete=models.CASCADE, db_column='user_id', related_name='subscriptions')
-    transaction_id = models.ForeignKey('PaymentTransaction', on_delete=models.CASCADE, db_column='transaction_id', related_name='subscriptions')
-    order_id = models.ForeignKey('PaymentOrder', on_delete=models.CASCADE, db_column='order_id', related_name='subscriptions')
-    invoice_id = models.ForeignKey('Invoice', on_delete=models.SET_NULL, db_column='invoice_id', related_name='subscriptions', blank=True, null=True)
-    plan_id = models.ForeignKey('Plan', on_delete=models.RESTRICT, db_column='plan_id', related_name='subscriptions')
-    plan_name = models.CharField(max_length=50)
-    plan_type = models.CharField(max_length=7, choices=PLAN_TYPE_CHOICES)
-    billing_period = models.CharField(max_length=7, choices=BILLING_PERIOD_CHOICES)
-    subscription_start_date = models.DateField()
-    subscription_end_date = models.DateField()
-    duration_days = models.IntegerField()
-    subscription_status = models.CharField(max_length=9, choices=SUBSCRIPTION_STATUS_CHOICES, default='ACTIVE')
-    base_price = models.DecimalField(max_digits=10, decimal_places=2)
-    gst_amount = models.DecimalField(max_digits=10, decimal_places=2)
-    total_price = models.DecimalField(max_digits=10, decimal_places=2)
-    currency = models.CharField(max_length=3, default='INR')
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = 'tbl_user_subscriptions'
-        app_label = 'core'
-        indexes = [
-            models.Index(fields=['user_id'], name='idx_sub_user_id'),
-            models.Index(fields=['transaction_id'], name='idx_sub_transaction_id'),
-            models.Index(fields=['subscription_status'], name='idx_sub_status'),
-            models.Index(fields=['subscription_end_date'], name='idx_sub_end_date'),
-            models.Index(fields=['user_id', 'subscription_status'], name='idx_sub_user_status'),
-        ]
-
-
-def create_user_subscriptions_table():
-    """Create tbl_user_subscriptions table - user subscription tracking with auto-expiry management"""
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS tbl_user_subscriptions (
-                    id INT NOT NULL AUTO_INCREMENT,
-                    user_id INT NOT NULL,
-                    transaction_id INT NOT NULL,
-                    order_id INT NOT NULL,
-                    invoice_id INT DEFAULT NULL,
-                    plan_id INT NOT NULL,
-                    plan_name VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-                    plan_type ENUM('basic','pro','pro_max') COLLATE utf8mb4_unicode_ci NOT NULL,
-                    billing_period ENUM('monthly','yearly') COLLATE utf8mb4_unicode_ci NOT NULL,
-                    subscription_start_date DATE NOT NULL COMMENT 'When subscription starts',
-                    subscription_end_date DATE NOT NULL COMMENT 'When subscription expires',
-                    duration_days INT NOT NULL COMMENT 'Total subscription duration (30 or 365 days)',
-                    subscription_status ENUM('ACTIVE','EXPIRED','CANCELLED') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
-                    base_price DECIMAL(10,2) NOT NULL COMMENT 'Base price before GST',
-                    gst_amount DECIMAL(10,2) NOT NULL COMMENT 'GST amount',
-                    total_price DECIMAL(10,2) NOT NULL COMMENT 'Total amount paid',
-                    currency VARCHAR(3) COLLATE utf8mb4_unicode_ci DEFAULT 'INR',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    PRIMARY KEY (id),
-                    INDEX idx_user_id (user_id),
-                    INDEX idx_transaction_id (transaction_id),
-                    INDEX idx_subscription_status (subscription_status),
-                    INDEX idx_subscription_end_date (subscription_end_date),
-                    INDEX idx_user_status (user_id, subscription_status) COMMENT 'Find user active subscription fast',
-                    INDEX order_id (order_id),
-                    INDEX invoice_id (invoice_id),
-                    INDEX plan_id (plan_id),
-                    CONSTRAINT tbl_user_subscriptions_ibfk_1 FOREIGN KEY (user_id) REFERENCES tbl_Users(ID) ON DELETE CASCADE,
-                    CONSTRAINT tbl_user_subscriptions_ibfk_2 FOREIGN KEY (transaction_id) REFERENCES tbl_payment_transactions(id) ON DELETE CASCADE,
-                    CONSTRAINT tbl_user_subscriptions_ibfk_3 FOREIGN KEY (order_id) REFERENCES tbl_payment_orders(id) ON DELETE CASCADE,
-                    CONSTRAINT tbl_user_subscriptions_ibfk_4 FOREIGN KEY (invoice_id) REFERENCES tbl_invoices(id) ON DELETE SET NULL,
-                    CONSTRAINT tbl_user_subscriptions_ibfk_5 FOREIGN KEY (plan_id) REFERENCES tbl_Plans(id) ON DELETE RESTRICT
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='User subscription tracking with auto-expiry management'
-            """)
-            logger.info("✓ tbl_user_subscriptions table ready")
-            return True
-    except Exception as e:
-        logger.error(f"✗ Error creating user subscriptions table: {e}")
-        return False
-   
 # ==================== SUBSCRIPTION APIs ====================
 
 @require_http_methods(["GET"])

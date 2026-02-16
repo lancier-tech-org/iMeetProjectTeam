@@ -8,8 +8,6 @@ from django.urls import path
 from django.db.utils import ProgrammingError, OperationalError
 from django.utils import timezone
 import json
-from django.db import models
-
 import logging
 import razorpay
 import os
@@ -56,87 +54,6 @@ logging.basicConfig(
 )
 
 
-class PaymentOrder(models.Model):
-    ORDER_STATUS_CHOICES = [
-        ('CREATED', 'CREATED'),
-        ('PAID', 'PAID'),
-        ('EXPIRED', 'EXPIRED'),
-        ('CANCELLED', 'CANCELLED'),
-    ]
-
-    id = models.AutoField(primary_key=True)
-    razorpay_order_id = models.CharField(max_length=50, unique=True)
-    user_id = models.ForeignKey('User', on_delete=models.RESTRICT, db_column='user_id', related_name='payment_orders')
-    name = models.CharField(max_length=100)
-    email = models.CharField(max_length=100)
-    mobile_number = models.CharField(max_length=15)
-    purpose = models.CharField(max_length=100)
-    reference_id = models.CharField(max_length=50, blank=True, null=True)
-    amount = models.IntegerField()
-    currency = models.CharField(max_length=10, default='INR')
-    receipt = models.CharField(max_length=100, blank=True, null=True)
-    order_status = models.CharField(max_length=9, choices=ORDER_STATUS_CHOICES, default='CREATED')
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    address_line1 = models.CharField(max_length=200, blank=True, null=True)
-    address_line2 = models.CharField(max_length=200, blank=True, null=True)
-    city = models.CharField(max_length=100, blank=True, null=True)
-    state = models.CharField(max_length=100, blank=True, null=True)
-    pincode = models.CharField(max_length=10, blank=True, null=True)
-    country = models.CharField(max_length=50, default='India')
-
-    class Meta:
-        db_table = 'tbl_payment_orders'
-        app_label = 'core'
-        indexes = [
-            models.Index(fields=['user_id'], name='idx_po_user_id'),
-            models.Index(fields=['order_status'], name='idx_po_order_status'),
-            models.Index(fields=['purpose', 'reference_id'], name='idx_po_reference'),
-            models.Index(fields=['state'], name='idx_po_state'),
-        ]
-
-
-def create_payment_orders_table():
-    """Create tbl_payment_orders table for Razorpay orders"""
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS tbl_payment_orders (
-                    id INT NOT NULL AUTO_INCREMENT,
-                    razorpay_order_id VARCHAR(50) NOT NULL COMMENT 'order_xxx from Razorpay',
-                    user_id INT NOT NULL COMMENT 'Who is paying',
-                    name VARCHAR(100) NOT NULL,
-                    email VARCHAR(100) NOT NULL,
-                    mobile_number VARCHAR(15) NOT NULL,
-                    purpose VARCHAR(100) NOT NULL COMMENT 'meeting/subscription/test/interview',
-                    reference_id VARCHAR(50) DEFAULT NULL COMMENT 'meeting_id/plan_id/test_id',
-                    amount INT NOT NULL COMMENT 'Amount in paise (₹100 = 10000 paise)',
-                    currency VARCHAR(10) DEFAULT 'INR',
-                    receipt VARCHAR(100) DEFAULT NULL COMMENT 'Your internal reference',
-                    order_status ENUM('CREATED','PAID','EXPIRED','CANCELLED') DEFAULT 'CREATED',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    address_line1 VARCHAR(200) DEFAULT NULL COMMENT 'Customer address line 1',
-                    address_line2 VARCHAR(200) DEFAULT NULL COMMENT 'Customer address line 2 (optional)',
-                    city VARCHAR(100) DEFAULT NULL COMMENT 'Customer city',
-                    state VARCHAR(100) DEFAULT NULL COMMENT 'Customer state - used for GST calculation',
-                    pincode VARCHAR(10) DEFAULT NULL COMMENT 'Customer pincode',
-                    country VARCHAR(50) DEFAULT 'India' COMMENT 'Customer country',
-                    PRIMARY KEY (id),
-                    UNIQUE KEY razorpay_order_id (razorpay_order_id),
-                    INDEX idx_user_id (user_id),
-                    INDEX idx_order_status (order_status),
-                    INDEX idx_reference (purpose, reference_id),
-                    INDEX idx_payment_orders_state (state),
-                    CONSTRAINT FK_PaymentOrders_Users FOREIGN KEY (user_id) REFERENCES tbl_Users(ID) ON DELETE RESTRICT
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-            """)
-            logger.info("✓ tbl_payment_orders table ready")
-            return True
-    except Exception as e:
-        logger.error(f"✗ Error creating payment orders table: {e}")
-        return False
-    
 # ==================== HELPER FUNCTIONS ====================
 
 def validate_email(email):

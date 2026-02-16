@@ -14,7 +14,6 @@ from django.utils import timezone
 import json
 import logging
 import re
-from django.db import models
 import os
 from datetime import datetime, timedelta
 
@@ -49,54 +48,16 @@ IP_GEOLOCATION_ENABLED = os.getenv("IP_GEOLOCATION_ENABLED", "true").lower() == 
 IP_API_TIMEOUT = int(os.getenv("IP_API_TIMEOUT", 3))
 SESSION_EXPIRY_HOURS = int(os.getenv("SESSION_EXPIRY_HOURS", 24))
 
-class UserLoginHistory(models.Model):
-    DEVICE_TYPE_CHOICES = [
-        ('Desktop', 'Desktop'),
-        ('Mobile', 'Mobile'),
-    ]
-    LOGIN_METHOD_CHOICES = [
-        ('password', 'password'),
-        ('face_recognition', 'face_recognition'),
-        ('token', 'token'),
-        ('auto', 'auto'),
-    ]
-    STATUS_CHOICES = [
-        ('active', 'active'),
-        ('logged_out', 'logged_out'),
-        ('expired', 'expired'),
-    ]
 
-    ID = models.AutoField(primary_key=True)
-    User_ID = models.ForeignKey('User', on_delete=models.CASCADE, db_column='User_ID', related_name='login_history')
-    Device_Info = models.CharField(max_length=255)
-    Device_Type = models.CharField(max_length=7, choices=DEVICE_TYPE_CHOICES, default='Desktop')
-    Login_Time = models.DateTimeField(default=timezone.now)
-    IP_Address = models.CharField(max_length=45)
-    MAC_Address = models.CharField(max_length=20, blank=True, null=True)
-    Location = models.CharField(max_length=255, blank=True, null=True)
-    Latitude = models.DecimalField(max_digits=10, decimal_places=8, blank=True, null=True)
-    Longitude = models.DecimalField(max_digits=11, decimal_places=8, blank=True, null=True)
-    Location_Accuracy = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
-    Location_Source = models.CharField(max_length=50, default='unknown')
-    Session_ID = models.CharField(max_length=100, blank=True, null=True)
-    Login_Method = models.CharField(max_length=16, choices=LOGIN_METHOD_CHOICES, default='password')
-    Status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='active')
-    Logout_Time = models.DateTimeField(blank=True, null=True)
-    Created_At = models.DateTimeField(default=timezone.now)
-
-    class Meta:
-        db_table = 'tbl_User_Login_History'
-        app_label = 'core'
-        indexes = [
-            models.Index(fields=['User_ID', 'Login_Time'], name='idx_ulh_user_login'),
-            models.Index(fields=['Login_Time'], name='idx_ulh_login_time'),
-            models.Index(fields=['Status'], name='idx_ulh_status'),
-            models.Index(fields=['IP_Address'], name='idx_ulh_ip_address'),
-        ]
-
+# ============================================================================
+# DATABASE TABLE CREATION
+# ============================================================================
 
 def create_login_history_table():
-    """Create tbl_User_Login_History table if not exists"""
+    """
+    Create tbl_User_Login_History table if not exists
+    Includes location fields matching check_in pattern
+    """
     try:
         with connection.cursor() as cursor:
             cursor.execute("""
@@ -131,6 +92,7 @@ def create_login_history_table():
     except Exception as e:
         logger.error(f"✗ Error creating login history table: {e}")
         return False
+
 
 # ============================================================================
 # HELPER FUNCTIONS
