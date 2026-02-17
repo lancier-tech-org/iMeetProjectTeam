@@ -6,6 +6,7 @@ from django.views.decorators.http import require_http_methods
 from core.AI_Attendance.Attendance import start_attendance_tracking, stop_attendance_tracking
 from django.views.decorators.csrf import csrf_exempt
 from django.urls import path
+from django.db.utils import ProgrammingError, OperationalError
 from django.utils import timezone
 from datetime import datetime, timedelta
 import json
@@ -362,85 +363,74 @@ def format_duration_auto(decimal_minutes):
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 class Participants(models.Model):
-    ROLE_CHOICES = [
-        ('host', 'Host'),
-        ('co-host', 'Co-Host'),
-        ('participant', 'Participant'),
-    ]
-    
-    MEETING_TYPE_CHOICES = [
-        ('InstantMeeting', 'Instant Meeting'),
-        ('ScheduleMeeting', 'Schedule Meeting'),
-        ('CalendarMeeting', 'Calendar Meeting'),
-    ]
-    
-    id = models.AutoField(primary_key=True, db_column='ID')
-    meeting_id = models.CharField(max_length=20, db_column='Meeting_ID')
-    user_id = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, db_column='User_ID')
-    full_name = models.CharField(max_length=100, blank=True, null=True, db_column='Full_Name')
-    role = models.CharField(max_length=50, choices=ROLE_CHOICES, default='participant')
-    meeting_type = models.CharField(max_length=50, choices=MEETING_TYPE_CHOICES, blank=True, null=True, db_column='Meeting_Type')
-    join_times = models.JSONField(default=list, db_column='Join_Times')
-    leave_times = models.JSONField(default=list, db_column='Leave_Times')
-    total_duration_minutes = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, db_column='Total_Duration_Minutes')
-    total_sessions = models.IntegerField(default=0, db_column='Total_Sessions')
-    end_meeting_time = models.DateTimeField(blank=True, null=True, db_column='End_Meeting_Time')
-    is_currently_active = models.BooleanField(default=True, db_column='Is_Currently_Active')
-    attendance_percentagebasedon_host = models.DecimalField(max_digits=5, decimal_places=2, default=0.00, db_column='Attendance_Percentagebasedon_host')
-    participant_attendance = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True, db_column='Participant_Attendance')
-    overall_attendance = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True, db_column='Overall_Attendance')
-    occurrence_number = models.IntegerField(default=1, db_column='occurrence_number')
-    session_start_time = models.DateField(db_column='session_start_time')
+    ID = models.AutoField(primary_key=True)
+    Meeting_ID = models.ForeignKey(
+        'core.Meetings', on_delete=models.CASCADE, db_column='Meeting_ID',
+        related_name='participants'
+    )
+    User_ID = models.ForeignKey(
+        User, on_delete=models.CASCADE, db_column='User_ID',
+        related_name='participations'
+    )
+    Full_Name = models.CharField(max_length=100, blank=True, null=True)
+    Role = models.CharField(max_length=50, default='participant')
+    Meeting_Type = models.CharField(max_length=50, blank=True, null=True)
+    Join_Times = models.JSONField()
+    Leave_Times = models.JSONField(default=list)
+    Total_Duration_Minutes = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    Total_Sessions = models.IntegerField(default=0)
+    End_Meeting_Time = models.DateTimeField(blank=True, null=True)
+    Is_Currently_Active = models.BooleanField(default=True)
+    Attendance_Percentagebasedon_host = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+    Participant_Attendance = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
+    Overall_Attendance = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
+    occurrence_number = models.IntegerField(default=1)
+    session_start_time = models.DateField()
 
     class Meta:
         db_table = 'tbl_Participants'
-        unique_together = ('meeting_id', 'user_id', 'occurrence_number')
-        indexes = [
-            models.Index(fields=['meeting_id', 'is_currently_active'], name='idx_active_users'),
-            models.Index(fields=['user_id', 'participant_attendance', 'overall_attendance'], name='idx_attend_summary'),
-            models.Index(fields=['user_id', 'overall_attendance'], name='idx_part_overall'),
-            models.Index(fields=['user_id', 'participant_attendance'], name='idx_user_part_attend'),
-            models.Index(fields=['user_id', 'overall_attendance'], name='idx_user_overall'),
-        ]
         app_label = 'core'
+        unique_together = [('Meeting_ID', 'User_ID', 'occurrence_number')]
+
 
 def create_participants_table():
-    """Create tbl_Participants table if it doesn't exist - MYSQL VERSION"""
+    """Create tbl_Participants table with all required columns, indexes, and constraints"""
     try:
         with connection.cursor() as cursor:
             cursor.execute("""
-            CREATE TABLE IF NOT EXISTS tbl_Participants (
-                ID INT AUTO_INCREMENT PRIMARY KEY,
-                Meeting_ID VARCHAR(20) NOT NULL,
-                User_ID INT NOT NULL,
-                Full_Name VARCHAR(100) DEFAULT NULL,
-                Role VARCHAR(50) DEFAULT 'participant',
-                Meeting_Type VARCHAR(50) DEFAULT NULL,
-                Join_Times JSON NOT NULL,
-                Leave_Times JSON NOT NULL DEFAULT (JSON_ARRAY()),
-                Total_Duration_Minutes DECIMAL(10,2) DEFAULT 0.00,
-                Total_Sessions INT DEFAULT 0,
-                End_Meeting_Time DATETIME DEFAULT NULL,
-                Is_Currently_Active TINYINT(1) DEFAULT 1,
-                Attendance_Percentagebasedon_host DECIMAL(5,2) DEFAULT 0.00,
-                Participant_Attendance DECIMAL(5,2) DEFAULT NULL,
-                Overall_Attendance DECIMAL(5,2) DEFAULT NULL,
-                occurrence_number INT NOT NULL DEFAULT 1,
-                session_start_time DATE NOT NULL,
-                UNIQUE KEY idx_unique_participant (Meeting_ID, User_ID, occurrence_number),
-                KEY idx_active_users (Meeting_ID, Is_Currently_Active),
-                KEY idx_attend_summary (User_ID, Participant_Attendance, Overall_Attendance),
-                KEY idx_part_overall (User_ID, Overall_Attendance),
-                KEY idx_user_part_attend (User_ID, Participant_Attendance),
-                KEY idx_user_overall (User_ID, Overall_Attendance),
-                CONSTRAINT FK_Participants_Meeting FOREIGN KEY (Meeting_ID) REFERENCES tbl_Meetings (ID) ON DELETE CASCADE ON UPDATE CASCADE,
-                CONSTRAINT FK_Participants_User FOREIGN KEY (User_ID) REFERENCES tbl_Users (ID) ON DELETE CASCADE ON UPDATE CASCADE,
-                CONSTRAINT chk_meeting_type CHECK (Meeting_Type IN ('InstantMeeting', 'ScheduleMeeting', 'CalendarMeeting')),
-                CONSTRAINT chk_role CHECK (Role IN ('host', 'co-host', 'participant'))
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+                CREATE TABLE IF NOT EXISTS tbl_Participants (
+                    ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    Meeting_ID VARCHAR(20) NOT NULL,
+                    User_ID INT NOT NULL,
+                    Full_Name VARCHAR(100) DEFAULT NULL,
+                    Role VARCHAR(50) DEFAULT 'participant',
+                    Meeting_Type VARCHAR(50) DEFAULT NULL,
+                    Join_Times JSON NOT NULL COMMENT 'Array of all join times: ["2024-10-16 12:00:00", "2024-10-16 12:30:00"]',
+                    Leave_Times JSON NOT NULL DEFAULT (JSON_ARRAY()) COMMENT 'Array of all leave times: ["2024-10-16 12:10:00"]',
+                    Total_Duration_Minutes DECIMAL(10,2) DEFAULT 0.00 COMMENT 'Sum of all session durations in minutes',
+                    Total_Sessions INT DEFAULT 0 COMMENT 'Count of completed sessions',
+                    End_Meeting_Time DATETIME DEFAULT NULL,
+                    Is_Currently_Active TINYINT(1) DEFAULT 1 COMMENT 'Is user currently in meeting',
+                    Attendance_Percentagebasedon_host DECIMAL(5,2) DEFAULT 0.00 COMMENT 'Attendance percentage based on host total duration',
+                    Participant_Attendance DECIMAL(5,2) DEFAULT NULL COMMENT 'Per-meeting average: (attendance_percentage + Attendance_Percentagebasedon_host) / 2',
+                    Overall_Attendance DECIMAL(5,2) DEFAULT NULL COMMENT 'Overall attendance: AVG(Participant_Attendance) across all meetings for same user',
+                    occurrence_number INT NOT NULL DEFAULT 1,
+                    session_start_time DATE NOT NULL,
+                    UNIQUE KEY idx_unique_participant (Meeting_ID, User_ID, occurrence_number),
+                    KEY idx_active_users (Meeting_ID, Is_Currently_Active),
+                    KEY idx_participants_overall_attendance (User_ID, Overall_Attendance),
+                    KEY idx_user_part_attend (User_ID, Participant_Attendance),
+                    KEY idx_user_overall_attend (User_ID, Overall_Attendance),
+                    KEY idx_attend_summary (User_ID, Participant_Attendance, Overall_Attendance),
+                    CONSTRAINT FK_Participants_Meeting FOREIGN KEY (Meeting_ID) REFERENCES tbl_Meetings (ID) ON DELETE CASCADE ON UPDATE CASCADE,
+                    CONSTRAINT FK_Participants_User FOREIGN KEY (User_ID) REFERENCES tbl_Users (ID) ON DELETE CASCADE ON UPDATE CASCADE,
+                    CONSTRAINT chk_meeting_type CHECK (Meeting_Type IN ('InstantMeeting','ScheduleMeeting','CalendarMeeting')),
+                    CONSTRAINT chk_role CHECK (Role IN ('host','co-host','participant'))
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Stores participant data with session arrays'
             """)
+            logging.debug("tbl_Participants table created successfully")
     except (ProgrammingError, OperationalError) as e:
-        return JsonResponse({"Error": f"Failed to create tbl_Participants table: {str(e)}"}, status=SERVER_ERROR_STATUS)
+        logging.error(f"Failed to create tbl_Participants table: {e}")
         
 def calculate_session_duration(session_start, session_end=None):
     """Calculate duration of a single session in seconds"""

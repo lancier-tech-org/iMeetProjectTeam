@@ -8,6 +8,7 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import connection, transaction
+from django.db.utils import ProgrammingError, OperationalError
 from django.utils import timezone
 import pytz
 # from .meetings import Create_Calendar_Meeting as _create_calendar_meeting
@@ -18,29 +19,95 @@ from django.db import models
 
 
 class Notification(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    recipient_email = models.EmailField(max_length=255, db_index=True)
-
-    meeting = models.ForeignKey(
-        'Meetings', to_field='id', db_column='meeting_id',
-        null=True, blank=True, on_delete=models.CASCADE
+    id = models.CharField(max_length=36, primary_key=True, default=uuid.uuid4)
+    recipient_email = models.CharField(max_length=255)
+    meeting_id = models.ForeignKey(
+        'core.Meetings', on_delete=models.CASCADE, db_column='meeting_id',
+        blank=True, null=True, related_name='notifications'
     )
-
     notification_type = models.CharField(max_length=50)
-    title = models.CharField(max_length=255)
-    message = models.TextField(null=True, blank=True)
-
-    meeting_title = models.CharField(max_length=255, null=True, blank=True)
-    start_time = models.DateTimeField(null=True, blank=True)
-    meeting_url = models.CharField(max_length=500, null=True, blank=True)
-
-    is_read = models.BooleanField(default=False, db_index=True)
+    title = models.CharField(max_length=255, blank=True, null=True)
+    message = models.TextField(blank=True, null=True)
+    meeting_title = models.CharField(max_length=255, blank=True, null=True)
+    start_time = models.DateTimeField(blank=True, null=True)
+    meeting_url = models.CharField(max_length=500, blank=True, null=True)
+    is_read = models.BooleanField(default=False)
     priority = models.CharField(max_length=20, default='normal')
-    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         db_table = 'tbl_Notifications'
         app_label = 'core'
+
+
+def create_notifications_table():
+    """Create tbl_Notifications table with all required columns and indexes"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_Notifications (
+                    id CHAR(36) NOT NULL DEFAULT (UUID()) PRIMARY KEY,
+                    recipient_email VARCHAR(255) NOT NULL,
+                    meeting_id VARCHAR(20) DEFAULT NULL,
+                    notification_type VARCHAR(50) NOT NULL,
+                    title VARCHAR(255) DEFAULT NULL,
+                    message TEXT,
+                    meeting_title VARCHAR(255) DEFAULT NULL,
+                    start_time DATETIME DEFAULT NULL,
+                    meeting_url VARCHAR(500) DEFAULT NULL,
+                    is_read TINYINT(1) DEFAULT 0,
+                    priority VARCHAR(20) DEFAULT 'normal',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    KEY idx_recipient_email (recipient_email),
+                    KEY idx_meeting_id (meeting_id),
+                    KEY idx_created_at (created_at),
+                    KEY idx_is_read (is_read),
+                    CONSTRAINT FK_Notifications_Meetings FOREIGN KEY (meeting_id) REFERENCES tbl_Meetings (ID) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+            """)
+            logging.debug("tbl_Notifications table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_Notifications table: {e}")
+
+class ScheduledReminder(models.Model):
+    id = models.CharField(max_length=36, primary_key=True, default=uuid.uuid4)
+    meeting_id = models.ForeignKey(
+        'core.Meetings', on_delete=models.CASCADE, db_column='meeting_id',
+        related_name='scheduled_reminders'
+    )
+    recipient_email = models.CharField(max_length=255)
+    reminder_time = models.DateTimeField()
+    notification_data = models.TextField(blank=True, null=True)
+    is_sent = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'tbl_ScheduledReminders'
+        app_label = 'core'
+
+
+def create_scheduled_reminders_table():
+    """Create tbl_ScheduledReminders table with all required columns and indexes"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_ScheduledReminders (
+                    id CHAR(36) NOT NULL DEFAULT (UUID()) PRIMARY KEY,
+                    meeting_id VARCHAR(20) NOT NULL,
+                    recipient_email VARCHAR(255) NOT NULL,
+                    reminder_time DATETIME NOT NULL,
+                    notification_data TEXT,
+                    is_sent TINYINT(1) DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    KEY idx_reminder_time (reminder_time),
+                    KEY idx_meeting_id (meeting_id),
+                    KEY idx_is_sent (is_sent),
+                    CONSTRAINT FK_Reminders_Meetings FOREIGN KEY (meeting_id) REFERENCES tbl_Meetings (ID) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+            """)
+            logging.debug("tbl_ScheduledReminders table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_ScheduledReminders table: {e}")
 
 def short_id():
     return uuid.uuid4().hex[:20]

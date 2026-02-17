@@ -8,6 +8,7 @@ from core.AI_Attendance.Attendance import start_attendance_tracking, stop_attend
 from django.views.decorators.csrf import csrf_exempt
 from django.urls import path
 from django.utils import timezone
+from django.utils import timezone as dj_timezone
 from django.contrib.auth.models import User
 from datetime import datetime, timedelta 
 from django.db.utils import ProgrammingError, OperationalError
@@ -43,7 +44,7 @@ from django.core.mail import EmailMessage
 from django.conf import settings
 from typing import Optional, Dict, List, Any
 import pytz
-from core.WebSocketConnection.participants import get_or_create_participant_for_occurrence
+from core.WebSocketConnection.participants import get_or_create_participant_for_occurrence, record_participant_leave
 import urllib3
 import random
 import string
@@ -1813,59 +1814,75 @@ def create_meeting_id():
     
     return f"{part1}-{part2}-{part3}"  # total length = 13 chars
 
+     
 class Meetings(models.Model):
-    STATUS_CHOICES = [
-        ('active', 'Active'),
-        ('inactive', 'Inactive'),
-        ('ended', 'Ended'),
-    ]
-    
-    RECORDING_STATUS_CHOICES = [
-        ('active', 'Active'),
-        ('inactive', 'Inactive'),
-        ('paused', 'Paused'),
-    ]
-    
-    id = models.CharField(max_length=20, primary_key=True, db_column='ID')
-    host_id = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING, null=True, blank=True, db_column='Host_ID')
-    meeting_name = models.CharField(max_length=200, blank=True, null=True, db_column='Meeting_Name')
-    meeting_type = models.CharField(max_length=50, blank=True, null=True, db_column='Meeting_Type')
-    meeting_link = models.CharField(max_length=500, blank=True, null=True, db_column='Meeting_Link')
-    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='active')
-    created_at = models.DateTimeField(auto_now_add=True, db_column='Created_At')
-    started_at = models.DateTimeField(blank=True, null=True, db_column='Started_At')
-    ended_at = models.DateTimeField(blank=True, null=True, db_column='Ended_At')
-    is_recording_enabled = models.BooleanField(default=False, db_column='Is_Recording_Enabled')
-    waiting_room_enabled = models.BooleanField(default=False, db_column='Waiting_Room_Enabled')
-    livekit_room_name = models.CharField(max_length=100, blank=True, null=True, db_column='LiveKit_Room_Name')
-    livekit_room_sid = models.CharField(max_length=100, blank=True, null=True, db_column='LiveKit_Room_SID')
-    recording_status = models.CharField(max_length=50, choices=RECORDING_STATUS_CHOICES, default='inactive', db_column='Recording_Status')
-    current_participant_count = models.IntegerField(default=0, db_column='current_participant_count')
-    is_deleted = models.BooleanField(default=False, db_column='Is_Deleted')
-    deleted_at = models.DateTimeField(blank=True, null=True, db_column='Deleted_At')
+    ID = models.CharField(max_length=20, primary_key=True)
+    Host_ID = models.ForeignKey(
+        User, on_delete=models.RESTRICT, db_column='Host_ID',
+        blank=True, null=True, related_name='hosted_meetings'
+    )
+    Meeting_Name = models.CharField(max_length=200, blank=True, null=True)
+    Meeting_Type = models.CharField(max_length=50, blank=True, null=True)
+    Meeting_Link = models.CharField(max_length=500, blank=True, null=True)
+    Status = models.CharField(max_length=50, default='active')
+    Created_At = models.DateTimeField(default=timezone.now)
+    Started_At = models.DateTimeField(blank=True, null=True)
+    Ended_At = models.DateTimeField(blank=True, null=True)
+    Is_Recording_Enabled = models.BooleanField(default=False)
+    Waiting_Room_Enabled = models.BooleanField(default=False)
+    LiveKit_Room_Name = models.CharField(max_length=100, blank=True, null=True)
+    LiveKit_Room_SID = models.CharField(max_length=100, blank=True, null=True)
+    Recording_Status = models.CharField(max_length=50, default='inactive')
+    current_participant_count = models.IntegerField(default=0)
+    Is_Deleted = models.BooleanField(default=False)
+    Deleted_At = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         db_table = 'tbl_Meetings'
-        indexes = [
-            models.Index(fields=['id', 'livekit_room_name', 'status'], name='idx_meetings_livekit'),
-        ]
         app_label = 'core'
 
+
+def create_meetings_table():
+    """Create tbl_Meetings table with all required columns and indexes"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_Meetings (
+                    ID VARCHAR(20) NOT NULL PRIMARY KEY,
+                    Host_ID INT DEFAULT NULL,
+                    Meeting_Name VARCHAR(200) DEFAULT NULL,
+                    Meeting_Type VARCHAR(50) DEFAULT NULL,
+                    Meeting_Link VARCHAR(500) DEFAULT NULL,
+                    Status VARCHAR(50) DEFAULT 'active',
+                    Created_At DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    Started_At DATETIME DEFAULT NULL,
+                    Ended_At DATETIME DEFAULT NULL,
+                    Is_Recording_Enabled TINYINT(1) DEFAULT 0,
+                    Waiting_Room_Enabled TINYINT(1) DEFAULT 0,
+                    LiveKit_Room_Name VARCHAR(100) DEFAULT NULL,
+                    LiveKit_Room_SID VARCHAR(100) DEFAULT NULL,
+                    Recording_Status VARCHAR(50) DEFAULT 'inactive',
+                    current_participant_count INT DEFAULT 0,
+                    Is_Deleted TINYINT(1) DEFAULT 0,
+                    Deleted_At DATETIME DEFAULT NULL,
+                    KEY FK_Meetings_Users (Host_ID),
+                    KEY idx_meetings_livekit (ID, LiveKit_Room_Name, Status),
+                    CONSTRAINT FK_Meetings_Users FOREIGN KEY (Host_ID) REFERENCES tbl_Users (ID) ON DELETE RESTRICT ON UPDATE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+            """)
+            logging.debug("tbl_Meetings table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_Meetings table: {e}")
+
 class ScheduledMeetings(models.Model):
-    RECURRENCE_CHOICES = [
-        ('daily', 'Daily'),
-        ('weekly', 'Weekly'),
-        ('monthly', 'Monthly'),
-        ('yearly', 'Yearly'),
-    ]
-    
-    MONTHLY_PATTERN_CHOICES = [
-        ('same-date', 'Same Date'),
-        ('same-day', 'Same Day'),
-    ]
-    
-    id = models.CharField(max_length=20, primary_key=True)
-    host_id = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING, null=True, blank=True, db_column='host_id')
+    id = models.OneToOneField(
+        'core.Meetings', on_delete=models.CASCADE, primary_key=True,
+        db_column='id', related_name='scheduled_meeting'
+    )
+    host_id = models.ForeignKey(
+        User, on_delete=models.RESTRICT, db_column='host_id',
+        blank=True, null=True, related_name='scheduled_meetings'
+    )
     title = models.CharField(max_length=200, blank=True, null=True)
     description = models.CharField(max_length=1000, blank=True, null=True)
     location = models.CharField(max_length=255, blank=True, null=True)
@@ -1876,7 +1893,7 @@ class ScheduledMeetings(models.Model):
     timezone = models.CharField(max_length=100, blank=True, null=True)
     duration_minutes = models.IntegerField(blank=True, null=True)
     is_recurring = models.BooleanField(default=False)
-    recurrence_type = models.CharField(max_length=50, choices=RECURRENCE_CHOICES, blank=True, null=True)
+    recurrence_type = models.CharField(max_length=50, blank=True, null=True)
     recurrence_interval = models.IntegerField(blank=True, null=True)
     recurrence_occurrences = models.IntegerField(blank=True, null=True)
     recurrence_end_date = models.DateTimeField(blank=True, null=True)
@@ -1890,160 +1907,139 @@ class ScheduledMeetings(models.Model):
     reminders_email = models.BooleanField(default=True)
     reminders_browser = models.BooleanField(default=True)
     reminders_times = models.CharField(max_length=500, blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(default=dj_timezone.now)
     email = models.TextField(blank=True, null=True)
     selected_days = models.TextField(blank=True, null=True)
     selected_month_dates = models.TextField(blank=True, null=True)
-    monthly_pattern = models.CharField(max_length=50, choices=MONTHLY_PATTERN_CHOICES, default='same-date')
-    is_deleted = models.BooleanField(default=False, db_column='is_deleted')
-    deleted_at = models.DateTimeField(blank=True, null=True, db_column='Deleted_At')
+    monthly_pattern = models.CharField(max_length=50, default='same-date')
+    Is_Deleted = models.BooleanField(default=False)
+    Deleted_At = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         db_table = 'tbl_ScheduledMeetings'
         app_label = 'core'
 
+
+def create_scheduled_meetings_table():
+    """Create tbl_ScheduledMeetings table with all required columns"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tbl_ScheduledMeetings (
+                    id VARCHAR(20) NOT NULL PRIMARY KEY,
+                    host_id INT DEFAULT NULL,
+                    title VARCHAR(200) DEFAULT NULL,
+                    description VARCHAR(1000) DEFAULT NULL,
+                    location VARCHAR(255) DEFAULT NULL,
+                    start_time DATETIME DEFAULT NULL,
+                    end_time DATETIME DEFAULT NULL,
+                    start_date DATETIME DEFAULT NULL,
+                    end_date DATETIME DEFAULT NULL,
+                    timezone VARCHAR(100) DEFAULT NULL,
+                    duration_minutes INT DEFAULT NULL,
+                    is_recurring TINYINT(1) DEFAULT 0,
+                    recurrence_type VARCHAR(50) DEFAULT NULL,
+                    recurrence_interval INT DEFAULT NULL,
+                    recurrence_occurrences INT DEFAULT NULL,
+                    recurrence_end_date DATETIME DEFAULT NULL,
+                    settings_waiting_room TINYINT(1) DEFAULT 0,
+                    settings_recording TINYINT(1) DEFAULT 0,
+                    settings_allow_chat TINYINT(1) DEFAULT 1,
+                    settings_allow_screen_share TINYINT(1) DEFAULT 1,
+                    settings_mute_participants TINYINT(1) DEFAULT 0,
+                    settings_require_password TINYINT(1) DEFAULT 0,
+                    settings_password VARCHAR(100) DEFAULT NULL,
+                    reminders_email TINYINT(1) DEFAULT 1,
+                    reminders_browser TINYINT(1) DEFAULT 1,
+                    reminders_times VARCHAR(500) DEFAULT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    email TEXT,
+                    selected_days TEXT,
+                    selected_month_dates TEXT,
+                    monthly_pattern VARCHAR(50) DEFAULT 'same-date',
+                    Is_Deleted TINYINT(1) DEFAULT 0,
+                    Deleted_At DATETIME DEFAULT NULL,
+                    KEY FK_tbl_ScheduledMeetings_Users (host_id),
+                    CONSTRAINT FK_Sched_Meeting_MeetingID FOREIGN KEY (id) REFERENCES tbl_Meetings (ID) ON DELETE CASCADE,
+                    CONSTRAINT FK_tbl_ScheduledMeetings_Users FOREIGN KEY (host_id) REFERENCES tbl_Users (ID) ON DELETE RESTRICT ON UPDATE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+            """)
+            logging.debug("tbl_ScheduledMeetings table created successfully")
+    except (ProgrammingError, OperationalError) as e:
+        logging.error(f"Failed to create tbl_ScheduledMeetings table: {e}")
+
 class CalendarMeetings(models.Model):
-    id = models.CharField(max_length=20, primary_key=True, db_column='ID')
-    host_id = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING, null=True, blank=True, db_column='Host_ID')
+    ID = models.OneToOneField(
+        'core.Meetings', on_delete=models.CASCADE, primary_key=True,
+        db_column='ID', related_name='calendar_meeting'
+    )
+    Host_ID = models.ForeignKey(
+        User, on_delete=models.RESTRICT, db_column='Host_ID',
+        blank=True, null=True, related_name='calendar_meetings'
+    )
     title = models.CharField(max_length=255, blank=True, null=True)
-    start_time = models.DateTimeField(blank=True, null=True, db_column='startTime')
-    end_time = models.DateTimeField(blank=True, null=True, db_column='endTime')
+    startTime = models.DateTimeField(blank=True, null=True)
+    endTime = models.DateTimeField(blank=True, null=True)
     duration = models.IntegerField(blank=True, null=True)
     email = models.TextField(blank=True, null=True)
-    guest_emails = models.TextField(blank=True, null=True, db_column='guestEmails')
+    guestEmails = models.TextField(blank=True, null=True)
     provider = models.CharField(max_length=50, blank=True, null=True)
-    meeting_url = models.CharField(max_length=512, blank=True, null=True, db_column='meetingUrl')
+    meetingUrl = models.CharField(max_length=512, blank=True, null=True)
     location = models.CharField(max_length=255, blank=True, null=True)
     attendees = models.TextField(blank=True, null=True)
-    reminder_minutes = models.TextField(blank=True, null=True, db_column='reminderMinutes')
-    settings_create_calendar_event = models.BooleanField(default=False, db_column='Settings_CreateCalendarEvent')
-    settings_send_invitations = models.BooleanField(default=False, db_column='Settings_SendInvitations')
-    settings_set_reminders = models.BooleanField(default=False, db_column='Settings_SetReminders')
-    settings_add_meeting_link = models.BooleanField(default=False, db_column='Settings_AddMeetingLink')
-    created_at = models.DateTimeField(auto_now_add=True, db_column='CreatedAt')
-    settings_add_to_host_calendar = models.BooleanField(default=True, db_column='Settings_AddToHostCalendar')
-    settings_add_to_participant_calendars = models.BooleanField(default=True, db_column='Settings_AddToParticipantCalendars')
-    is_deleted = models.BooleanField(default=False, db_column='Is_Deleted')
-    deleted_at = models.DateTimeField(blank=True, null=True, db_column='Deleted_At')
+    reminderMinutes = models.TextField(blank=True, null=True)
+    Settings_CreateCalendarEvent = models.BooleanField(default=False)
+    Settings_SendInvitations = models.BooleanField(default=False)
+    Settings_SetReminders = models.BooleanField(default=False)
+    Settings_AddMeetingLink = models.BooleanField(default=False)
+    CreatedAt = models.DateTimeField(default=timezone.now)
+    Settings_AddToHostCalendar = models.BooleanField(default=True)
+    Settings_AddToParticipantCalendars = models.BooleanField(default=True)
+    Is_Deleted = models.BooleanField(default=False)
+    Deleted_At = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         db_table = 'tbl_CalendarMeetings'
         app_label = 'core'
-        
-def create_meetings_table():
-    """Create tbl_Meetings table if it doesn't exist - MYSQL VERSION"""
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS tbl_Meetings (
-                ID VARCHAR(20) NOT NULL PRIMARY KEY,
-                Host_ID INT DEFAULT NULL,
-                Meeting_Name VARCHAR(200) DEFAULT NULL,
-                Meeting_Type VARCHAR(50) DEFAULT NULL,
-                Meeting_Link VARCHAR(500) DEFAULT NULL,
-                Status VARCHAR(50) DEFAULT 'active',
-                Created_At DATETIME DEFAULT CURRENT_TIMESTAMP,
-                Started_At DATETIME DEFAULT NULL,
-                Ended_At DATETIME DEFAULT NULL,
-                Is_Recording_Enabled TINYINT(1) DEFAULT 0,
-                Waiting_Room_Enabled TINYINT(1) DEFAULT 0,
-                LiveKit_Room_Name VARCHAR(100) DEFAULT NULL,
-                LiveKit_Room_SID VARCHAR(100) DEFAULT NULL,
-                Recording_Status VARCHAR(50) DEFAULT 'inactive',
-                current_participant_count INT DEFAULT 0,
-                Is_Deleted TINYINT(1) DEFAULT 0,
-                Deleted_At DATETIME NULL,
-                KEY FK_Meetings_Users (Host_ID),
-                KEY idx_meetings_livekit (ID, LiveKit_Room_Name, Status),
-                CONSTRAINT FK_Meetings_Users FOREIGN KEY (Host_ID) REFERENCES tbl_Users (ID) ON DELETE RESTRICT ON UPDATE RESTRICT
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-            """)
-    except (ProgrammingError, OperationalError) as e:
-        return JsonResponse({"Error": f"Failed to create tbl_Meetings table: {str(e)}"}, status=SERVER_ERROR_STATUS)
 
-def create_scheduled_meetings_table():
-    """Create tbl_ScheduledMeetings table if it doesn't exist - MYSQL VERSION"""
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS tbl_ScheduledMeetings (
-                id VARCHAR(20) NOT NULL PRIMARY KEY,
-                host_id INT DEFAULT NULL,
-                title VARCHAR(200) DEFAULT NULL,
-                description VARCHAR(1000) DEFAULT NULL,
-                location VARCHAR(255) DEFAULT NULL,
-                start_time DATETIME DEFAULT NULL,
-                end_time DATETIME DEFAULT NULL,
-                start_date DATETIME DEFAULT NULL,
-                end_date DATETIME DEFAULT NULL,
-                timezone VARCHAR(100) DEFAULT NULL,
-                duration_minutes INT DEFAULT NULL,
-                is_recurring TINYINT(1) DEFAULT 0,
-                recurrence_type VARCHAR(50) DEFAULT NULL,
-                recurrence_interval INT DEFAULT NULL,
-                recurrence_occurrences INT DEFAULT NULL,
-                recurrence_end_date DATETIME DEFAULT NULL,
-                settings_waiting_room TINYINT(1) DEFAULT 0,
-                settings_recording TINYINT(1) DEFAULT 0,
-                settings_allow_chat TINYINT(1) DEFAULT 1,
-                settings_allow_screen_share TINYINT(1) DEFAULT 1,
-                settings_mute_participants TINYINT(1) DEFAULT 0,
-                settings_require_password TINYINT(1) DEFAULT 0,
-                settings_password VARCHAR(100) DEFAULT NULL,
-                reminders_email TINYINT(1) DEFAULT 1,
-                reminders_browser TINYINT(1) DEFAULT 1,
-                reminders_times VARCHAR(500) DEFAULT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                email TEXT,
-                selected_days TEXT,
-                selected_month_dates TEXT,
-                monthly_pattern VARCHAR(50) DEFAULT 'same-date',
-                Is_Deleted TINYINT(1) DEFAULT 0,
-                Deleted_At DATETIME NULL,
-                KEY FK_tbl_ScheduledMeetings_Users (host_id),
-                CONSTRAINT FK_Sched_Meeting_MeetingID FOREIGN KEY (id) REFERENCES tbl_Meetings (ID) ON DELETE CASCADE,
-                CONSTRAINT FK_tbl_ScheduledMeetings_Users FOREIGN KEY (host_id) REFERENCES tbl_Users (ID) ON DELETE RESTRICT ON UPDATE RESTRICT
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-            """)
-    except (ProgrammingError, OperationalError) as e:
-        return JsonResponse({"Error": f"Failed to create tbl_ScheduledMeetings table: {str(e)}"}, status=SERVER_ERROR_STATUS)
 
 def create_calendar_meetings_table():
-    """Create tbl_CalendarMeetings table if it doesn't exist - MYSQL VERSION"""
+    """Create tbl_CalendarMeetings table with all required columns"""
     try:
         with connection.cursor() as cursor:
             cursor.execute("""
-            CREATE TABLE IF NOT EXISTS tbl_CalendarMeetings (
-                ID VARCHAR(20) NOT NULL PRIMARY KEY,
-                Host_ID INT DEFAULT NULL,
-                title VARCHAR(255) DEFAULT NULL,
-                startTime DATETIME DEFAULT NULL,
-                endTime DATETIME DEFAULT NULL,
-                duration INT DEFAULT NULL,
-                email TEXT,
-                guestEmails TEXT,
-                provider VARCHAR(50) DEFAULT NULL,
-                meetingUrl VARCHAR(512) DEFAULT NULL,
-                location VARCHAR(255) DEFAULT NULL,
-                attendees TEXT,
-                reminderMinutes TEXT,
-                Settings_CreateCalendarEvent TINYINT(1) DEFAULT 0,
-                Settings_SendInvitations TINYINT(1) DEFAULT 0,
-                Settings_SetReminders TINYINT(1) DEFAULT 0,
-                Settings_AddMeetingLink TINYINT(1) DEFAULT 0,
-                CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-                Settings_AddToHostCalendar TINYINT(1) DEFAULT 1,
-                Settings_AddToParticipantCalendars TINYINT(1) DEFAULT 1,
-                Is_Deleted TINYINT(1) DEFAULT 0,
-                Deleted_At DATETIME NULL,
-                KEY FK_CalendarMeetings_Users (Host_ID),
-                CONSTRAINT FK_CalendarMeetings_Meetings FOREIGN KEY (ID) REFERENCES tbl_Meetings (ID) ON DELETE CASCADE ON UPDATE RESTRICT,
-                CONSTRAINT FK_CalendarMeetings_Users FOREIGN KEY (Host_ID) REFERENCES tbl_Users (ID) ON DELETE RESTRICT ON UPDATE RESTRICT
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+                CREATE TABLE IF NOT EXISTS tbl_CalendarMeetings (
+                    ID VARCHAR(20) NOT NULL PRIMARY KEY,
+                    Host_ID INT DEFAULT NULL,
+                    title VARCHAR(255) DEFAULT NULL,
+                    startTime DATETIME DEFAULT NULL,
+                    endTime DATETIME DEFAULT NULL,
+                    duration INT DEFAULT NULL,
+                    email TEXT,
+                    guestEmails TEXT,
+                    provider VARCHAR(50) DEFAULT NULL,
+                    meetingUrl VARCHAR(512) DEFAULT NULL,
+                    location VARCHAR(255) DEFAULT NULL,
+                    attendees TEXT,
+                    reminderMinutes TEXT,
+                    Settings_CreateCalendarEvent TINYINT(1) DEFAULT 0,
+                    Settings_SendInvitations TINYINT(1) DEFAULT 0,
+                    Settings_SetReminders TINYINT(1) DEFAULT 0,
+                    Settings_AddMeetingLink TINYINT(1) DEFAULT 0,
+                    CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    Settings_AddToHostCalendar TINYINT(1) DEFAULT 1,
+                    Settings_AddToParticipantCalendars TINYINT(1) DEFAULT 1,
+                    Is_Deleted TINYINT(1) DEFAULT 0,
+                    Deleted_At DATETIME DEFAULT NULL,
+                    KEY FK_CalendarMeetings_Users (Host_ID),
+                    CONSTRAINT FK_CalendarMeetings_Meetings FOREIGN KEY (ID) REFERENCES tbl_Meetings (ID) ON DELETE CASCADE ON UPDATE RESTRICT,
+                    CONSTRAINT FK_CalendarMeetings_Users FOREIGN KEY (Host_ID) REFERENCES tbl_Users (ID) ON DELETE RESTRICT ON UPDATE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """)
+            logging.debug("tbl_CalendarMeetings table created successfully")
     except (ProgrammingError, OperationalError) as e:
-        return JsonResponse({"Error": f"Failed to create tbl_CalendarMeetings table: {str(e)}"}, status=SERVER_ERROR_STATUS)
-        
+        logging.error(f"Failed to create tbl_CalendarMeetings table: {e}")
+  
 def send_meeting_invitations(data):
     """
     Send meeting invitations - handles both Calendar and Schedule meetings
