@@ -471,8 +471,9 @@ class ProductionLiveKitService:
                 # REMOVED: 'max_participants': 100,  ❌ DELETE THIS
                 
                 # ADDED: Auto-cleanup for empty rooms
-                'empty_timeout': 86400,  # 24 hours - room stays alive, cleanup won't kill meeting status
-                'departure_timeout': 300,  # 5 minutes - gives time for rejoin without room disappearing
+                'empty_timeout': 300,  # ✅ Auto-delete room after 5 minutes empty
+                'departure_timeout': 60,  # ✅ Auto-remove inactive participants after 1 minute
+                
                 # PERFORMANCE: Audio-first configuration
                 'audio_only': False,
                 'min_playout_delay': 0,
@@ -551,8 +552,8 @@ class ProductionLiveKitService:
                 # ✅ OPTIMIZED: No max_participants limit
                 payload = {
                     'name': room_name,
-                    'empty_timeout': room_config.get('empty_timeout', 86400),
-                    'departure_timeout': room_config.get('departure_timeout', 300),
+                    'empty_timeout': room_config.get('empty_timeout', 300),  # ✅ Auto-cleanup: 5 min
+                    'departure_timeout': room_config.get('departure_timeout', 60),  # Auto-remove: 1 min
                     # REMOVED: 'max_participants': room_config.get('max_participants', 100),
                     'metadata': json.dumps({
                         'created_at': time.time(),
@@ -905,15 +906,19 @@ class ProductionLiveKitService:
                                 logging.info(f"🗑️ [CLEANUP] Empty room detected: {room_name} (created {time_since_creation.total_seconds()}s ago)")
                                 
                                 try:
-                                    # Close the empty LiveKit room only
+                                    # Close the room in LiveKit
                                     self.close_room(room_name)
                                     
-                                    # DO NOT update meeting status here
-                                    # Meeting status should ONLY be changed when host clicks "End Meeting"
-                                    # This prevents the bug where participants can't rejoin after leaving
-                                    logging.info(f"🧹 [CLEANUP] Closed empty LiveKit room: {room_name} (Meeting {meeting_id} status NOT changed - still active)")
+                                    # Mark as ended in database
+                                    cursor.execute("""
+                                        UPDATE tbl_Meetings
+                                        SET Status = 'ended', Ended_At = %s
+                                        WHERE ID = %s
+                                    """, [current_time, meeting_id])
+                                    
+                                    logging.info(f"✅ [CLEANUP] Cleaned up room: {room_name} (Meeting: {meeting_id})")
                                     cleanup_results['rooms_cleaned'] += 1
-
+                                    
                                 except Exception as cleanup_error:
                                     error_msg = f"Failed to cleanup {room_name}: {str(cleanup_error)}"
                                     logging.error(f"❌ [CLEANUP] {error_msg}")
