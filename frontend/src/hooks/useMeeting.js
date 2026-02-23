@@ -1103,23 +1103,16 @@ const recordParticipantJoin = async (userData) => {
   const endMeeting = async () => {
     try {
       if (currentMeeting && isHost && user?.id) {
-        // Update meeting status first
+        // End meeting via proper backend endpoint (handles attendance, recording, status)
         await endCacheChat(currentMeeting.id);
-        await axios.put(`${API_BASE_URL}/api/meetings/update/${currentMeeting.id}`, {
-          Status: 'ended',
-          Ended_At: new Date().toISOString()
+        await axios.post(`${API_BASE_URL}/api/meetings/${currentMeeting.id}/end`, {
+          reason: 'host_ended',
+          ended_by_user_id: user.id,
+          force_end: false
         });
         
-        // Record host leave when ending meeting
-        console.log("Recording host leave when ending meeting...");
+        console.log("Meeting ended via backend - attendance calculated, recording stopped");
         
-        await participantsAPI.recordLeave({
-          meetingId: currentMeeting.id,
-          userId: user.id
-        });
-        
-        console.log("Host leave recorded on meeting end");
-
         // Disconnect from LiveKit with safety check
         if (liveKitDisconnect && typeof liveKitDisconnect === 'function') {
           liveKitDisconnect();
