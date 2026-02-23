@@ -901,29 +901,49 @@ class ProductionLiveKitService:
                                 logging.warning(f"Could not get participant count for {room_name}: {e}")
                                 participant_count = 0
                             
-                            # If room is empty for 5+ minutes, cleanup
+                            # # If room is empty for 5+ minutes, cleanup
+                            # if participant_count == 0 and time_since_creation >= cleanup_timeout:
+                            #     logging.info(f"🗑️ [CLEANUP] Empty room detected: {room_name} (created {time_since_creation.total_seconds()}s ago)")
+                                
+                            #     try:
+                            #         # Close the room in LiveKit
+                            #         self.close_room(room_name)
+                                    
+                            #         # Mark as ended in database
+                            #         cursor.execute("""
+                            #             UPDATE tbl_Meetings
+                            #             SET Status = 'ended', Ended_At = %s
+                            #             WHERE ID = %s
+                            #         """, [current_time, meeting_id])
+                                    
+                            #         logging.info(f"✅ [CLEANUP] Cleaned up room: {room_name} (Meeting: {meeting_id})")
+                            #         cleanup_results['rooms_cleaned'] += 1
+                                    
+                            #     except Exception as cleanup_error:
+                            #         error_msg = f"Failed to cleanup {room_name}: {str(cleanup_error)}"
+                            #         logging.error(f"❌ [CLEANUP] {error_msg}")
+                            #         cleanup_results['errors'].append(error_msg)
+                            
+                            # If room is empty for 5+ minutes, cleanup LiveKit room only
                             if participant_count == 0 and time_since_creation >= cleanup_timeout:
                                 logging.info(f"🗑️ [CLEANUP] Empty room detected: {room_name} (created {time_since_creation.total_seconds()}s ago)")
                                 
                                 try:
-                                    # Close the room in LiveKit
+                                    # Close the room in LiveKit (free server resources)
                                     self.close_room(room_name)
                                     
-                                    # Mark as ended in database
-                                    cursor.execute("""
-                                        UPDATE tbl_Meetings
-                                        SET Status = 'ended', Ended_At = %s
-                                        WHERE ID = %s
-                                    """, [current_time, meeting_id])
-                                    
-                                    logging.info(f"✅ [CLEANUP] Cleaned up room: {room_name} (Meeting: {meeting_id})")
+                                    # ✅ FIX: Do NOT set Status='ended' here!
+                                    # Meeting should only be ended by host clicking "End Meeting"
+                                    # which calls POST /api/meetings/<id>/end (proper attendance calculation)
+                                    # Meeting stays 'active' so host can rejoin and end properly
+                                    logging.info(f"✅ [CLEANUP] Closed empty LiveKit room: {room_name} (Meeting {meeting_id} stays ACTIVE for proper end flow)")
                                     cleanup_results['rooms_cleaned'] += 1
                                     
                                 except Exception as cleanup_error:
                                     error_msg = f"Failed to cleanup {room_name}: {str(cleanup_error)}"
                                     logging.error(f"❌ [CLEANUP] {error_msg}")
                                     cleanup_results['errors'].append(error_msg)
-                            
+                                    
                             else:
                                 logging.debug(f"ℹ️ [CLEANUP] Room active or recent: {room_name} ({participant_count} participants, {time_since_creation.total_seconds()}s old)")
                                 
