@@ -2982,90 +2982,139 @@ const handleConfirmForceStop = useCallback(async () => {
   const handleLeaveMeeting = async () => {
     setShowLeaveDialog(false);
 
-    // ✅ CRITICAL: Check if feedback is active - DON'T navigate
-    if (meetingEnded && !feedbackSubmitted) {
+    // ✅ FIXED: Only block if feedback dialog is ACTUALLY showing on screen
+    if (meetingEnded && showFeedbackDialog && !feedbackSubmitted) {
       console.log("⛔ Cannot leave - feedback dialog is active");
       return;
     }
 
     try {
       if (realMeetingId && currentUser?.id) {
-        await participantsAPI.recordLeave({
-          meetingId: realMeetingId,
-          userId: currentUser.id,
-          participant_id: participantId || `host_${currentUser.id}`,
-          manual_leave: true,
-          reason: "manual",
-          leave_type: "user_action",
-        });
+        try {
+          await participantsAPI.recordLeave({
+            meetingId: realMeetingId,
+            userId: currentUser.id,
+            participant_id: participantId || `host_${currentUser.id}`,
+            manual_leave: true,
+            reason: "manual",
+            leave_type: "user_action",
+          });
+        } catch (leaveErr) {
+          console.warn("Record leave API error (non-blocking):", leaveErr);
+        }
       }
 
-      // Disconnect from room
-      await disconnectFromRoom();
+      // ✅ FIXED: Force disconnect - don't let it block
+      try {
+        await disconnectFromRoom();
+      } catch (disconnectErr) {
+        console.warn("Disconnect error (non-blocking):", disconnectErr);
+      }
+
+      // ✅ FALLBACK: If disconnectFromRoom blocked, force cleanup
+      try {
+        if (room) {
+          room.disconnect(true);
+        }
+      } catch (e) {
+        console.warn("Room force disconnect error:", e);
+      }
 
       // Clear meeting data
       localStorage.removeItem("currentMeetingId");
       localStorage.removeItem("meetingData");
       sessionStorage.removeItem("meetingState");
+      sessionStorage.removeItem("currentMeetingId");
 
-      // ✅ NAVIGATE WITHOUT REFRESH
+      // ✅ SET FLAGS to prevent duplicate meeting creation
+      sessionStorage.setItem('meetingJustEnded', 'true');
+      sessionStorage.setItem('meetingEndedAt', Date.now().toString());
+      localStorage.setItem('meetingJustEnded', 'true');
+      localStorage.setItem('meetingEndedAt', Date.now().toString());
+
+      // ✅ NAVIGATE - guaranteed to execute
       if (onLeaveMeeting) {
-        onLeaveMeeting(); // Use the navigation prop
+        onLeaveMeeting();
       } else {
-        // Fallback: use React Router navigation
-        window.history.pushState({}, "", "/dashboard");
-        window.dispatchEvent(new PopStateEvent("popstate"));
+        window.location.href = "/dashboard";
       }
     } catch (error) {
       console.error("Manual leave error:", error);
 
-      // Even on error, try to navigate without refresh
+      // ✅ Clear everything on error too
+      localStorage.removeItem("currentMeetingId");
+      localStorage.removeItem("meetingData");
+      sessionStorage.removeItem("meetingState");
+      sessionStorage.removeItem("currentMeetingId");
+      sessionStorage.setItem('meetingJustEnded', 'true');
+      sessionStorage.setItem('meetingEndedAt', Date.now().toString());
+      localStorage.setItem('meetingJustEnded', 'true');
+      localStorage.setItem('meetingEndedAt', Date.now().toString());
+
+      // ✅ FORCE navigate even on error
       if (onLeaveMeeting) {
         onLeaveMeeting();
       } else {
-        window.history.pushState({}, "", "/dashboard");
-        window.dispatchEvent(new PopStateEvent("popstate"));
+        window.location.href = "/dashboard";
       }
     }
   };
   const handleEndMeeting = async () => {
-    setShowEndMeetingDialog(false);
+  setShowEndMeetingDialog(false);
 
-    if (!hasHostPrivileges) {
-      showNotificationMessage(
-        "Only hosts and co-hosts can end the meeting",
-        "error"
-      );
-      return;
+  if (!hasHostPrivileges) {
+    showNotificationMessage(
+      "Only hosts and co-hosts can end the meeting",
+      "error"
+    );
+    return;
+  }
+
+  if (!realMeetingId) {
+    showNotificationMessage("No meeting ID available", "error");
+    return;
+  }
+
+  try {
+    showNotificationMessage("Ending meeting for all participants...", "info");
+
+    // ✅ SET FLAGS BEFORE ending to prevent duplicate meeting creation
+    sessionStorage.setItem('meetingJustEnded', 'true');
+    sessionStorage.setItem('meetingEndedAt', Date.now().toString());
+    localStorage.setItem('meetingJustEnded', 'true');
+    localStorage.setItem('meetingEndedAt', Date.now().toString());
+
+    const result = await endMeetingForEveryone(realMeetingId);
+
+    if (result.success) {
+      showNotificationMessage("Meeting ended successfully", "success");
+
+      // ✅ Clear meeting data to prevent auto-recreation
+      localStorage.removeItem("currentMeetingId");
+      localStorage.removeItem("meetingData");
+      sessionStorage.removeItem("meetingState");
+      sessionStorage.removeItem("currentMeetingId");
+
+      setTimeout(() => {
+        if (onLeaveMeeting) {
+          onLeaveMeeting();
+        }
+      }, 2000);
     }
+  } catch (error) {
+    console.error("End meeting error:", error);
+    showNotificationMessage(
+      `Failed to end meeting: ${error.message}`,
+      "error"
+    );
 
-    if (!realMeetingId) {
-      showNotificationMessage("No meeting ID available", "error");
-      return;
-    }
-
-    try {
-      showNotificationMessage("Ending meeting for all participants...", "info");
-
-      const result = await endMeetingForEveryone(realMeetingId);
-
-      if (result.success) {
-        showNotificationMessage("Meeting ended successfully", "success");
-
-        setTimeout(() => {
-          if (onLeaveMeeting) {
-            onLeaveMeeting();
-          }
-        }, 2000);
-      }
-    } catch (error) {
-      console.error("End meeting error:", error);
-      showNotificationMessage(
-        `Failed to end meeting: ${error.message}`,
-        "error"
-      );
-    }
-  };
+    // ✅ Clear flags on failure so user can retry
+    sessionStorage.removeItem('meetingJustEnded');
+    sessionStorage.removeItem('meetingEndedAt');
+    localStorage.removeItem('meetingJustEnded');
+    localStorage.removeItem('meetingEndedAt');
+  }
+};
 
   // ========================================================================
   // HAND RAISE HANDLERS
@@ -5170,3 +5219,5 @@ return (
 });
 
 export default MeetingRoom;
+
+

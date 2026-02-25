@@ -3006,11 +3006,15 @@ def Get_Live_Participants_Enhanced_No_Status(request, meeting_id):
             "details": str(e)
         }, status=500)
 
+
+
+
+
 @require_http_methods(["POST"])
 @csrf_exempt
 def Sync_LiveKit_Participants_Fixed(request, meeting_id):
     """
-    ✅ FULLY CORRECTED V2: Sync LiveKit participants with phantom join prevention
+    ✅ FULLY CORRECTED V3: Sync LiveKit participants with phantom join prevention
     
     KEY FIXES:
     1. ✓ Always provide session_start_time in INSERT (fixes error 1364)
@@ -3018,8 +3022,9 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
     3. ✓ Use simple session_start_time = %s comparison (fixes ValueError)
     4. ✓ Proper error handling and logging
     5. ✓ Handle all edge cases with grace periods
-    6. ✓ NEW: CHECK Ended_At BEFORE ALLOWING REJOIN - PREVENTS PHANTOM JOINS!
-    7. ✓ NEW: Don't sync ended meetings at all
+    6. ✓ CHECK Ended_At BEFORE ALLOWING REJOIN - PREVENTS PHANTOM JOINS!
+    7. ✅ NEW FIX: If status='ended' but LiveKit has participants, reset to 'active'
+       instead of refusing to sync. Prevents deadlock from bad Ended_At timestamps.
     """
     
     # First check - LiveKit availability
@@ -3049,7 +3054,7 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
         host_id = None
         started_at = None
         meeting_status = None
-        ended_at_time = None  # ✅ NEW: Get Ended_At
+        ended_at_time = None  # ✅ Get Ended_At
         
         try:
             with connection.cursor() as cursor:
@@ -3061,7 +3066,7 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
                 row = cursor.fetchone()
                 
                 if not row:
-                    logging.error(f"[SYNC-FIXED] Meeting {meeting_id} not found in database")
+                    # logging.error(f"[SYNC-FIXED] Meeting {meeting_id} not found in database")
                     return JsonResponse({
                         "success": False,
                         "error": "Meeting not found"
@@ -3073,20 +3078,58 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
                     room_name = f"meeting_{meeting_id}"
                     logging.info(f"[SYNC-FIXED] Using default room name: {room_name}")
                 
-                # ✅ NEW CHECK: Don't sync ended meetings
+                # =============================================================
+                # ✅ NEW FIX: If status='ended', check LiveKit FIRST before
+                # refusing to sync. If LiveKit has active participants, the
+                # meeting is NOT actually ended — fix the status.
+                #
+                # This prevents the deadlock where:
+                # 1. Ended_At gets a bad timestamp (UTC vs IST)
+                # 2. Status becomes 'ended' even though people are connected
+                # 3. Sync refuses to work ("Meeting already ended")
+                # 4. Nobody can fix the status
+                #
+                # Now sync will self-heal by resetting status to 'active'.
+                # =============================================================
                 if meeting_status == 'ended':
-                    logging.info(f"[SYNC-FIXED] Meeting {meeting_id} already ended - skipping sync to prevent phantom joins")
-                    return JsonResponse({
-                        "success": True,
-                        "message": "Meeting already ended - no sync performed",
-                        "sync_results": {
-                            "added": 0, 
-                            "removed": 0, 
-                            "rejoined": 0, 
-                            "already_synced": 0,
-                            "rejected_phantom_joins": 0
-                        }
-                    }, status=200)
+                    try:
+                        lk_check_participants = get_livekit_service().list_participants(room_name) if get_livekit_service() else []
+                    except Exception:
+                        lk_check_participants = []
+                    
+                    if len(lk_check_participants) > 0:
+                        # ✅ LiveKit has participants — status is WRONG, fix it!
+                        # logging.warning(
+                        #     f"⚠️ [SYNC-FIXED] Meeting {meeting_id} status='ended' but "
+                        #     f"{len(lk_check_participants)} LiveKit participants still connected!"
+                        # )
+                        # logging.warning(f"⚠️ [SYNC-FIXED] Resetting status to 'active' and clearing Ended_At")
+                        
+                        try:
+                            cursor.execute("""
+                                UPDATE tbl_Meetings 
+                                SET Status = 'active', Ended_At = NULL
+                                WHERE ID = %s
+                            """, [meeting_id])
+                            meeting_status = 'active'
+                            ended_at_time = None
+                            # logging.info(f"✅ [SYNC-FIXED] Meeting {meeting_id} status reset to 'active' — sync will proceed normally")
+                        except Exception as fix_err:
+                            logging.error(f"❌ [SYNC-FIXED] Failed to reset meeting status: {fix_err}")
+                    else:
+                        # No LiveKit participants — meeting really is ended
+                        # logging.info(f"[SYNC-FIXED] Meeting {meeting_id} ended and no LiveKit participants - skipping sync")
+                        return JsonResponse({
+                            "success": True,
+                            "message": "Meeting already ended - no sync performed",
+                            "sync_results": {
+                                "added": 0, 
+                                "removed": 0, 
+                                "rejoined": 0, 
+                                "already_synced": 0,
+                                "rejected_phantom_joins": 0
+                            }
+                        }, status=200)
                 
                 logging.info(f"[SYNC-FIXED] Meeting status: {meeting_status}, Ended_At: {ended_at_time}")
                     
@@ -3270,7 +3313,7 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
             'removed': 0, 
             'rejoined': 0, 
             'already_synced': 0,
-            'rejected_phantom_joins': 0,  # ✅ NEW: Track phantom join rejections
+            'rejected_phantom_joins': 0,  # ✅ Track phantom join rejections
             'errors': []
         }
         
@@ -3357,10 +3400,10 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
                     # ✅ CHECK End_Meeting_Time BEFORE ALLOWING REJOIN!
                     
                     participant_id = inactive_db_users[user_id]['id']
-                    end_meeting_time = inactive_db_users[user_id].get('end_meeting_time')  # ✅ NEW
+                    end_meeting_time = inactive_db_users[user_id].get('end_meeting_time')
                     should_rejoin = True
                     
-                    # ✅ NEW: Check if this occurrence has already ended
+                    # ✅ Check if this occurrence has already ended
                     if end_meeting_time is not None:
                         logging.warning(f"🔴 [SYNC-FIXED] Rejecting rejoin for user {user_id} - occurrence ended at {end_meeting_time}")
                         sync_results['rejected_phantom_joins'] += 1
@@ -3490,7 +3533,7 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
                                 True,                               # 10. Is_Currently_Active
                                 0.00,                               # 11. Attendance_Percentagebasedon_host
                                 current_date_str,                   # 12. session_start_time ✓ FIXED
-                                occurrence_number                   # 13. occurrence_number ✅ NEW: From helper
+                                occurrence_number                   # 13. occurrence_number
                             ])
                             
                             sync_results['added'] += 1
@@ -3514,7 +3557,7 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
 - Removed: {sync_results['removed']}
 - Rejoined: {sync_results['rejoined']}
 - Already synced: {sync_results['already_synced']}
-- Rejected phantom joins: {sync_results['rejected_phantom_joins']} ✅ NEW!
+- Rejected phantom joins: {sync_results['rejected_phantom_joins']}
 - Errors: {len(sync_results['errors'])}
         """)
         
@@ -3539,6 +3582,7 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
             "details": str(e),
             "meeting_id": meeting_id
         }, status=500)
+
 
 def calculate_overlap_duration(host_join_times, host_leave_times, participant_join_times, participant_leave_times):
     """
@@ -3790,11 +3834,11 @@ def end_meeting(request, meeting_id):
                     if meeting_type in ['InstantMeeting', 'CalendarMeeting']:
                         cursor.execute("""
                             UPDATE tbl_Meetings
-                            SET Status = %s, Ended_At = %s
+                            SET Ended_At = %s ,Status = %s
                             WHERE ID = %s
-                        """, [final_meeting_status, end_time, meeting_id])
+                        """, [end_time, final_meeting_status, meeting_id])
                         
-                        logging.info(f"[end_meeting] Meeting status updated to: {final_meeting_status}")
+                        logging.info(f"[end_meeting] Meeting status updated to: {final_meeting_status},Ended_At: {end_time}")
                     
                     elif meeting_type == 'ScheduleMeeting':
                         logging.info(f"[end_meeting] ScheduleMeeting - Status and Ended_At NOT updated (remain 'scheduled' and NULL)")

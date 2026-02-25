@@ -153,6 +153,11 @@ def get_meeting_with_occurrence_info(meeting_id: str, user_id: str) -> Dict:
     4. Check if participant exists
     
     Does it ALL in one database call
+    
+    ✅ FIX: For InstantMeetings & CalendarMeetings, don't block joins if status is 'ended'.
+    The join_livekit_meeting() will reset the status to 'active'. This prevents the
+    deadlock where a bad Ended_At timestamp keeps the meeting stuck as 'ended' and
+    nobody can join to fix it.
     """
     
     try:
@@ -225,11 +230,38 @@ def get_meeting_with_occurrence_info(meeting_id: str, user_id: str) -> Dict:
                             'status_code': 400
                         }
                 else:
-                    return {
-                        'success': False,
-                        'error': 'Meeting has ended',
-                        'status_code': 400
-                    }
+                    # =============================================================
+                    # ✅ FIX: For InstantMeetings & CalendarMeetings, DON'T block
+                    # the join even if status is 'ended'. Let join_livekit_meeting()
+                    # handle the reset to 'active'.
+                    #
+                    # Why: If Ended_At has a bad timestamp (UTC vs IST mismatch),
+                    # status gets stuck as 'ended' even though people are still in
+                    # the LiveKit room. Blocking here creates a deadlock where
+                    # nobody can join to fix the status.
+                    #
+                    # The join endpoint has its own universal status reset that
+                    # will set Status='active' and Ended_At=NULL when someone joins.
+                    # =============================================================
+                    if meeting_type == 'InstantMeeting':
+                        logging.warning(
+                            f"⚠️ InstantMeeting {meeting_id} status='ended' — "
+                            f"allowing join attempt (join will reset status to 'active')"
+                        )
+                        # Don't block — let join_livekit_meeting handle the reset
+                    elif meeting_type == 'CalendarMeeting':
+                        logging.warning(
+                            f"⚠️ CalendarMeeting {meeting_id} status='ended' — "
+                            f"allowing join attempt (join will reset status to 'active')"
+                        )
+                        # Don't block — let join_livekit_meeting handle the reset
+                    else:
+                        # For other meeting types (e.g. ScheduleMeeting), keep original behavior
+                        return {
+                            'success': False,
+                            'error': 'Meeting has ended',
+                            'status_code': 400
+                        }
             
             # Build response
             result = {
@@ -279,7 +311,6 @@ def get_meeting_with_occurrence_info(meeting_id: str, user_id: str) -> Dict:
             'details': str(e),
             'status_code': 500
         }
-        
 class ProductionLiveKitService:
     """Production LiveKit service optimized for 50+ participants with fast joining"""
     
@@ -640,7 +671,7 @@ class ProductionLiveKitService:
                     
                     for room in rooms:
                         if room.get('name') == room_name:
-                            logging.info(f"✅ Found room: {room_name}")
+                            # logging.info(f"✅ Found room: {room_name}")
                             return room
                     
                     return None
@@ -714,7 +745,7 @@ class ProductionLiveKitService:
                             'has_audio': any(track.get('type') == 'audio' for track in p.get('tracks', []))
                         })
                     
-                    logging.info(f"✅ Found {len(participants)} LiveKit participants in {room_name}")
+                    # logging.info(f"✅ Found {len(participants)} LiveKit participants in {room_name}")
                     return participants
                     
                 elif response.status_code == 404:
@@ -2337,17 +2368,20 @@ def get_all_meetings(request):
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
-
-def calculate_meeting_status(started_at, ended_at, duration_minutes=60):
+def calculate_meeting_status(started_at, ended_at, duration_minutes=60, meeting_type=None, db_status=None):
     """
-    Calculate real-time meeting status based on current time
-    Returns: 'scheduled', 'inprogress', or 'ended'
+    Calculate real-time meeting status based on current time.
+    
+    CRITICAL RULES:
+    - If db_status is 'ended' (formally ended by host), ALWAYS return 'ended'
+    - If db_status is 'active' and no Ended_At, return 'inprogress' (don't auto-end)
+    - For ScheduleMeetings: Use time-based calculation
+    - For InstantMeetings: Only end when host formally ends (db_status = 'ended')
     """
     from datetime import datetime, timedelta
     import pytz
     
     try:
-        # Get current IST time
         ist_timezone = pytz.timezone("Asia/Kolkata")
         current_time = datetime.now(ist_timezone)
         
@@ -2364,22 +2398,52 @@ def calculate_meeting_status(started_at, ended_at, duration_minutes=60):
             else:
                 ended_at = ended_at.astimezone(ist_timezone)
         
-        # If no start time, meeting is scheduled
+        # RULE 1: If database says 'ended', trust it — host formally ended
+        if db_status and db_status.lower() == 'ended':
+            return 'ended'
+        
+        # RULE 2: If no start time, meeting is scheduled
         if not started_at:
             return 'scheduled'
             
-        # Meeting hasn't started yet
+        # RULE 3: Meeting hasn't started yet
         if current_time < started_at:
             return 'scheduled'
-            
-        # If we have an end time, use it
+        
+        # RULE 4: For InstantMeetings — NEVER auto-end based on time
+        # They only end when host clicks "End Meeting"
+        if meeting_type == 'InstantMeeting':
+            if db_status and db_status.lower() == 'active':
+                return 'inprogress'
+            elif ended_at and current_time > ended_at:
+                return 'ended'
+            else:
+                return 'inprogress'
+        
+        # RULE 5: For CalendarMeetings — use Ended_At if set
+        if meeting_type == 'CalendarMeeting':
+            if ended_at:
+                if current_time > ended_at:
+                    return 'ended'
+                else:
+                    return 'inprogress'
+            elif db_status and db_status.lower() == 'active':
+                return 'inprogress'
+            else:
+                # Fallback: use duration
+                calculated_end = started_at + timedelta(minutes=duration_minutes)
+                if current_time > calculated_end:
+                    return 'ended'
+                else:
+                    return 'inprogress'
+        
+        # RULE 6: For ScheduleMeetings — use time-based calculation
         if ended_at:
             if current_time > ended_at:
                 return 'ended'
             else:
                 return 'inprogress'
         else:
-            # No end time - calculate based on start time + duration
             calculated_end = started_at + timedelta(minutes=duration_minutes)
             if current_time > calculated_end:
                 return 'ended'
@@ -2388,7 +2452,10 @@ def calculate_meeting_status(started_at, ended_at, duration_minutes=60):
                 
     except Exception as e:
         logging.error(f"Error calculating meeting status: {e}")
-        return 'scheduled'  # Safe fallback
+        # SAFE FALLBACK: If db says active, trust it
+        if db_status and db_status.lower() == 'active':
+            return 'inprogress'
+        return 'scheduled'
 
 @require_http_methods(["POST"])
 @csrf_exempt
@@ -2479,7 +2546,7 @@ def Create_Calendar_Meeting(request):
     meeting_id = create_meeting_id()   # 13-char ID
     duration = data.get('duration') or data.get('duration_minutes') or (int((end_dt - start_dt).total_seconds() / 60) if start_dt and end_dt else 60)
     duration = int(duration)
-    status = calculate_meeting_status(start_dt, end_dt, duration)
+    status = 'active'
 
     # --- Base meeting data ---
     meeting_url = f"https://www.lancieretech.com/meeting/{meeting_id}"
@@ -2652,7 +2719,7 @@ def Create_Calendar_Meeting(request):
 @require_http_methods(["POST"])
 @csrf_exempt
 def Create_Schedule_Meeting(request):
-    """COMPLETE: Create scheduled meeting with FULL notification system and status fix"""
+    """COMPLETE: Create scheduled meeting with FULL notification system, status fix, and duplicate prevention"""
     try:
         # Ensure tables exist - INCLUDING NOTIFICATION TABLES
         create_meetings_table()
@@ -2735,9 +2802,31 @@ def Create_Schedule_Meeting(request):
             logging.error(f"Database error checking host: {e}")
             return JsonResponse({"Error": f"Database error: {str(e)}"}, status=500)
 
+        # =============================================================
+        # ✅ NEW FIX: PREVENT DUPLICATE SCHEDULE MEETING CREATION
+        # 
+        # Problem: Frontend fires multiple API calls on a single button
+        # click (React double-render, StrictMode, network retry, or
+        # rapid clicks). This creates 3-4 identical meetings.
+        #
+        # Solution: Check if this host already has a ScheduleMeeting
+        # created in the last 30 seconds. If yes, return that existing
+        # meeting instead of creating a new one.
+        # =============================================================
+        existing = check_duplicate_meeting(host_id, 'ScheduleMeeting', 30)
+        if existing:
+            logging.info(f"✅ [DUPLICATE-GUARD] Returning existing ScheduleMeeting {existing['meeting_id']} instead of creating duplicate")
+            return JsonResponse({
+                "Message": "ScheduleMeeting already exists (duplicate prevented)",
+                "Meeting_ID": existing['meeting_id'],
+                "Meeting_Link": existing['meeting_link'],
+                "LiveKit_Room": existing['livekit_room_name'],
+                "status": existing['status'],
+                "duplicate": True
+            }, status=200)
+
         # Generate UUID - UNCHANGED
         try:
-            # meeting_uuid = str(uuid.uuid4())
             meeting_id = create_meeting_id()
             logging.info(f"Generated meeting ID: {meeting_id}")
         except Exception as e:
@@ -2869,16 +2958,6 @@ def Create_Schedule_Meeting(request):
             selected_month_dates = None
             monthly_pattern = None
 
-        # Process settings data - UNCHANGED (ALL ORIGINAL SETTINGS LOGIC)
-        # settings = data.get('settings', {})
-        # settings_waiting_room = 1 if settings.get('waitingRoom', data.get('settings_waiting_room', True)) else 0
-        # settings_recording = 1 if settings.get('recording', data.get('settings_recording', False)) else 0
-        # settings_allow_chat = 1 if settings.get('allowChat', data.get('settings_allow_chat', True)) else 0
-        # settings_allow_screen_share = 1 if settings.get('allowScreenShare', data.get('settings_allow_screen_share', True)) else 0
-        # settings_mute_participants = 1 if settings.get('muteParticipants', data.get('settings_mute_participants', False)) else 0
-        # settings_require_password = 1 if settings.get('requirePassword', data.get('settings_require_password', False)) else 0
-        # settings_password = settings.get('password', data.get('settings_password'))
-
         # Process settings data - FIXED: renamed to avoid shadowing django.conf.settings
         meeting_settings = data.get('settings', {})
         settings_waiting_room = 1 if meeting_settings.get('waitingRoom', data.get('settings_waiting_room', True)) else 0
@@ -2905,11 +2984,7 @@ def Create_Schedule_Meeting(request):
             reminders_times = json.dumps([15, 5])
 
         # ONLY CHANGE: Calculate initial status based on time
-        initial_status = calculate_meeting_status(
-            datetime.strptime(started_at, '%Y-%m-%d %H:%M:%S') if started_at else None,
-            datetime.strptime(ended_at, '%Y-%m-%d %H:%M:%S') if ended_at else None,
-            duration_minutes
-        )
+        initial_status = 'scheduled'
 
         # Prepare meeting data - UNCHANGED except status calculation
         meeting_data = {
@@ -2919,7 +2994,7 @@ def Create_Schedule_Meeting(request):
             'meeting_type': 'ScheduleMeeting',
             'meeting_link': f"https://www.lancieretech.com/meeting/{meeting_id}",
             'livekit_room_name': f"meeting_{meeting_id}",
-            'status': initial_status,  # CHANGED: Use calculated status
+            'status': initial_status,
             'started_at': started_at,
             'ended_at': ended_at,
             'created_at': created_at,
@@ -3082,14 +3157,6 @@ def Create_Schedule_Meeting(request):
                 
                 # Start email sending in background thread
                 import threading
-                # email_thread = threading.Thread(
-                #     target=send_meeting_invitations,
-                #     args=(email_data,),
-                #     daemon=True
-                # )
-                # email_thread.start()
-                
-                # logging.info(f"Started background email sending for {participant_count} participants")
 
                 def async_schedule_email_send():
                     try:
@@ -3152,6 +3219,57 @@ def Create_Schedule_Meeting(request):
         logging.error(f"Unexpected error in Create_Schedule_Meeting: {str(e)}")
         return JsonResponse({"Error": f"Internal server error: {str(e)}"}, status=500)
 
+def check_duplicate_meeting(host_id, meeting_type, time_window_seconds=30):
+    """
+    ✅ Prevents duplicate meeting creation from rapid/double API calls.
+    
+    Checks if the same host already has a non-ended meeting of the same type
+    created within the last N seconds. If yes, returns that meeting's data.
+    If no, returns None (safe to create new meeting).
+    """
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT ID, Meeting_Name, Meeting_Link, LiveKit_Room_Name, 
+                       Status, Created_At, Meeting_Type
+                FROM tbl_Meetings 
+                WHERE Host_ID = %s 
+                  AND Meeting_Type = %s
+                  AND Status IN ('active', 'scheduled')
+                  AND Is_Deleted = 0
+                  AND Created_At >= NOW() - INTERVAL %s SECOND
+                ORDER BY Created_At DESC
+                LIMIT 1
+            """, [host_id, meeting_type, time_window_seconds])
+            
+            existing = cursor.fetchone()
+            
+            if existing:
+                existing_id, existing_name, existing_link, existing_room, \
+                    existing_status, existing_created, existing_type = existing
+                
+                logging.warning(
+                    f"⚠️ [DUPLICATE-GUARD] Host {host_id} already has "
+                    f"{existing_type} '{existing_id}' created at {existing_created} "
+                    f"(within last {time_window_seconds}s). Returning existing."
+                )
+                
+                return {
+                    'meeting_id': existing_id,
+                    'meeting_name': existing_name,
+                    'meeting_link': existing_link,
+                    'livekit_room_name': existing_room,
+                    'status': existing_status,
+                    'created_at': str(existing_created),
+                    'meeting_type': existing_type,
+                }
+            
+            return None
+            
+    except Exception as e:
+        logging.warning(f"[DUPLICATE-GUARD] Check failed (proceeding with creation): {e}")
+        return None
+
 
 
 @require_http_methods(["POST"])
@@ -3190,6 +3308,37 @@ def Create_Instant_Meeting(request):
         cursor.execute("SELECT COUNT(*) FROM tbl_Users WHERE ID=%s AND Status=1", [data['Host_ID']])
         if cursor.fetchone()[0] == 0:
             return JsonResponse({"Error": "Invalid or inactive Host_ID"}, status=400)
+
+    # =============================================================
+    # ✅ NEW FIX: PREVENT DUPLICATE INSTANT MEETING CREATION
+    # 
+    # Problem: Frontend fires multiple API calls on a single button
+    # click (React double-render, StrictMode, network retry, or
+    # rapid clicks). This creates 3-4 identical meetings in under
+    # 1 second.
+    #
+    # Solution: Check if this host already has an active InstantMeeting
+    # created in the last 30 seconds. If yes, return that existing
+    # meeting instead of creating a new one.
+    # =============================================================
+    existing = check_duplicate_meeting(data['Host_ID'], 'InstantMeeting', 30)
+    if existing:
+        logging.info(f"✅ [DUPLICATE-GUARD] Returning existing InstantMeeting {existing['meeting_id']} instead of creating duplicate")
+        return JsonResponse({
+            "Message": "InstantMeeting already exists (duplicate prevented)",
+            "Meeting_ID": existing['meeting_id'],
+            "Meeting_Link": existing['meeting_link'],
+            "Meeting_Name": existing['meeting_name'],
+            "Status": existing['status'],
+            "Host_ID": data['Host_ID'],
+            "LiveKit_Room": existing['livekit_room_name'],
+            "LiveKit_URL": LIVEKIT_CONFIG['url'] if LIVEKIT_ENABLED else None,
+            "LiveKit_Enabled": LIVEKIT_ENABLED,
+            "LiveKit_Room_SID": None,
+            "LiveKit_Room_Created": True,
+            "LiveKit_Room_Response": {},
+            "duplicate": True
+        }, status=200)
 
     # ------------------------- Generate New Meeting -------------------------
     meeting_id = create_meeting_id()
@@ -3260,7 +3409,6 @@ def Create_Instant_Meeting(request):
             livekit_room = livekit_service.create_room(
                 room_name=data['LiveKit_Room_Name'],
                 room_config={
-                    # REMOVED: 'max_participants': 200,  # ✅ UNLIMITED
                     'empty_timeout': 300,
                     'departure_timeout': 30,
                     'enable_recording': bool(data['Is_Recording_Enabled'])
@@ -3302,8 +3450,9 @@ def Create_Instant_Meeting(request):
         "LiveKit_Enabled": LIVEKIT_ENABLED,
         "LiveKit_Room_SID": livekit_room_sid,
         "LiveKit_Room_Created": livekit_room_sid is not None,
-        "LiveKit_Response": livekit_room
+        "LiveKit_Room_Response": livekit_room
     }, status=201)
+
 
 @require_http_methods(["GET"])
 @csrf_exempt
@@ -4364,7 +4513,7 @@ def Delete_Meeting(request, id):
                 # Soft delete from tbl_Meetings
                 cursor.execute(f"""
                     UPDATE {TBL_MEETINGS} 
-                    SET Is_Deleted = 1, Deleted_At = %s, Status = 'ended', Ended_At = %s 
+                    SET Is_Deleted = 1, Deleted_At = %s, Ended_At = %s 
                     WHERE ID = %s
                 """, [deleted_at, deleted_at, id])
 
@@ -4463,7 +4612,7 @@ def Get_Schedule_Meetings(request):
                 stored_status = row[31]  # m.Status
                 
                 # Calculate actual status based on time
-                calculated_status = calculate_meeting_status(started_at, ended_at, duration_minutes)
+                calculated_status = calculate_meeting_status(started_at, ended_at, duration_minutes, meeting_type='ScheduleMeeting',db_status=row[31])
                 
                 # UNCHANGED: All original meeting data structure preserved
                 meeting = {
@@ -4564,7 +4713,7 @@ def Get_Calendar_Meetings(request):
                 started_at = row[3]  # startTime
                 ended_at = row[4]    # endTime
                 duration_minutes = row[5] or 60  # duration
-                calculated_status = calculate_meeting_status(started_at, ended_at, duration_minutes)
+                calculated_status = calculate_meeting_status(started_at, ended_at, duration_minutes,meeting_type='CalendarMeeting', db_status=row[20])
 
                 # ✅ Email parsing logic (unchanged)
                 guest_emails_raw = row[7]
@@ -5149,7 +5298,7 @@ def Get_User_Schedule_Meetings(request):
                         if display_end_time:
                             end_dt = datetime.fromisoformat(display_end_time.replace('Z', '+00:00')) if isinstance(display_end_time, str) else display_end_time
                             
-                        calculated_status = calculate_meeting_status(start_dt, end_dt, duration_minutes)
+                        calculated_status = calculate_meeting_status(start_dt, end_dt, duration_minutes, meeting_type='ScheduleMeeting',db_status=row[31])
 
                         # UNCHANGED: All original meeting data structure
                         meeting = {
@@ -5288,7 +5437,7 @@ def Get_User_Calendar_Meetings(request):
                     duration_minutes = row[5] or 60  # duration
                     stored_status = row[19]  # m.Status
                     
-                    calculated_status = calculate_meeting_status(started_at, ended_at, duration_minutes)
+                    calculated_status = calculate_meeting_status(started_at, ended_at, duration_minutes, meeting_type='CalendarMeeting',db_status=stored_status)
                     if not stored_status or stored_status in ('', None):
                         stored_status = calculated_status
 
@@ -5440,7 +5589,10 @@ def Get_User_Calendar_Meetings(request):
 @require_http_methods(["POST"])
 @csrf_exempt
 def join_livekit_meeting(request):
-    """FIXED: Fast join for 50+ participants with proper parameter validation and Meeting_Type"""
+    """FIXED: Fast join for 50+ participants with proper parameter validation, Meeting_Type, and host rejoin status reset
+    
+    ✅ NEW FIX: ANY participant joining forces status='active' if it was incorrectly 'ended'
+    """
     try:
         logging.info("🚀 LiveKit join request received")
         
@@ -5554,31 +5706,6 @@ def join_livekit_meeting(request):
                     meeting_type = meeting_type_db or 'InstantMeeting'
                     
                     logging.info(f"📋 Found meeting: {meeting_name} (Status: {status}, Type: {meeting_type})")
-                    
-                    if status and status.lower() == 'ended':
-                        # Check if it's a recurring meeting that should still allow joins
-                        cursor.execute("""
-                            SELECT sm.is_recurring, sm.recurrence_end_date, sm.end_date
-                            FROM tbl_ScheduledMeetings sm
-                            WHERE sm.id = %s
-                        """, [meeting_id])
-                        recurring_row = cursor.fetchone()
-                        
-                        allow_join = False
-                        if recurring_row and recurring_row[0]:  # is_recurring
-                            effective_end_date = recurring_row[1] or recurring_row[2]
-                            if effective_end_date:
-                                if timezone.now() < effective_end_date:
-                                    allow_join = True
-                                    logging.info(f"✅ Recurring meeting - allowing join despite 'ended' status")
-                        
-                        if not allow_join:
-                            return JsonResponse({
-                                'error': 'Meeting has ended',
-                                'meeting_id': meeting_id,
-                                'meeting_name': meeting_name,
-                                'status': status
-                            }, status=400)
                 else:
                     logging.error(f"Meeting not found: {meeting_id}")
                     return JsonResponse({
@@ -5725,13 +5852,27 @@ def join_livekit_meeting(request):
                             if cursor.rowcount > 0:
                                 logging.info(f"✅ Set Started_At for ScheduleMeeting {meeting_id} (status remains 'scheduled')")
                         else:  # InstantMeeting or CalendarMeeting
+                            # ✅ FIX: Set Status='active' AND clear Ended_At on host first join
                             cursor.execute("""
                                 UPDATE tbl_Meetings 
-                                SET Started_At = %s, Status = 'active'
+                                SET Started_At = COALESCE(Started_At, %s), 
+                                    Status = 'active',
+                                    Ended_At = NULL
                                 WHERE ID = %s AND (Started_At IS NULL OR Status = 'ended')
                             """, [join_time, meeting_id])
                             if cursor.rowcount > 0:
-                                logging.info(f"✅ Set Started_At and Status='active' for meeting {meeting_id} (host first join)")
+                                logging.info(f"✅ Set Started_At, Status='active', Ended_At=NULL for meeting {meeting_id} (host first join)")
+                                status = 'active'  # Update local variable so response reflects the change
+                            else:
+                                # Meeting already active with Started_At — just ensure Status='active'
+                                cursor.execute("""
+                                    UPDATE tbl_Meetings 
+                                    SET Status = 'active', Ended_At = NULL
+                                    WHERE ID = %s AND Status != 'active'
+                                """, [meeting_id])
+                                if cursor.rowcount > 0:
+                                    logging.info(f"✅ Ensured Status='active' for meeting {meeting_id} (host join, was not active)")
+                                    status = 'active'
                                 
                     logging.info(f"✅ Participant join recorded for user {user_id} with Meeting_Type={meeting_type}")
                     
@@ -5768,7 +5909,53 @@ def join_livekit_meeting(request):
 
                         action = 'rejoin'
                         logging.info(f"[JOIN] User {user_id} rejoined (session #{len(join_times)}) with Meeting_Type={meeting_type}")
-                    
+                        
+                        # =====================================================
+                        # ✅ BUG FIX: HOST REJOIN — Reset Status to 'active'
+                        # When host rejoins after a brief disconnect, the meeting
+                        # status was stuck at 'ended'. This resets it back to 
+                        # 'active' and clears Ended_At so the meeting continues.
+                        # =====================================================
+                        if participant_role == 'host':
+                            cursor.execute("""
+                                UPDATE tbl_Meetings 
+                                SET Status = 'active', Ended_At = NULL
+                                WHERE ID = %s AND Status = 'ended'
+                            """, [meeting_id])
+                            if cursor.rowcount > 0:
+                                logging.info(f"✅ Reset meeting {meeting_id} from 'ended' to 'active' (host rejoin)")
+                                status = 'active'  # Update local variable so response reflects the change
+
+            # =============================================================
+            # ✅✅✅ NEW FIX: UNIVERSAL STATUS RESET — ANY PARTICIPANT ✅✅✅
+            # =============================================================
+            # Problem: If Ended_At gets a bad timestamp (e.g. UTC written
+            # instead of IST), calculate_meeting_status() returns 'ended'
+            # even though the LiveKit room is still live. The sync endpoint
+            # then refuses to work ("Meeting already ended - no sync
+            # performed"), creating a deadlock where nobody can fix it.
+            #
+            # Solution: When ANY participant successfully joins (host or
+            # not), force the meeting back to 'active' and clear Ended_At.
+            # The meeting should ONLY stay 'ended' when the host explicitly
+            # clicks "End Meeting" AND no one is in the LiveKit room.
+            #
+            # This runs OUTSIDE the inner try/except so it executes even
+            # if the participant record insert/update had issues.
+            # =============================================================
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE tbl_Meetings 
+                        SET Status = 'active', Ended_At = NULL
+                        WHERE ID = %s AND Status = 'ended'
+                    """, [meeting_id])
+                    if cursor.rowcount > 0:
+                        logging.info(f"✅ [JOIN-FIX] Force-reset meeting {meeting_id} from 'ended' to 'active' (participant join detected — status was incorrectly 'ended')")
+                        status = 'active'
+            except Exception as fix_error:
+                logging.warning(f"[JOIN-FIX] Could not reset meeting status: {fix_error}")
+
         except Exception as participant_error:
             logging.warning(f"Failed to record participant join (non-critical): {participant_error}")
             import traceback
@@ -5837,7 +6024,9 @@ def join_livekit_meeting(request):
             'details': 'Check server logs for more information',
             'traceback': traceback.format_exc() if logging.getLogger().isEnabledFor(logging.DEBUG) else None
         }, status=500)
-           
+
+
+
 @require_http_methods(["POST"])
 @csrf_exempt
 def bulk_send_invitations(request):
@@ -5919,7 +6108,7 @@ def bulk_send_invitations(request):
 @require_http_methods(["POST"])
 @csrf_exempt
 def leave_livekit_meeting(request):
-    """UPDATED: Leave a LiveKit meeting with attendance tracking integration"""
+    """UPDATED: Leave a LiveKit meeting with attendance tracking integration — FIXED orphaned except block"""
     if not LIVEKIT_ENABLED:
         return JsonResponse({'error': 'LiveKit service not available'}, status=503)
     
@@ -5950,7 +6139,6 @@ def leave_livekit_meeting(request):
         try:
             if participant_identity:
                 try:
-                    # No signal.alarm() - remove_participant uses requests internally
                     livekit_service.remove_participant(room_name, participant_identity)
                     logging.info(f"✅ Removed participant {participant_identity} from LiveKit room")
                 except AttributeError:
@@ -5995,12 +6183,12 @@ def leave_livekit_meeting(request):
             logging.warning(f"Failed to record participant leave: {participant_error}")
             leave_recorded = False
         
-        # ADDED: Verify user is really gone from LiveKit (requests timeout only)
+        # ✅ FIX: Verification section — removed orphaned duplicate except block
+        # Previously had TWO except blocks for this try, causing syntax error
         verification_result = {'user_still_in_livekit': False, 'verification_completed': False}
 
         if LIVEKIT_ENABLED and livekit_service:
             try:
-                # No signal.alarm() - list_participants already uses requests timeout
                 current_participants = livekit_service.list_participants(room_name)
                 user_still_in_livekit = False
                 
@@ -6036,23 +6224,9 @@ def leave_livekit_meeting(request):
                     logging.info(f"✅ Verified: User {user_id} is no longer in LiveKit room {room_name}")
                 else:
                     logging.warning(f"⚠️ User {user_id} still appears in LiveKit after leave attempt")
-                    
-            except requests.exceptions.Timeout:
-                logging.warning(f"Could not verify LiveKit leave status (timeout)")
-                verification_result = {
-                    'user_still_in_livekit': False,
-                    'verification_completed': False,
-                    'error': 'Timeout during verification'
-                }
+            
+            # ✅ FIX: Single unified except block (was previously two separate except blocks)
             except Exception as e:
-                logging.warning(f"Could not verify LiveKit leave status: {e}")
-                verification_result = {
-                    'user_still_in_livekit': False,
-                    'verification_completed': False,
-                    'error': str(e)
-                }
-                        
-            except (TimeoutError, Exception) as e:
                 logging.warning(f"Could not verify LiveKit leave status: {e}")
                 verification_result = {
                     'user_still_in_livekit': False,
@@ -6061,7 +6235,7 @@ def leave_livekit_meeting(request):
                 }
         
         # ========== ATTENDANCE INTEGRATION ==========
-        # Stop attendance tracking before leaving
+        attendance_tracking_stopped = False
         try:
             from core.AI_Attendance.Attendance import stop_attendance_tracking
             attendance_stopped = stop_attendance_tracking(meeting_id, user_id)
@@ -6126,7 +6300,13 @@ def get_meeting_participants(request, meeting_id):
 @require_http_methods(["GET"])
 @csrf_exempt
 def get_livekit_connection_info(request, meeting_id):
-    """Get LiveKit connection information for a meeting"""
+    """Get LiveKit connection information for a meeting
+    
+    ✅ FIX: Don't block if status='ended' when LiveKit room has active participants.
+    Instead, check LiveKit first — if participants exist, reset status to 'active'.
+    This prevents the deadlock where a bad Ended_At timestamp (UTC vs IST) keeps
+    the meeting stuck as 'ended' while people are still connected.
+    """
     if not LIVEKIT_ENABLED:
         return JsonResponse({'error': 'LiveKit not available'}, status=503)
     
@@ -6145,8 +6325,39 @@ def get_livekit_connection_info(request, meeting_id):
             
             host_id, meeting_name, status, livekit_room_name = row
             
-            if status.lower() == 'ended':
-                return JsonResponse({'error': 'Meeting has ended'}, status=400)
+            # =============================================================
+            # ✅ FIX: Don't immediately reject 'ended' meetings.
+            # Check if LiveKit room still has active participants first.
+            # If yes → meeting is NOT actually ended, reset to 'active'.
+            # If no  → meeting really ended, return error as before.
+            # =============================================================
+            if status and status.lower() == 'ended':
+                try:
+                    room_name_check = livekit_room_name or f"meeting_{meeting_id}"
+                    live_participants = livekit_service.list_participants(room_name_check)
+                    
+                    if len(live_participants) > 0:
+                        # LiveKit has participants — meeting is NOT actually ended!
+                        logging.warning(
+                            f"⚠️ Meeting {meeting_id} status='ended' but "
+                            f"{len(live_participants)} LiveKit participants found. "
+                            f"Resetting to 'active'."
+                        )
+                        with connection.cursor() as fix_cursor:
+                            fix_cursor.execute("""
+                                UPDATE tbl_Meetings 
+                                SET Status = 'active', Ended_At = NULL
+                                WHERE ID = %s
+                            """, [meeting_id])
+                        status = 'active'
+                    else:
+                        # No LiveKit participants — meeting really is ended
+                        return JsonResponse({'error': 'Meeting has ended'}, status=400)
+                        
+                except Exception as lk_err:
+                    logging.warning(f"Could not verify LiveKit room status: {lk_err}")
+                    # If we can't check LiveKit, fall back to original behavior
+                    return JsonResponse({'error': 'Meeting has ended'}, status=400)
         
         room_name = livekit_room_name or f"meeting_{meeting_id}"
         
@@ -6322,7 +6533,7 @@ class EnhancedProductionLiveKitService(ProductionLiveKitService):
         """Clean up empty LiveKit rooms"""
         try:
             # This would be called periodically to clean up unused rooms
-            logging.info("🧹 Cleaning up empty LiveKit rooms...")
+            logging.info("🧹 Cleaning up empty LiveKit rooms:{room_name} (Meeting {meeting_id} stays ACTIVE)")
             
             # Implementation depends on your cleanup policy
             # You might want to delete rooms that have been empty for X minutes
