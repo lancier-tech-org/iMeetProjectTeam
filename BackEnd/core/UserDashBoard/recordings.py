@@ -90,7 +90,13 @@ from core.WebSocketConnection.notifications import (
     short_id
 )
 import pytz  # For timezone handling in notifications
-
+try:
+    from core.WebSocketConnection.fcm_service import send_push_for_notification
+except ImportError:
+    def send_push_for_notification(*args, **kwargs):
+        logging.warning("FCM service not available - push notifications disabled")
+        return {"sent": 0, "failed": 0, "invalid_tokens_removed": 0}
+    
 # Add this configuration after imports
 RECORDING_SERVICE_URL = os.getenv(
     "RECORDING_SERVICE_URL", 
@@ -1332,6 +1338,20 @@ def send_recording_completion_notifications(meeting_id, video_url, transcript_ur
                 if cursor.rowcount > 0:
                     sent_count += 1
                     logging.info(f"Recording notification sent to {participant_email} ({'host' if is_host else 'participant'})")
+                    # ── FCM Push for Recording ──
+                    try:
+                        send_push_for_notification(
+                            recipient_email=participant_email,
+                            notification_id=notification_id,
+                            notification_type=notification_type,
+                            title=title,
+                            body=message,
+                            meeting_id=str(meeting_id),
+                            meeting_url=video_url,
+                            priority='normal',
+                        )
+                    except Exception as push_err:
+                        logging.warning(f"⚠️ FCM push for recording notification failed: {push_err}")
                 else:
                     logging.error(f"INSERT returned 0 rows for {participant_email}")
 

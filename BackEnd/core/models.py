@@ -21,3 +21,36 @@ from core.super_adminDashboard.invoice_generator import Invoice
 from core.super_adminDashboard.payment_orders import PaymentOrder
 from core.super_adminDashboard.payment_transactions import PaymentTransaction
 from core.super_adminDashboard.subscription_apis import UserSubscription
+
+# ============================================================
+# 📌 STEP 1: ADD THIS AT THE BOTTOM OF YOUR EXISTING FILE
+# 📁 FILE: /lanciere/devstorage/jyothi/SampleDB_W/core/models.py
+#
+# ⚠️ DO NOT REPLACE THE FILE — just paste at the bottom
+# ============================================================
+
+class AppConfig(models.Model):
+    """
+    Stores the entire app configuration as a single JSON object.
+    Only ONE row exists in this table — the latest config.
+    Edit via Django Admin: http://192.168.48.201:8111/admin/core/appconfig/
+    Flutter fetches via: GET http://192.168.48.201:8111/api/app-config/
+    """
+    name = models.CharField(
+        max_length=50,
+        unique=True,
+        default='app_config',
+        help_text='Keep this as "app_config". Do not change.'
+    )
+    config_json = models.TextField(
+        help_text='Paste your full JSON configuration here. Flutter reads this directly.'
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'tbl_App_Config'
+        verbose_name = 'App Configuration'
+        verbose_name_plural = 'App Configuration'
+
+    def __str__(self):
+        return f"App Config (updated: {self.updated_at})"

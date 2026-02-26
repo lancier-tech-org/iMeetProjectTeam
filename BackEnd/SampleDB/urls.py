@@ -53,4 +53,6 @@ urlpatterns = [
     path('', include('core.super_adminDashboard.login_history')),
     path('', include('core.super_adminDashboard.company_details')),
     path('', include('core.super_adminDashboard.subscription_apis')),
+    path('', include('core.AppConfig.urls')),   # ← ADD THIS LINE
+    path('', include('core.WebSocketConnection.push_urls')),
 ]
