@@ -283,8 +283,18 @@ def validate_human_face(photo_base64: str) -> dict:
         # ============================================================
         # Use the same model that's already initialized in face_embeddings.py
         # If your model variable name is different, change 'app' to your variable name
-        faces = app.get(img)
-        
+        # faces = app.get(img)
+        ensure_face_model_loaded()
+        if face_model is None:
+            logging.error("❌ face_model is None - model failed to load")
+            return {
+                'valid': False,
+                'error': 'Face recognition service not initialized. Please contact support.',
+                'face_count': 0,
+                'det_score': 0.0
+            }
+        face_app = face_model.get_app()
+        faces = face_app.get(img)
         face_count = len(faces) if faces else 0
         
         # ============================================================

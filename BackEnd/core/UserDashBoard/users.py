@@ -138,8 +138,12 @@ try:
 except ImportError as e:
     logging.warning(f"⚠ Face recognition module not available: {e}")
     FACE_RECOGNITION_ENABLED = False
-    # Create dummy functions if import fails
-    def validate_human_face(*args, **kwargs): return {'valid': False, 'error': 'Face validation not available'}
+    # # Create dummy functions if import fails
+    # def validate_human_face(*args, **kwargs): return {'valid': False, 'error': 'Face validation not available'}
+    # Create dummy functions if import fails - allow registration without face validation
+    def validate_human_face(*args, **kwargs):
+        logging.warning("⚠️ Face validation skipped - face_embeddings module not loaded")
+        return {'valid': True, 'error': None, 'face_count': 0, 'det_score': 0.0}
     def process_profile_photo_embedding(*args, **kwargs): return None
     def process_image_for_recognition(*args, **kwargs): return None
     def get_user_embeddings(*args, **kwargs): return []
