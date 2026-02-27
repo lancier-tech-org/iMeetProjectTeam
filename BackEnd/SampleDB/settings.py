@@ -435,7 +435,6 @@ CELERY_TASK_ROUTES = {
 
 # Path to your Firebase Admin SDK service account JSON file
 # Download from: Firebase Console → Project Settings → Service Accounts → Generate New Private Key
-FIREBASE_CREDENTIALS_PATH = '/lanciere/devstorage/sreedhar/SampleDB_W/firebase-credentials.json'
-
+# FIREBASE_CREDENTIALS_PATH = '/lanciere/devstorage/jyothi/SampleDB_W/firebase-credentials.json'
 # Max active push devices per user (enforced in register endpoint)
 FCM_MAX_ACTIVE_DEVICES = 2

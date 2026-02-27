@@ -251,3 +251,4 @@ soupsieve==2.7
 onnxruntime==1.18.0
 insightface==0.7.3
 django-ses
+firebase-admin==7.0.0
