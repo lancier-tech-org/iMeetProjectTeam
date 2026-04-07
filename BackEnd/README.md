@@ -25,7 +25,7 @@
 
 iMeetPro is an AI-powered enterprise video conferencing platform built on a microservices architecture. It provides real-time video meetings via LiveKit, AI-based face authentication and attendance monitoring, collaborative whiteboard, in-meeting chat/reactions/hand-raise (all cache-backed via Redis), video recording with subtitle generation (English/Hindi/Telugu), transcript and summary generation, PDF analytics reports, and a comprehensive dashboard.
 
-The system is composed of **8 independently deployable services** behind an Nginx reverse proxy, with a Celery GPU worker handling asynchronous video processing (transcription, subtitles, summaries) and APScheduler managing periodic tasks (participant polling, room cleanup).
+The system is composed of **8 independently deployable services** behind an Nginx reverse proxy, with Celery workers handling asynchronous video processing and meeting scheduling.
 
 ---
 
@@ -91,7 +91,7 @@ The system is composed of **8 independently deployable services** behind an Ngin
 | **MongoDB** | Face embeddings, verification sessions, verification logs | face-auth-service, user-service, recording-service |
 | **Redis** | Cache-only chat, reactions, hand-raise, attendance sessions, Celery broker/backend, whiteboard state | meeting-core, attendance, whiteboard, recording |
 | **AWS S3** | Profile photos, face registration images, video recordings, generated documents | user-service, face-auth, recording-service |
-| **LiveKit** | Real-time video/audio infrastructure, WebRTC SFU | meeting-core, recording-service |
+| **LiveKit** | Real-time video/audio infrastructure, WebRTC SFU, Egress-based recording | meeting-core, recording-service |
 | **SMTP** | Email notifications, meeting invitations, password reset | All services |
 | **NVIDIA GPU** | InsightFace (ONNX Runtime GPU), video processing, AI subtitle/transcript generation | face-auth, recording |
 
@@ -119,9 +119,9 @@ Core face recognition engine using InsightFace with ONNX Runtime GPU inference. 
 
 ### 4. Attendance Service (`:8233`)
 
-Real-time attendance tracking during meetings. Monitors participant presence via periodic frame analysis, detects violations (e.g., phone usage, absence), manages break periods, and handles camera pause/resume verification. Uses MediaPipe for pose detection and communicates with face-auth-service for identity verification. Sessions stored in Redis.
+Real-time attendance tracking during meetings. Monitors participant presence via periodic frame analysis, detects violations (e.g.,head movements ,hand near face ,eye close , absence etc ...), manages break periods, and handles camera pause/resume verification. Uses MediaPipe for pose detection and communicates with face-auth-service for identity verification. Sessions stored in Redis.
 
-**Key modules:** `attendance/Attendance.py`, `attendance/session_manager.py`, `attendance/mediapipe_pool.py`, `attendance/periodic_saver.py`, `clients/face_auth_client.py`
+**Key modules:** `attendance/Attendance.py`, `attendance/session_manager.py`, `attendance/mediapipe_pool.py`, `attendance/periodic_saver.py`, `clients/face_auth_client.py`, `attendance/models.py`
 
 **Models shipped:** Haar cascades (face, eyes, smile), shape predictor 68 landmarks, YOLOv8l-pose
 
@@ -153,12 +153,12 @@ The central orchestrator for all meeting operations:
 
 Video recording and AI-powered post-processing:
 
-- **Stream recording** — custom LiveKit SDK bot (`FixedRecordingBot`) joins the room as a participant via the `livekit.rtc` real-time client, subscribes to audio/video tracks (`rtc.VideoStream`, `rtc.AudioStream`), writes frames to local temp files via ffmpeg subprocess pipes (raw frames → H.264 video, PCM → WAV audio), and simultaneously uploads to S3 using multipart chunked upload (5MB chunks via `S3ChunkUploader`). Supports pause/resume. No file size limit — recordings grow until stopped.
+- **Stream recording** — LiveKit Egress-based recording with pause/resume support.
 - **Video management** — full CRUD, streaming, trash/restore/permanent delete.
 - **AI processing** — transcript generation, summary generation, subtitle generation (English/Hindi/Telugu via deep-translator), mind map generation (Graphviz), document generation (python-docx).
 - **Upload** — single file upload, blob upload, multipart recording upload to S3.
 
-Uses LiveKit real-time client SDK (not Egress) for room-level recording, OpenAI and Groq APIs for AI features, Transformers + PyTorch for on-device processing, ffmpeg for audio/video manipulation, and S3 multipart upload for chunked storage.
+Uses OpenAI and Groq APIs for AI features, Transformers + PyTorch for on-device processing, ffmpeg for audio/video manipulation.
 
 **Key modules:** `stream_recording/recording_service.py`, `video_processing/recordings.py`, `tasks/video_tasks.py`
 
@@ -698,7 +698,7 @@ Recording Celery runs on `video_processing` queue, concurrency 2. Check GPU memo
 Downstream service isn't running or hasn't passed health check. Check `docker compose ps`. GPU services may need 60s+ to load models.
 
 **File upload size limits**
-Nginx `client_max_body_size` is 500MB for manual upload endpoints (`upload_recording`, `upload_recording_blob`, `upload_single_file`), 50MB for face/chat, 20MB for photos. The primary recording path (SDK bot → local file → S3 multipart) bypasses Nginx entirely and has no size limit. Adjust Nginx limits in `nginx/nginx.conf` if needed.
+Nginx: 500MB recordings, 50MB face/chat, 20MB photos. Adjust in `nginx/nginx.conf`.
 
 ---
 
@@ -706,7 +706,7 @@ Nginx `client_max_body_size` is 500MB for manual upload endpoints (`upload_recor
 
 Nginx handles HTTP→HTTPS redirect, SSL termination, CORS, gzip, and routing:
 
-- **Max body size:** 500MB (manual video uploads via Nginx), 50MB (face/chat), 20MB (photos). Primary recording path bypasses Nginx (no limit).
+- **Max body size:** 500MB (recordings), 50MB (face/chat), 20MB (photos)
 - **Proxy timeouts:** 300s read/send, 60s connect, 600s for recording endpoints
 - **Worker connections:** 4096 with multi_accept
 - **Keepalive:** 65s
