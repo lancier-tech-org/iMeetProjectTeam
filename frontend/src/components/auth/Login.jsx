@@ -26,6 +26,7 @@ import {
 } from "@mui/icons-material";
 import { useAuth } from "../../hooks/useAuth";
 import { useNavigate, useLocation } from "react-router-dom";
+import logo from "../../assets/images/IMeetPro-logo-1.png";
 
 // Responsive styled components
 const StyledTextField = styled(TextField)(({ theme }) => ({
@@ -79,7 +80,6 @@ const Login = () => {
   const location = useLocation();
   const { login, loading } = useAuth();
   
-  // Responsive breakpoints
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const isTablet = useMediaQuery(theme.breakpoints.between('sm', 'md'));
   const isDesktop = useMediaQuery(theme.breakpoints.up('md'));
@@ -198,39 +198,28 @@ const Login = () => {
             }}
           >
             {/* Logo */}
-            <Box 
-              sx={{ 
-                mb: { xs: 3, sm: 4, md: 5 },
-                textAlign: { xs: "center", md: "left" },
+            <Box
+              sx={{
+                mb: { xs: 2, sm: 2.5, md: 3 },
+                display: "flex",
+                justifyContent: "flex-start",
+                pl: 0,
+                ml: 0,
               }}
             >
-              <Box 
-                sx={{ 
-                  display: "flex", 
-                  alignItems: "center", 
-                  gap: 1,
-                  justifyContent: { xs: "center", md: "flex-start" },
+              <Box
+                component="img"
+                src={logo}
+                alt="iMeetPro Logo"
+                sx={{
+                  height: { xs: 72, sm: 88, md: 100 },
+                  width: "auto",
+                  maxWidth: { xs: 260, sm: 300, md: 320 },
+                  objectFit: "contain",
+                  objectPosition: "left center",
+                  display: "block",
                 }}
-              >
-                <VideoCall 
-                  sx={{ 
-                    fontSize: { xs: 28, sm: 32 }, 
-                    color: "#2196F3" 
-                  }} 
-                />
-                <Typography
-                  variant="h5"
-                  sx={{
-                    fontWeight: 700,
-                    color: "#2196F3",
-                    letterSpacing: "-0.5px",
-                    fontSize: { xs: "1.25rem", sm: "1.5rem" },
-                  }}
-                >
-                  iMeet
-                  <span style={{ color: "#3DB4AC" }}>Pro</span>
-                </Typography>
-              </Box>
+              />
             </Box>
 
             {/* Welcome Text */}
@@ -241,7 +230,7 @@ const Login = () => {
                 color: "#1A1A1A",
                 mb: 1,
                 fontSize: { xs: "1.5rem", sm: "1.75rem", md: "2rem" },
-                textAlign: { xs: "center", md: "left" },
+                textAlign: "left",
               }}
             >
               Welcome Back
@@ -252,7 +241,7 @@ const Login = () => {
                 color: "#666666",
                 mb: { xs: 3, sm: 4 },
                 fontSize: { xs: "0.875rem", sm: "0.95rem" },
-                textAlign: { xs: "center", md: "left" },
+                textAlign: "left",
               }}
             >
               Enter your email and password to access your account

@@ -10,6 +10,7 @@ import {
 } from '@mui/icons-material';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
+import logo from '../../assets/images/IMeetPro-logo-1.png'; // ← added
 
 const StyledTextField = styled(TextField)(({ theme }) => ({
   '& .MuiOutlinedInput-root': {
@@ -236,12 +237,29 @@ const EmailVerification = () => {
           }}
         >
           <Box sx={{ width: '100%', maxWidth: { xs: '100%', sm: 420, md: 400 } }}>
-            {/* Logo */}
-            <Box sx={{ mb: { xs: 3, sm: 4 }, display: 'flex', alignItems: 'center', gap: 1, justifyContent: { xs: 'center', md: 'flex-start' } }}>
-              <VideoCall sx={{ fontSize: { xs: 28, sm: 32 }, color: '#2196F3' }} />
-              <Typography variant="h5" sx={{ fontWeight: 700, color: '#2196F3', fontSize: { xs: '1.25rem', sm: '1.5rem' } }}>
-                iMeet<span style={{ color: '#3DB4AC' }}>Pro</span>
-              </Typography>
+            {/* Logo — replaced VideoCall icon+text with image */}
+            <Box
+              sx={{
+                mb: { xs: 2, sm: 2.5, md: 3 },
+                display: 'flex',
+                justifyContent: 'flex-start',
+                pl: 0,
+                ml: 0,
+              }}
+            >
+              <Box
+                component="img"
+                src={logo}
+                alt="iMeetPro Logo"
+                sx={{
+                  height: { xs: 72, sm: 88, md: 100 },
+                  width: 'auto',
+                  maxWidth: { xs: 260, sm: 300, md: 320 },
+                  objectFit: 'contain',
+                  objectPosition: 'left center',
+                  display: 'block',
+                }}
+              />
             </Box>
 
             {/* Header */}

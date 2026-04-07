@@ -6,38 +6,30 @@
   <meta name="description" content="Professional Video Meeting Application - Google Meet alternative with advanced features" />
   <meta name="keywords" content="video meeting, video conference, webrtc, online meeting, collaboration" />
   <meta name="author" content="Meeting App Team" />
-  
-  <!-- SEO Meta Tags -->
-  <meta property="og:title" content="Meeting App - Professional Video Conferencing" />
+
+  <meta property="og:title" content="IMeetPro - Professional Video Conferencing" />
   <meta property="og:description" content="Join or host professional video meetings with HD quality, screen sharing, and real-time collaboration features." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://your-domain.com" />
-  
+
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Meeting App - Professional Video Conferencing" />
+  <meta name="twitter:title" content="IMeetPro - Professional Video Conferencing" />
   <meta name="twitter:description" content="Join or host professional video meetings with HD quality, screen sharing, and real-time collaboration features." />
-  
-  <!-- Basic Favicon (only if you have it) -->
+
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-  
-  <!-- Manifest for PWA -->
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#1A8A8A" />
-  
-  <!-- Preconnect to external domains -->
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  
-  <!-- Google Fonts -->
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  
-  <!-- Material Icons -->
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
-  
-  <!-- CSS Variables for theming -->
+
+  <title>IMeetPro - Professional Video Conferencing</title>
+
   <style>
+    /* ─── CSS Variables ─────────────────────────────────────────── */
     :root {
-      /* ✅ Updated Primary Colors with Gradients */
       --primary-color: #1A8A8A;
       --primary-light: #2D7DD2;
       --primary-dark: #3B5998;
@@ -45,18 +37,15 @@
       --success-color: #10B981;
       --warning-color: #F59E0B;
       --error-color: #EF4444;
-      
-      /* ✅ Updated Background & Surface Colors */
+
       --background-color: #F8FAFC;
       --surface-color: #ffffff;
       --surface-secondary: #F1F5F9;
-      
-      /* ✅ Updated Text Colors */
+
       --text-primary: #1F2937;
       --text-secondary: #6B7280;
       --text-disabled: #9CA3AF;
-      
-      /* ✅ Updated Border & Grey Colors */
+
       --border-color: #E2E8F0;
       --grey-100: #F1F5F9;
       --grey-200: #E2E8F0;
@@ -67,43 +56,35 @@
       --grey-700: #334155;
       --grey-800: #1E293B;
       --grey-900: #0F172A;
-      
-      /* ✅ Updated Gradient Definitions */
+
       --gradient-primary: linear-gradient(135deg, #1A8A8A 0%, #2D7DD2 50%, #3B5998 100%);
       --gradient-primary-reverse: linear-gradient(135deg, #3B5998 0%, #2D7DD2 50%, #1A8A8A 100%);
       --gradient-success: linear-gradient(135deg, #10B981 0%, #059669 100%);
       --gradient-error: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
       --gradient-dark: linear-gradient(135deg, #0F172A 0%, #1E293B 50%, #334155 100%);
-      
-      /* Shadow */
-      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-      --shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-      --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
-      --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+      --shadow:    0 2px 8px rgba(0,0,0,0.1);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+      --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
     }
-    
+
     [data-theme="dark"] {
-      /* ✅ Dark Theme with New Colors */
       --background-color: #0F172A;
       --surface-color: #1E293B;
       --surface-secondary: #334155;
-      
       --text-primary: #F8FAFC;
       --text-secondary: #CBD5E1;
       --text-disabled: #64748B;
-      
       --border-color: #334155;
-      
-      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-      --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-      --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
-      --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+      --shadow:    0 2px 8px rgba(0,0,0,0.3);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+      --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
     }
-    
-    * {
-      box-sizing: border-box;
-    }
-    
+
+    * { box-sizing: border-box; }
+
     body {
       margin: 0;
       padding: 0;
@@ -112,36 +93,35 @@
       color: var(--text-primary);
       transition: background-color 0.3s ease, color 0.3s ease;
     }
-    
+
     #root {
       min-height: 100vh;
       display: flex;
       flex-direction: column;
     }
-    
-    /* ✅ Updated Loading Screen with Gradient */
+
+    /* ═══════════════════════════════════════════════════════════
+       LOADING SCREEN
+    ═══════════════════════════════════════════════════════════ */
     .loading-screen {
       position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
       background: linear-gradient(135deg, #1A8A8A 0%, #2D7DD2 50%, #3B5998 100%);
       display: flex;
       justify-content: center;
       align-items: center;
       z-index: 9999;
       transition: opacity 0.5s ease-out;
+      /* padding ensures content never touches screen edges on any device */
+      padding: 16px;
     }
 
     .loading-screen::before {
       content: '';
       position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.1) 0%, transparent 50%);
+      inset: 0;
+      background: radial-gradient(circle at 50% 40%, rgba(255,255,255,0.10) 0%, transparent 65%);
       pointer-events: none;
     }
 
@@ -150,188 +130,350 @@
       pointer-events: none;
     }
 
+    /* ── Container ─────────────────────────────────────────────── */
     .loading-container {
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 30px;
       position: relative;
       z-index: 1;
+      width: 100%;
+      /* gap scales with viewport */
+      gap: clamp(14px, 4vw, 36px);
     }
 
-    /* ✅ Enhanced Loader Animation */
-    .loader {
-      transform: rotateZ(45deg);
-      perspective: 1000px;
-      border-radius: 50%;
-      width: 48px;
-      height: 48px;
-      color: #fff;
-      position: relative;
+    /* ── SVG wrapper scales the entire logo ────────────────────── */
+    .loader-svg-wrap {
+      width: 100%;
+      /* max-width caps on large screens, min-width prevents tiny watch crush */
+      max-width: min(400px, 92vw);
+      /* on very small screens (watch ≤180px) cap tighter */
     }
 
-    .loader:before,
-    .loader:after {
-      content: '';
+    .loader-svg-wrap svg {
+      width: 100%;
+      height: auto;
       display: block;
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: inherit;
-      height: inherit;
-      border-radius: 50%;
-      transform: rotateX(70deg);
-      animation: 1s spin linear infinite;
+      overflow: visible;
     }
 
-    .loader:after {
-      color: #F59E0B;
-      transform: rotateY(70deg);
-      animation-delay: .1s;
+    /* ── Letter stroke animations ──────────────────────────────── */
+    .dash {
+      animation: dA 2s ease-in-out infinite, dO 2s linear infinite;
+    }
+    .spin {
+      animation: sA 2s ease-in-out infinite, spK 8s ease-in-out infinite, dO 2s linear infinite;
+      transform-origin: center;
     }
 
-    @keyframes spin {
-      0%, 100% {
-        box-shadow: .2em 0px 0 0px currentcolor;
-      }
-      12% {
-        box-shadow: .2em .2em 0 0 currentcolor;
-      }
-      25% {
-        box-shadow: 0 .2em 0 0px currentcolor;
-      }
-      37% {
-        box-shadow: -.2em .2em 0 0 currentcolor;
-      }
-      50% {
-        box-shadow: -.2em 0 0 0 currentcolor;
-      }
-      62% {
-        box-shadow: -.2em -.2em 0 0 currentcolor;
-      }
-      75% {
-        box-shadow: 0px -.2em 0 0 currentcolor;
-      }
-      87% {
-        box-shadow: .2em -.2em 0 0 currentcolor;
-      }
+    @keyframes dA {
+      0%   { stroke-dasharray: 0 1 359 0; }
+      50%  { stroke-dasharray: 0 359 1 0; }
+      100% { stroke-dasharray: 359 1 0 0; }
+    }
+    @keyframes sA {
+      0%   { stroke-dasharray: 270 90; }
+      50%  { stroke-dasharray: 0 360; }
+      100% { stroke-dasharray: 270 90; }
+    }
+    @keyframes dO {
+      0%   { stroke-dashoffset: 365; }
+      100% { stroke-dashoffset: 5; }
+    }
+    @keyframes spK {
+      0%            { rotate: 0deg;    }
+      12.5%, 25%    { rotate: 270deg;  }
+      37.5%, 50%    { rotate: 540deg;  }
+      62.5%, 75%    { rotate: 810deg;  }
+      87.5%, 100%   { rotate: 1080deg; }
     }
 
-    /* ✅ Updated Loading Text Styling */
-    .loading-text {
-      color: #ffffff;
-      font-size: 20px;
-      font-weight: 600;
-      letter-spacing: 1.5px;
-      animation: pulse 2s ease-in-out infinite;
-      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-    }
-
-    .loading-text .highlight {
-      color: #F59E0B;
-      font-weight: 700;
-      font-size: 24px;
-      text-shadow: 0 0 20px rgba(245, 158, 11, 0.5);
-    }
-
-    @keyframes pulse {
-      0%, 100% {
-        opacity: 1;
-        transform: scale(1);
-      }
-      50% {
-        opacity: 0.8;
-        transform: scale(1.02);
-      }
-    }
-
-    /* ✅ Loading Progress Bar */
+    /* ── Progress bar ──────────────────────────────────────────── */
     .loading-progress {
-      width: 200px;
-      height: 4px;
-      background: rgba(255, 255, 255, 0.2);
-      border-radius: 2px;
+      /* scales from 120px (watch) to 280px (desktop) */
+      width: clamp(120px, 55vw, 280px);
+      height: clamp(2px, 0.5vw, 4px);
+      background: rgba(255,255,255,0.18);
+      border-radius: 999px;
       overflow: hidden;
       position: relative;
     }
-
     .loading-progress::after {
       content: '';
       position: absolute;
-      top: 0;
-      left: 0;
-      height: 100%;
-      width: 50%;
-      background: linear-gradient(90deg, transparent, #ffffff, transparent);
-      animation: loading-slide 1.5s ease-in-out infinite;
+      top: 0; left: -60%;
+      height: 100%; width: 60%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.85), transparent);
+      animation: pslide 1.6s ease-in-out infinite;
+    }
+    @keyframes pslide {
+      0%   { left: -60%; }
+      100% { left: 110%; }
     }
 
-    @keyframes loading-slide {
-      0% {
-        left: -50%;
-      }
-      100% {
-        left: 100%;
-      }
+    /* ── Subtitle text ─────────────────────────────────────────── */
+    .loading-sub {
+      color: rgba(255,255,255,0.55);
+      /* scales: 8px (watch) → 11px (phone) → 13px (desktop) */
+      font-size: clamp(8px, 2.2vw, 13px);
+      font-family: 'Inter', sans-serif;
+      letter-spacing: clamp(1px, 0.5vw, 3px);
+      text-transform: uppercase;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       BREAKPOINT OVERRIDES
+       The SVG scales automatically via width:100% on its wrapper.
+       These breakpoints only adjust gap, progress bar, and text
+       for very specific device classes.
+    ══════════════════════════════════════════════════════════ */
+
+    /* ── Smartwatch / tiny screens (≤ 200px) ──────────────────── */
+    @media (max-width: 200px) {
+      .loading-container { gap: 10px; }
+      .loading-sub { display: none; } /* no room for text on watch face */
+      .loader-svg-wrap { max-width: 96vw; }
+    }
+
+    /* ── Small phones (201px – 360px) ─────────────────────────── */
+    @media (min-width: 201px) and (max-width: 360px) {
+      .loading-container { gap: 14px; }
+      .loading-sub { letter-spacing: 1.5px; }
+    }
+
+    /* ── Standard phones (361px – 480px) ──────────────────────── */
+    @media (min-width: 361px) and (max-width: 480px) {
+      .loading-container { gap: 18px; }
+    }
+
+    /* ── Large phones / small tablets (481px – 768px) ─────────── */
+    @media (min-width: 481px) and (max-width: 768px) {
+      .loading-container { gap: 24px; }
+      .loader-svg-wrap { max-width: 420px; }
+    }
+
+    /* ── Tablets (769px – 1024px) ─────────────────────────────── */
+    @media (min-width: 769px) and (max-width: 1024px) {
+      .loading-container { gap: 28px; }
+      .loader-svg-wrap { max-width: 440px; }
+    }
+
+    /* ── Laptops (1025px – 1440px) ────────────────────────────── */
+    @media (min-width: 1025px) and (max-width: 1440px) {
+      .loading-container { gap: 32px; }
+      .loader-svg-wrap { max-width: 460px; }
+    }
+
+    /* ── Large desktops / 4K (1441px+) ────────────────────────── */
+    @media (min-width: 1441px) {
+      .loading-container { gap: 40px; }
+      .loader-svg-wrap { max-width: 560px; }
+      .loading-sub { font-size: 14px; letter-spacing: 4px; }
+    }
+
+    /* ── Landscape phone: reduce vertical gap ──────────────────── */
+    @media (max-height: 400px) and (orientation: landscape) {
+      .loading-container { gap: 12px; }
+      .loading-sub { display: none; }
     }
   </style>
-  
-  <title>IMeetPro - Professional Video Conferencing</title>
 </head>
 <body>
-  <!-- ✅ Enhanced Loading Screen -->
+
+  <!-- ══════════════════════════════════════════════════════════
+       LOADING SCREEN
+  ══════════════════════════════════════════════════════════ -->
   <div class="loading-screen" id="loading-screen">
+
+    <!-- Shared SVG gradient definitions -->
+    <svg height="0" width="0" style="position:absolute;pointer-events:none;">
+      <defs>
+        <!--
+          gAll — ONE gradient for ALL letters.
+          white (top) → light-cyan (bottom), same vertical angle on every letter.
+        -->
+        <linearGradient id="gAll" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="76">
+          <stop stop-color="#ffffff"/>
+          <stop offset="1" stop-color="#a8edea"/>
+        </linearGradient>
+
+        <!--
+          gSpin — SAME white→light-cyan as gAll.
+          Only difference: animateTransform rotates the gradient angle.
+          Used ONLY on first 'e' and 'o' (spin letters).
+        -->
+        <linearGradient id="gSpin" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="76">
+          <stop stop-color="#ffffff"/>
+          <stop offset="1" stop-color="#a8edea"/>
+          <animateTransform
+            attributeName="gradientTransform"
+            type="rotate"
+            values="0 200 38;-270 200 38;-270 200 38;-540 200 38;-540 200 38;-810 200 38;-810 200 38;-1080 200 38;-1080 200 38"
+            keyTimes="0;0.125;0.25;0.375;0.5;0.625;0.75;0.875;1"
+            keySplines=".42,0,.58,1;.42,0,.58,1;.42,0,.58,1;.42,0,.58,1;.42,0,.58,1;.42,0,.58,1;.42,0,.58,1;.42,0,.58,1"
+            dur="8s"
+            repeatCount="indefinite"/>
+        </linearGradient>
+
+        <!-- Gold dot for the 'i' title mark -->
+        <radialGradient id="gDot" cx="50%" cy="35%" r="65%">
+          <stop stop-color="#fef9c3"/>
+          <stop offset="1" stop-color="#fbbf24"/>
+        </radialGradient>
+      </defs>
+    </svg>
+
     <div class="loading-container">
-      <div class="loader"></div>
-      <div class="loading-text">
-        Loading <span class="highlight">i</span>MeetPro...
+
+      <!--
+        SVG wrapper div — controls responsive scaling.
+        The SVG inside has width="400" height="76" viewBox="0 0 400 76".
+        By setting width:100% on the wrapper and width:100%/height:auto on
+        the SVG, it scales proportionally on every device while preserving
+        all internal coordinates exactly.
+
+        Letter layout (stroke-width=8, 16px gap):
+          i   x=10          ends ~18
+          M   x=30–74       ends 74
+          e1  x=90–132      ends 132  ← spin + gSpin
+          e2  x=148–190     ends 190
+          t   x=206–238     ends 238
+          P   x=254–292     ends 292
+          r   x=308–344     ends 344
+          o   cx=364 rx=18  ends 382  ← spin + gSpin
+      -->
+      <div class="loader-svg-wrap">
+        <svg width="400" height="76" viewBox="0 0 400 76"
+             fill="none" xmlns="http://www.w3.org/2000/svg">
+
+          <!-- ── i ── gAll -->
+          <circle cx="10" cy="11" r="6" fill="url(#gDot)">
+            <animate attributeName="r"
+              values="6;8;6" dur="2s" repeatCount="indefinite"
+              calcMode="spline" keySplines=".42,0,.58,1;.42,0,.58,1"/>
+            <animate attributeName="opacity"
+              values="1;0.6;1" dur="2s" repeatCount="indefinite"/>
+          </circle>
+          <line x1="10" y1="24" x2="10" y2="68"
+            stroke="url(#gAll)" stroke-width="8" stroke-linecap="round"
+            class="dash" pathLength="360"/>
+
+          <!-- ── M ── gAll -->
+          <path d="M30 24 L30 68 M30 24 L52 56 L74 24 L74 68"
+            stroke="url(#gAll)" stroke-width="8"
+            stroke-linecap="round" stroke-linejoin="round"
+            fill="none" class="dash" pathLength="360"/>
+
+          <!-- ── e (SPIN) ── gSpin: same white→cyan, angle rotates -->
+          <path
+            d="M132 40 C129 26 121 22 111 22
+               C100 22 90 31 90 44
+               C90 57 100 68 112 68
+               C121 68 128 62 132 55"
+            stroke="url(#gSpin)" stroke-width="8" stroke-linecap="round"
+            fill="none" class="spin" pathLength="360"
+            style="transform-origin:111px 45px;"/>
+          <line x1="90" y1="45" x2="132" y2="45"
+            stroke="url(#gSpin)" stroke-width="8" stroke-linecap="round"/>
+
+          <!-- ── e ── gAll -->
+          <path
+            d="M190 40 C187 26 179 22 169 22
+               C158 22 148 31 148 44
+               C148 57 158 68 170 68
+               C179 68 186 62 190 55"
+            stroke="url(#gAll)" stroke-width="8" stroke-linecap="round"
+            fill="none" class="dash" pathLength="360"/>
+          <line x1="148" y1="45" x2="190" y2="45"
+            stroke="url(#gAll)" stroke-width="8" stroke-linecap="round"/>
+
+          <!-- ── t ── gAll -->
+          <line x1="222" y1="10" x2="222" y2="68"
+            stroke="url(#gAll)" stroke-width="8" stroke-linecap="round"
+            class="dash" pathLength="360"/>
+          <line x1="206" y1="36" x2="238" y2="36"
+            stroke="url(#gAll)" stroke-width="8" stroke-linecap="round"/>
+
+          <!-- ── P ── gAll -->
+          <path
+            d="M254 24 L254 68
+               M254 24 L274 24
+               C286 24 290 30 290 38
+               C290 46 286 52 274 52
+               L254 52"
+            stroke="url(#gAll)" stroke-width="8"
+            stroke-linecap="round" stroke-linejoin="round"
+            fill="none" class="dash" pathLength="360"/>
+
+          <!-- ── r ── gAll (stem x=308, curl tip x=344) -->
+          <line x1="308" y1="24" x2="308" y2="68"
+            stroke="url(#gAll)" stroke-width="8" stroke-linecap="round"
+            class="dash" pathLength="360"/>
+          <path d="M308 38 C315 26 328 22 344 26"
+            stroke="url(#gAll)" stroke-width="8" stroke-linecap="round"
+            fill="none" class="dash" pathLength="360"/>
+
+          <!-- ── o (SPIN) ── gSpin: same white→cyan, angle rotates -->
+          <!-- cx=364 rx=18 → left edge 346, right edge 382 — clear gap from r -->
+          <ellipse cx="364" cy="46" rx="18" ry="22"
+            stroke="url(#gSpin)" stroke-width="8"
+            fill="none" class="spin" pathLength="360"
+            style="transform-origin:364px 46px;"/>
+
+        </svg>
       </div>
-   
+
+      <div class="loading-progress"></div>
+      <div class="loading-sub">Smarter meetings, sharper insights </div>
     </div>
   </div>
-  
-  <!-- Main App Container -->
+
+  <!-- ══════════════════════════════════════════════════════════
+       MAIN APP
+  ══════════════════════════════════════════════════════════ -->
   <div id="root"></div>
-  
+
   <script>
-    // Hide loading screen when page is fully loaded
-    window.addEventListener('load', () => {
-      const loadingScreen = document.getElementById('loading-screen');
-      loadingScreen.classList.add('fade-out');
-      
-      // Remove from DOM after fade animation completes
+    /* ── Hide loader: minimum 3s display, then fade out ── */
+    const MIN_LOAD_MS = 3000;
+    const loadStart   = Date.now();
+
+    function hideLoader() {
+      const ls      = document.getElementById('loading-screen');
+      const elapsed = Date.now() - loadStart;
+      const delay   = Math.max(0, MIN_LOAD_MS - elapsed);
       setTimeout(() => {
-        loadingScreen.style.display = 'none';
-      }, 500);
-    });
+        ls.classList.add('fade-out');
+        setTimeout(() => { ls.style.display = 'none'; }, 500);
+      }, delay);
+    }
 
-    // Fallback: Hide after maximum 10 seconds even if load event doesn't fire
+    /* fires when the page (and React bundle) has fully loaded */
+    window.addEventListener('load', hideLoader);
+
+    /* safety fallback: hide after 12s no matter what */
     setTimeout(() => {
-      const loadingScreen = document.getElementById('loading-screen');
-      if (loadingScreen && !loadingScreen.classList.contains('fade-out')) {
-        loadingScreen.classList.add('fade-out');
-        setTimeout(() => {
-          loadingScreen.style.display = 'none';
-        }, 500);
+      const ls = document.getElementById('loading-screen');
+      if (ls && !ls.classList.contains('fade-out')) {
+        ls.classList.add('fade-out');
+        setTimeout(() => { ls.style.display = 'none'; }, 500);
       }
-    }, 10000);
+    }, 12000);
 
-    // Theme detection and setting
+    /* ── Light / dark theme ── */
     function setTheme() {
       const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      const savedTheme = localStorage.getItem('theme');
-      const theme = savedTheme || (prefersDark ? 'dark' : 'light');
+      const savedTheme  = localStorage.getItem('theme');
+      const theme       = savedTheme || (prefersDark ? 'dark' : 'light');
       document.documentElement.setAttribute('data-theme', theme);
     }
-    
-    // Set initial theme
     setTheme();
-    
-    // Listen for theme changes
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', setTheme);
   </script>
-  
-  <!-- Load the React app -->
+
+  <!-- React entry point -->
   <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>

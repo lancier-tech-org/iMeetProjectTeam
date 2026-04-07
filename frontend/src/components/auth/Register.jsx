@@ -50,6 +50,8 @@ import {
   getPhonePlaceholder,
   PHONE_VALIDATION_RULES,
 } from "../../utils/phoneValidation";
+import logo from "../../assets/images/IMeetPro-logo-1.png"; // ← added
+
 const countries = [
   { code: "+1", name: "United States", flag: "🇺🇸" },
   { code: "+91", name: "India", flag: "🇮🇳" },
@@ -1132,29 +1134,29 @@ const Register = () => {
           <Box
             sx={{ width: "100%", maxWidth: { xs: "100%", sm: 420, md: 400 } }}
           >
-            {/* Logo */}
+            {/* Logo — replaced VideoCall icon+text with image */}
             <Box
               sx={{
-                mb: { xs: 2, sm: 3 },
+                mb: { xs: 2, sm: 2.5, md: 3 },
                 display: "flex",
-                alignItems: "center",
-                gap: 1,
-                justifyContent: { xs: "center", md: "flex-start" },
+                justifyContent: "flex-start",
+                pl: 0,
+                ml: 0,
               }}
             >
-              <VideoCall
-                sx={{ fontSize: { xs: 28, sm: 32 }, color: "#2196F3" }}
-              />
-              <Typography
-                variant="h5"
+              <Box
+                component="img"
+                src={logo}
+                alt="iMeetPro Logo"
                 sx={{
-                  fontWeight: 700,
-                  color: "#2196F3",
-                  fontSize: { xs: "1.25rem", sm: "1.5rem" },
+                  height: { xs: 72, sm: 88, md: 100 },
+                  width: "auto",
+                  maxWidth: { xs: 260, sm: 300, md: 320 },
+                  objectFit: "contain",
+                  objectPosition: "left center",
+                  display: "block",
                 }}
-              >
-                iMeet<span style={{ color: "#3DB4AC" }}>Pro</span>
-              </Typography>
+              />
             </Box>
 
             {/* Header */}
