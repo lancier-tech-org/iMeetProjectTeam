@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Professional Video Meeting Application - Google Meet alternative with advanced features" />
+  <meta name="keywords" content="video meeting, video conference, webrtc, online meeting, collaboration" />
+  <meta name="author" content="Meeting App Team" />
+  
+  <!-- SEO Meta Tags -->
+  <meta property="og:title" content="Meeting App - Professional Video Conferencing" />
+  <meta property="og:description" content="Join or host professional video meetings with HD quality, screen sharing, and real-time collaboration features." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://your-domain.com" />
+  
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Meeting App - Professional Video Conferencing" />
+  <meta name="twitter:description" content="Join or host professional video meetings with HD quality, screen sharing, and real-time collaboration features." />
+  
+  <!-- Basic Favicon (only if you have it) -->
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  
+  <!-- Manifest for PWA -->
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#1A8A8A" />
+  
+  <!-- Preconnect to external domains -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  
+  <!-- Material Icons -->
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
+  
+  <!-- CSS Variables for theming -->
+  <style>
+    :root {
+      /* ✅ Updated Primary Colors with Gradients */
+      --primary-color: #1A8A8A;
+      --primary-light: #2D7DD2;
+      --primary-dark: #3B5998;
+      --secondary-color: #EF4444;
+      --success-color: #10B981;
+      --warning-color: #F59E0B;
+      --error-color: #EF4444;
+      
+      /* ✅ Updated Background & Surface Colors */
+      --background-color: #F8FAFC;
+      --surface-color: #ffffff;
+      --surface-secondary: #F1F5F9;
+      
+      /* ✅ Updated Text Colors */
+      --text-primary: #1F2937;
+      --text-secondary: #6B7280;
+      --text-disabled: #9CA3AF;
+      
+      /* ✅ Updated Border & Grey Colors */
+      --border-color: #E2E8F0;
+      --grey-100: #F1F5F9;
+      --grey-200: #E2E8F0;
+      --grey-300: #CBD5E1;
+      --grey-400: #94A3B8;
+      --grey-500: #64748B;
+      --grey-600: #475569;
+      --grey-700: #334155;
+      --grey-800: #1E293B;
+      --grey-900: #0F172A;
+      
+      /* ✅ Updated Gradient Definitions */
+      --gradient-primary: linear-gradient(135deg, #1A8A8A 0%, #2D7DD2 50%, #3B5998 100%);
+      --gradient-primary-reverse: linear-gradient(135deg, #3B5998 0%, #2D7DD2 50%, #1A8A8A 100%);
+      --gradient-success: linear-gradient(135deg, #10B981 0%, #059669 100%);
+      --gradient-error: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
+      --gradient-dark: linear-gradient(135deg, #0F172A 0%, #1E293B 50%, #334155 100%);
+      
+      /* Shadow */
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+      --shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
+      --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+    }
+    
+    [data-theme="dark"] {
+      /* ✅ Dark Theme with New Colors */
+      --background-color: #0F172A;
+      --surface-color: #1E293B;
+      --surface-secondary: #334155;
+      
+      --text-primary: #F8FAFC;
+      --text-secondary: #CBD5E1;
+      --text-disabled: #64748B;
+      
+      --border-color: #334155;
+      
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+      --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+    }
+    
+    * {
+      box-sizing: border-box;
+    }
+    
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Inter', 'Roboto', 'Helvetica', 'Arial', sans-serif;
+      background-color: var(--background-color);
+      color: var(--text-primary);
+      transition: background-color 0.3s ease, color 0.3s ease;
+    }
+    
+    #root {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    /* ✅ Updated Loading Screen with Gradient */
+    .loading-screen {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(135deg, #1A8A8A 0%, #2D7DD2 50%, #3B5998 100%);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 9999;
+      transition: opacity 0.5s ease-out;
+    }
+
+    .loading-screen::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.1) 0%, transparent 50%);
+      pointer-events: none;
+    }
+
+    .loading-screen.fade-out {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .loading-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 30px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ✅ Enhanced Loader Animation */
+    .loader {
+      transform: rotateZ(45deg);
+      perspective: 1000px;
+      border-radius: 50%;
+      width: 48px;
+      height: 48px;
+      color: #fff;
+      position: relative;
+    }
+
+    .loader:before,
+    .loader:after {
+      content: '';
+      display: block;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: inherit;
+      height: inherit;
+      border-radius: 50%;
+      transform: rotateX(70deg);
+      animation: 1s spin linear infinite;
+    }
+
+    .loader:after {
+      color: #F59E0B;
+      transform: rotateY(70deg);
+      animation-delay: .1s;
+    }
+
+    @keyframes spin {
+      0%, 100% {
+        box-shadow: .2em 0px 0 0px currentcolor;
+      }
+      12% {
+        box-shadow: .2em .2em 0 0 currentcolor;
+      }
+      25% {
+        box-shadow: 0 .2em 0 0px currentcolor;
+      }
+      37% {
+        box-shadow: -.2em .2em 0 0 currentcolor;
+      }
+      50% {
+        box-shadow: -.2em 0 0 0 currentcolor;
+      }
+      62% {
+        box-shadow: -.2em -.2em 0 0 currentcolor;
+      }
+      75% {
+        box-shadow: 0px -.2em 0 0 currentcolor;
+      }
+      87% {
+        box-shadow: .2em -.2em 0 0 currentcolor;
+      }
+    }
+
+    /* ✅ Updated Loading Text Styling */
+    .loading-text {
+      color: #ffffff;
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      animation: pulse 2s ease-in-out infinite;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    }
+
+    .loading-text .highlight {
+      color: #F59E0B;
+      font-weight: 700;
+      font-size: 24px;
+      text-shadow: 0 0 20px rgba(245, 158, 11, 0.5);
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+      50% {
+        opacity: 0.8;
+        transform: scale(1.02);
+      }
+    }
+
+    /* ✅ Loading Progress Bar */
+    .loading-progress {
+      width: 200px;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 2px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .loading-progress::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      width: 50%;
+      background: linear-gradient(90deg, transparent, #ffffff, transparent);
+      animation: loading-slide 1.5s ease-in-out infinite;
+    }
+
+    @keyframes loading-slide {
+      0% {
+        left: -50%;
+      }
+      100% {
+        left: 100%;
+      }
+    }
+  </style>
+  
+  <title>IMeetPro - Professional Video Conferencing</title>
+</head>
+<body>
+  <!-- ✅ Enhanced Loading Screen -->
+  <div class="loading-screen" id="loading-screen">
+    <div class="loading-container">
+      <div class="loader"></div>
+      <div class="loading-text">
+        Loading <span class="highlight">i</span>MeetPro...
+      </div>
+   
+    </div>
+  </div>
+  
+  <!-- Main App Container -->
+  <div id="root"></div>
+  
+  <script>
+    // Hide loading screen when page is fully loaded
+    window.addEventListener('load', () => {
+      const loadingScreen = document.getElementById('loading-screen');
+      loadingScreen.classList.add('fade-out');
+      
+      // Remove from DOM after fade animation completes
+      setTimeout(() => {
+        loadingScreen.style.display = 'none';
+      }, 500);
+    });
+
+    // Fallback: Hide after maximum 10 seconds even if load event doesn't fire
+    setTimeout(() => {
+      const loadingScreen = document.getElementById('loading-screen');
+      if (loadingScreen && !loadingScreen.classList.contains('fade-out')) {
+        loadingScreen.classList.add('fade-out');
+        setTimeout(() => {
+          loadingScreen.style.display = 'none';
+        }, 500);
+      }
+    }, 10000);
+
+    // Theme detection and setting
+    function setTheme() {
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const savedTheme = localStorage.getItem('theme');
+      const theme = savedTheme || (prefersDark ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+    }
+    
+    // Set initial theme
+    setTheme();
+    
+    // Listen for theme changes
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', setTheme);
+  </script>
+  
+  <!-- Load the React app -->
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>
