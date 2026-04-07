@@ -1,0 +1,38 @@
+from django.urls import path
+from .meetings import (
+    Create_Calendar_Meeting, Get_Calendar_Meetings,
+    Create_Schedule_Meeting, Create_Instant_Meeting,
+    List_All_Meetings, Get_Meeting, Update_Meeting, Delete_Meeting,
+    Get_Schedule_Meetings, Get_User_Schedule_Meetings,
+    Get_User_Calendar_Meetings, Allow_From_Waiting_Room,
+    join_livekit_meeting, leave_livekit_meeting,
+    get_meeting_participants, get_livekit_connection_info,
+    update_participant_status, record_meeting_event,
+    check_connection_queue, join_meeting_with_queue,
+    bulk_send_invitations, health_check,
+)
+
+urlpatterns = [
+    path('api/meetings/calendar-meeting', Create_Calendar_Meeting, name='Create_Calendar_Meeting'),
+    path('api/meetings/calendar-meetings', Get_Calendar_Meetings, name='Get_Calendar_Meetings'),
+    path('api/meetings/schedule-meeting', Create_Schedule_Meeting, name='Create_Schedule_Meeting'),
+    path('api/meetings/instant-meeting', Create_Instant_Meeting, name='Create_Instant_Meeting'),
+    path('api/meetings/list', List_All_Meetings, name='List_All_Meetings'),
+    path('api/meetings/get/<str:id>', Get_Meeting, name='Get_Meeting'),
+    path('api/meetings/update/<str:id>', Update_Meeting, name='Update_Meeting'),
+    path('api/meetings/delete/<str:id>', Delete_Meeting, name='Delete_Meeting'),
+    path('api/meetings/schedule-meetings', Get_Schedule_Meetings, name='Get_Schedule_Meetings'),
+    path('api/meetings/user-schedule-meetings', Get_User_Schedule_Meetings, name='Get_User_Schedule_Meetings'),
+    path('api/meetings/user-calendar-meetings', Get_User_Calendar_Meetings, name='Get_User_Calendar_Meetings'),
+    path('api/meetings/<str:id>/allow-from-waiting-room', Allow_From_Waiting_Room, name='Allow_From_Waiting_Room'),
+    path('api/livekit/join-meeting/', join_livekit_meeting, name='join_livekit_meeting'),
+    path('api/livekit/leave-meeting/', leave_livekit_meeting, name='leave_livekit_meeting'),
+    path('api/livekit/participants/<str:meeting_id>/', get_meeting_participants, name='get_meeting_participants'),
+    path('api/livekit/connection-info/<str:meeting_id>/', get_livekit_connection_info, name='get_livekit_connection_info'),
+    path('api/livekit/update-status/', update_participant_status, name='update_participant_status'),
+    path('api/livekit/record-event/', record_meeting_event, name='record_meeting_event'),
+    path('api/meetings/check-queue/<str:meeting_id>/', check_connection_queue, name='check_connection_queue'),
+    path('api/meetings/join-with-queue/', join_meeting_with_queue, name='join_meeting_with_queue'),
+    path('api/invitations/bulk-send', bulk_send_invitations, name='bulk_send_invitations'),
+    path('api/health', health_check, name='health_check'),
+]

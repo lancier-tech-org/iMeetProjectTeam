@@ -1,0 +1,13 @@
+Django==5.0.14
+djangorestframework==3.16.0
+django-cors-headers==4.7.0
+python-dotenv==1.1.1
+pymongo==4.12.1
+numpy==1.26.4
+Pillow==11.2.1
+insightface==0.7.3
+onnxruntime-gpu==1.22.0
+opencv-python-headless==4.11.0.86
+boto3==1.38.27
+pytz==2025.2
+torch==2.7.0

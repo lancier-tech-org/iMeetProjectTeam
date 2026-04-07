@@ -1,0 +1,11 @@
+Django==5.0.14
+django-cors-headers==4.7.0
+python-dotenv==1.1.1
+mysqlclient==2.2.8
+pymongo==4.12.1
+boto3==1.38.27
+pytz==2025.2
+requests==2.32.3
+numpy==1.26.4
+opencv-python-headless==4.11.0.86
+Pillow==11.2.1

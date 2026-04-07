@@ -1,0 +1,330 @@
+# =============================================================================
+# iMeetPro Microservices - Docker Compose
+# =============================================================================
+# IP: 192.168.48.201
+# Python: 3.10
+# SSL: Self-signed certificates for local HTTPS testing
+# =============================================================================
+
+services:
+
+  # ═══════════════════════════════════════════════════════
+  # NGINX REVERSE PROXY (HTTPS :443 → HTTP services)
+  # ═══════════════════════════════════════════════════════
+  nginx:
+    image: nginx:alpine
+    container_name: imeetpro-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - whiteboard-service
+      - analytics-service
+      - face-auth-service
+      - attendance-service
+      - user-service
+      - meeting-core-service
+      - recording-service
+    restart: unless-stopped
+    networks:
+      - imeetpro-network
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 1: WHITEBOARD (Port 8230)
+  # ═══════════════════════════════════════════════════════
+  whiteboard-service:
+    build:
+      context: ./whiteboard-service
+      dockerfile: Dockerfile
+    container_name: imeetpro-whiteboard
+    ports:
+      - "8230:8230"
+    env_file:
+      - ./whiteboard-service/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - imeetpro-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8230/service-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 2: ANALYTICS & FEEDBACK (Port 8231)
+  # ═══════════════════════════════════════════════════════
+  analytics-service:
+    build:
+      context: ./analytics-service
+      dockerfile: Dockerfile
+    container_name: imeetpro-analytics
+    ports:
+      - "8231:8231"
+    env_file:
+      - ./analytics-service/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - imeetpro-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8231/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 3: FACE AUTH (Port 8232) [GPU]
+  # ═══════════════════════════════════════════════════════
+  face-auth-service:
+    build:
+      context: ./face-auth-service
+      dockerfile: Dockerfile
+    container_name: imeetpro-face-auth
+    ports:
+      - "8232:8232"
+    env_file:
+      - ./face-auth-service/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - imeetpro-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8232/service-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 4: ATTENDANCE (Port 8233)
+  # ═══════════════════════════════════════════════════════
+  attendance-service:
+    build:
+      context: ./attendance-service
+      dockerfile: Dockerfile
+    container_name: imeetpro-attendance
+    ports:
+      - "8233:8233"
+    env_file:
+      - ./attendance-service/.env
+    environment:
+      - FACE_AUTH_SERVICE_URL=http://face-auth-service:8232
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - face-auth-service
+    restart: unless-stopped
+    networks:
+      - imeetpro-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8233/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 5: USER (Port 8234)
+  # ═══════════════════════════════════════════════════════
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    container_name: imeetpro-user
+    ports:
+      - "8234:8234"
+    env_file:
+      - ./user-service/.env
+    environment:
+      - FACE_AUTH_SERVICE_URL=http://face-auth-service:8232
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - face-auth-service
+    restart: unless-stopped
+    networks:
+      - imeetpro-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8234/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 6: MEETING CORE (Port 8235)
+  # ═══════════════════════════════════════════════════════
+  meeting-core-service:
+    build:
+      context: ./meeting-core-service
+      dockerfile: Dockerfile
+    container_name: imeetpro-meeting-core
+    ports:
+      - "8235:8235"
+    env_file:
+      - ./meeting-core-service/.env
+    environment:
+      - ATTENDANCE_SERVICE_URL=http://attendance-service:8233
+      - RECORDING_SERVICE_URL=http://recording-service:8236
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - attendance-service
+      - recording-service
+    restart: unless-stopped
+    networks:
+      - imeetpro-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8235/service-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 6b: MEETING CORE CELERY WORKER
+  # ═══════════════════════════════════════════════════════
+  meeting-core-celery:
+    build:
+      context: ./meeting-core-service
+      dockerfile: Dockerfile
+    container_name: imeetpro-meeting-core-celery
+    command: celery -A config worker -l info --concurrency=4
+    env_file:
+      - ./meeting-core-service/.env
+    environment:
+      - ATTENDANCE_SERVICE_URL=http://attendance-service:8233
+      - RECORDING_SERVICE_URL=http://recording-service:8236
+      - DISABLE_SCHEDULER=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - meeting-core-service
+    restart: unless-stopped
+    networks:
+      - imeetpro-network
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 6c: MEETING CORE CELERY BEAT
+  # ═══════════════════════════════════════════════════════
+  meeting-core-celery-beat:
+    build:
+      context: ./meeting-core-service
+      dockerfile: Dockerfile
+    container_name: imeetpro-meeting-core-beat
+    command: celery -A config beat -l info
+    env_file:
+      - ./meeting-core-service/.env
+    environment:
+      - DISABLE_SCHEDULER=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - meeting-core-service
+    restart: unless-stopped
+    networks:
+      - imeetpro-network
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 7: RECORDING (Port 8236) [GPU]
+  # ═══════════════════════════════════════════════════════
+  recording-service:
+    build:
+      context: ./recording-service
+      dockerfile: Dockerfile
+    container_name: imeetpro-recording
+    ports:
+      - "8236:8236"
+    env_file:
+      - ./recording-service/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - imeetpro-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8236/service-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICE 7b: RECORDING CELERY WORKER [GPU]
+  # ═══════════════════════════════════════════════════════
+  recording-celery:
+    build:
+      context: ./recording-service
+      dockerfile: Dockerfile
+    container_name: imeetpro-recording-celery
+    command: celery -A config worker -l info --concurrency=2 -Q video_processing
+    env_file:
+      - ./recording-service/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - recording-service
+    restart: unless-stopped
+    networks:
+      - imeetpro-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+# ═══════════════════════════════════════════════════════
+  # SERVICE 8: ADMIN BILLING (Port 8237)
+  # ═══════════════════════════════════════════════════════
+  admin-billing-service:
+    build:
+      context: ./admin-billing-service
+      dockerfile: Dockerfile
+    container_name: imeetpro-admin-billing
+    ports:
+      - "8237:8237"
+    env_file:
+      - ./admin-billing-service/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - imeetpro-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8237/service-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+# ═══════════════════════════════════════════════════════
+# NETWORK
+# ═══════════════════════════════════════════════════════
+networks:
+  imeetpro-network:
+    driver: bridge
