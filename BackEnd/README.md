@@ -372,17 +372,17 @@ All endpoints are accessed through the Nginx gateway at `https://<host>/api/...`
 
 |Method|Endpoint|Description|
 |---|---|---|
-|GET|`/api/meetings/host/<user_id>/`|Get host's meetings|
-|GET|`/api/meetings/participant/<user_id>/`|Get participant's meetings|
-|GET|`/api/meetings/<meeting_id>/participants/`|Get meeting participants|
-|GET|`/api/meetings/<meeting_id>/participants/download-pdf/`|Download participants PDF|
-|GET|`/api/meetings/<meeting_id>/participants/<user_id>/report/pdf/`|Participant report PDF|
-|GET|`/api/meetings/<meeting_id>/participants/<user_id>/report/`|Participant report JSON|
-|GET|`/api/analytics/meeting-times`|Available meeting times|
-|GET|`/api/dashboard/quick-stats/`|Dashboard quick stats|
-|GET|`/api/analytics/host/overview`|Host dashboard overview|
-|GET|`/api/analytics/participant/overview`|Participant dashboard overview|
-|GET|`/api/analytics/comprehensive`|Comprehensive analytics|
+| GET | `/api/meetings/host/<user_id>/` | Get host's meetings |
+| GET | `/api/meetings/<meeting_id>/participants/` | Get meeting participants |
+| GET | `/api/meetings/participant/<user_id>/` | Get participant's meetings |
+| GET | `/api/meetings/<meeting_id>/participants/download-pdf/` | Download participants PDF |
+| GET | `/api/meetings/<meeting_id>/participants/<user_id>/report/pdf/` | Participant report PDF |
+| GET | `/api/meetings/<meeting_id>/participants/<user_id>/report/` | Participant report JSON |
+| GET | `/api/analytics/meeting-times` | Available meeting times |
+| GET | `/api/dashboard/quick-stats/` | Dashboard quick stats |
+| GET | `/api/analytics/host/overview` | Host dashboard overview |
+| GET | `/api/analytics/participant/overview` | Participant dashboard overview |
+| GET | `/api/analytics/comprehensive` | Comprehensive analytics |
 |POST|`/api/feedback/create`|Create feedback|
 |GET|`/api/feedback/feedbacks`|List all feedback|
 |GET|`/api/feedback/feedback/<id>`|Get feedback|
