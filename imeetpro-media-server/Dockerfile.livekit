@@ -1,0 +1,12 @@
+FROM golang:1.25-bookworm AS builder
+
+WORKDIR /build
+COPY . .
+RUN go build -o imeetpro-server ./cmd/server
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /build/imeetpro-server .
+EXPOSE 7880 7881 50000-60000/udp
+CMD ["./imeetpro-server"]

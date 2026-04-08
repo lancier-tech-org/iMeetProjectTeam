@@ -1,0 +1,19 @@
+FROM debian:bookworm-slim AS builder
+
+RUN apt-get update && apt-get install -y \
+    build-essential cmake pkg-config \
+    libssl-dev libevent-dev libsqlite3-dev libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+RUN touch README.md && mkdir build && cd build && cmake .. && make -j$(nproc)
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y \
+    libssl3 libevent-core-2.1-7 libevent-extra-2.1-7 libevent-openssl-2.1-7 libevent-pthreads-2.1-7 libsqlite3-0 libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /build/build/bin/turnserver /usr/local/bin/turnserver
+EXPOSE 5349/udp 5349/tcp 50000-60000/udp
+CMD ["turnserver"]

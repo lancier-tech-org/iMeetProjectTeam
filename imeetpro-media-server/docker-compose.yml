@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  imeetpro-server:
+    build:
+      context: ./livekit
+      dockerfile: ../Dockerfile.livekit
+    container_name: imeetpro-media-server
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./config/config.yaml:/etc/imeetpro/config.yaml:ro
+    command: ["./imeetpro-server", "--config", "/etc/imeetpro/config.yaml"]
+
+  coturn:
+    build:
+      context: ./coturn
+      dockerfile: ../Dockerfile.coturn
+    container_name: imeetpro-coturn
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./config/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["turnserver", "-c", "/etc/coturn/turnserver.conf"]
+
+  nginx:
+    image: nginx:alpine
+    container_name: imeetpro-media-nginx
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
