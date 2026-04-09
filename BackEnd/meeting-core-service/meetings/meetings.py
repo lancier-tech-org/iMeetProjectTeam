@@ -216,50 +216,7 @@ def get_meeting_with_occurrence_info(meeting_id: str, user_id: str) -> Dict:
              participant_exists, is_currently_active, is_recurring, 
              recurrence_end_date, scheduled_end_date) = row
             
-            # Validate meeting is joinable
-            if status and status.lower() == 'ended':
-                # Check if recurring meeting still allows joins
-                if is_recurring and recurrence_end_date:
-                    if timezone.now() >= recurrence_end_date:
-                        return {
-                            'success': False,
-                            'error': 'Meeting has ended',
-                            'status_code': 400
-                        }
-                else:
-                    # =============================================================
-                    # ✅ FIX: For InstantMeetings & CalendarMeetings, DON'T block
-                    # the join even if status is 'ended'. Let join_livekit_meeting()
-                    # handle the reset to 'active'.
-                    #
-                    # Why: If Ended_At has a bad timestamp (UTC vs IST mismatch),
-                    # status gets stuck as 'ended' even though people are still in
-                    # the LiveKit room. Blocking here creates a deadlock where
-                    # nobody can join to fix the status.
-                    #
-                    # The join endpoint has its own universal status reset that
-                    # will set Status='active' and Ended_At=NULL when someone joins.
-                    # =============================================================
-                    if meeting_type == 'InstantMeeting':
-                        logging.warning(
-                            f"⚠️ InstantMeeting {meeting_id} status='ended' — "
-                            f"allowing join attempt (join will reset status to 'active')"
-                        )
-                        # Don't block — let join_livekit_meeting handle the reset
-                    elif meeting_type == 'CalendarMeeting':
-                        logging.warning(
-                            f"⚠️ CalendarMeeting {meeting_id} status='ended' — "
-                            f"allowing join attempt (join will reset status to 'active')"
-                        )
-                        # Don't block — let join_livekit_meeting handle the reset
-                    else:
-                        # For other meeting types (e.g. ScheduleMeeting), keep original behavior
-                        return {
-                            'success': False,
-                            'error': 'Meeting has ended',
-                            'status_code': 400
-                        }
-            
+            # Status is always 'active' — no ended check needed, all meetings are joinable
             # Build response
             result = {
                 'success': True,
@@ -2395,9 +2352,8 @@ def calculate_meeting_status(started_at, ended_at, duration_minutes=60, meeting_
             else:
                 ended_at = ended_at.astimezone(ist_timezone)
         
-        # RULE 1: If database says 'ended', trust it — host formally ended
-        if db_status and db_status.lower() == 'ended':
-            return 'ended'
+        # RULE 1: Database status is always 'active' — skip ended check
+        # Meeting status for display is calculated from time/duration only
         
         # RULE 2: If no start time, meeting is scheduled
         if not started_at:
@@ -6328,33 +6284,8 @@ def get_livekit_connection_info(request, meeting_id):
             # If yes → meeting is NOT actually ended, reset to 'active'.
             # If no  → meeting really ended, return error as before.
             # =============================================================
-            if status and status.lower() == 'ended':
-                try:
-                    room_name_check = livekit_room_name or f"meeting_{meeting_id}"
-                    live_participants = livekit_service.list_participants(room_name_check)
-                    
-                    if len(live_participants) > 0:
-                        # LiveKit has participants — meeting is NOT actually ended!
-                        logging.warning(
-                            f"⚠️ Meeting {meeting_id} status='ended' but "
-                            f"{len(live_participants)} LiveKit participants found. "
-                            f"Resetting to 'active'."
-                        )
-                        with connection.cursor() as fix_cursor:
-                            fix_cursor.execute("""
-                                UPDATE tbl_Meetings 
-                                SET Status = 'active', Ended_At = NULL
-                                WHERE ID = %s
-                            """, [meeting_id])
-                        status = 'active'
-                    else:
-                        # No LiveKit participants — meeting really is ended
-                        return JsonResponse({'error': 'Meeting has ended'}, status=400)
-                        
-                except Exception as lk_err:
-                    logging.warning(f"Could not verify LiveKit room status: {lk_err}")
+            # Status is always 'active' — no ended check needed
                     # If we can't check LiveKit, fall back to original behavior
-                    return JsonResponse({'error': 'Meeting has ended'}, status=400)
         
         room_name = livekit_room_name or f"meeting_{meeting_id}"
         

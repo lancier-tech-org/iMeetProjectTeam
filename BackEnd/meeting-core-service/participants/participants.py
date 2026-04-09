@@ -762,11 +762,7 @@ def record_participant_join(request):
                 meeting_type = meeting_row[1] or 'InstantMeeting'
                 meeting_status = meeting_row[2]
                 
-                if meeting_status == 'ended':
-                    return JsonResponse({
-                        'success': False,
-                        'error': 'Meeting has ended'
-                    }, status=400)
+                # Status is always 'active' — no join block needed
                     
         except Exception as e:
             logging.error(f"[JOIN] Meeting validation error: {e}")
@@ -3088,46 +3084,7 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
                 #
                 # Now sync will self-heal by resetting status to 'active'.
                 # =============================================================
-                if meeting_status == 'ended':
-                    try:
-                        lk_check_participants = get_livekit_service().list_participants(room_name) if get_livekit_service() else []
-                    except Exception:
-                        lk_check_participants = []
-                    
-                    if len(lk_check_participants) > 0:
-                        # ✅ LiveKit has participants — status is WRONG, fix it!
-                        # logging.warning(
-                        #     f"⚠️ [SYNC-FIXED] Meeting {meeting_id} status='ended' but "
-                        #     f"{len(lk_check_participants)} LiveKit participants still connected!"
-                        # )
-                        # logging.warning(f"⚠️ [SYNC-FIXED] Resetting status to 'active' and clearing Ended_At")
-                        
-                        try:
-                            cursor.execute("""
-                                UPDATE tbl_Meetings 
-                                SET Status = 'active', Ended_At = NULL
-                                WHERE ID = %s
-                            """, [meeting_id])
-                            meeting_status = 'active'
-                            ended_at_time = None
-                            # logging.info(f"✅ [SYNC-FIXED] Meeting {meeting_id} status reset to 'active' — sync will proceed normally")
-                        except Exception as fix_err:
-                            logging.error(f"❌ [SYNC-FIXED] Failed to reset meeting status: {fix_err}")
-                    else:
-                        # No LiveKit participants — meeting really is ended
-                        # logging.info(f"[SYNC-FIXED] Meeting {meeting_id} ended and no LiveKit participants - skipping sync")
-                        return JsonResponse({
-                            "success": True,
-                            "message": "Meeting already ended - no sync performed",
-                            "sync_results": {
-                                "added": 0, 
-                                "removed": 0, 
-                                "rejoined": 0, 
-                                "already_synced": 0,
-                                "rejected_phantom_joins": 0
-                            }
-                        }, status=200)
-                
+                # Status is always 'active' — no ended check needed, proceed with sync
                 logging.info(f"[SYNC-FIXED] Meeting status: {meeting_status}, Ended_At: {ended_at_time}")
                     
         except Exception as e:
@@ -3362,8 +3319,8 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
                         
                         time_since_join = (current_time - last_join_dt).total_seconds()
                         
-                        # 15 second grace period before marking as left
-                        if time_since_join > 15:
+                        # 30 second grace period before marking as left
+                        if time_since_join > 30:
                             try:
                                 with connection.cursor() as cursor:
                                     # Get current leave times
@@ -3750,12 +3707,8 @@ def end_meeting(request, meeting_id):
 
                 host_id, meeting_name, current_status, started_at, meeting_id, is_recording_enabled, meeting_type, is_recurring, recurrence_end_date = meeting_row
                 
-                if current_status == "ended":
-                    return JsonResponse({
-                        "success": True,
-                        "message": "Meeting already ended",
-                        "meeting_id": meeting_id
-                    })
+                # Status is always 'active' — no need to check for 'ended'
+                # Proceed with end_meeting logic (set End_Meeting_Time, stop recording, etc.)
 
                 if not force_end and ended_by_user_id and str(ended_by_user_id) != str(host_id):
                     return JsonResponse(
@@ -3850,44 +3803,11 @@ def end_meeting(request, meeting_id):
         participants_processed = 0
         participants_data = []
 
-        # ===== FIXED: RECURRING MEETING REJOIN LOGIC =====
-        final_meeting_status = 'ended'  # Default: ended (no rejoin)
+        # ===== MEETING STATUS: Always keep active — any meeting can be rejoined =====
+        final_meeting_status = 'active'
         is_recurring_meeting = bool(is_recurring)
-        can_rejoin = False
-        
-        if is_recurring_meeting:
-            # RECURRING MEETING - Check recurrence_end_date
-            if recurrence_end_date:
-                try:
-                    recurrence_end_dt = convert_to_ist(recurrence_end_date)
-                    
-                    if end_time < recurrence_end_dt:
-                        # Current time is BEFORE recurrence_end_date → ALLOW REJOIN
-                        final_meeting_status = 'active'
-                        can_rejoin = True
-                        logging.info(f"[end_meeting] ✅ RECURRING: Current time ({end_time_str}) < recurrence_end_date ({recurrence_end_date}) → REJOIN ALLOWED")
-                    else:
-                        # Current time is AFTER recurrence_end_date → NO REJOIN
-                        final_meeting_status = 'ended'
-                        can_rejoin = False
-                        logging.info(f"[end_meeting] ❌ RECURRING: Current time ({end_time_str}) >= recurrence_end_date ({recurrence_end_date}) → REJOIN NOT ALLOWED")
-                        
-                except Exception as date_err:
-                    logging.error(f"[end_meeting] Error parsing recurrence_end_date: {date_err}")
-                    # If date parsing fails, default to ended for safety
-                    final_meeting_status = 'ended'
-                    can_rejoin = False
-            else:
-                # Recurring but NO recurrence_end_date set → Keep active indefinitely
-                final_meeting_status = 'active'
-                can_rejoin = True
-                logging.info(f"[end_meeting] ✅ RECURRING: No recurrence_end_date set → REJOIN ALLOWED (indefinitely)")
-        else:
-            # NON-RECURRING MEETING → Always ended, no rejoin
-            final_meeting_status = 'ended'
-            can_rejoin = False
-            logging.info(f"[end_meeting] ❌ NON-RECURRING: Meeting ended → REJOIN NOT ALLOWED")
-
+        can_rejoin = True
+        logging.info(f"[end_meeting] Meeting status will remain 'active' — rejoin always allowed")
         # ===== Update meeting status =====
         try:
             with transaction.atomic():
@@ -4352,11 +4272,7 @@ def assign_co_host(request):
                 
                 host_id, meeting_name, status = meeting_row
                 
-                if status == 'ended':
-                    return JsonResponse({
-                        'success': False,
-                        'error': 'Cannot assign co-host to ended meeting'
-                    }, status=400)
+                # Status is always 'active' — no ended check needed
                 
                 # Check permissions
                 if str(assigned_by) != str(host_id):
@@ -4565,12 +4481,7 @@ def remove_co_host(request):
                 logging.info(f"[REMOVE-COHOST] Meeting found: {meeting_name}, Status: {status}, Host: {host_id}")
                 
                 # Check if meeting has ended
-                if status == 'ended':
-                    logging.warning(f"[REMOVE-COHOST] Meeting {meeting_id} has ended")
-                    return JsonResponse({
-                        'success': False,
-                        'error': 'Cannot modify roles in ended meeting'
-                    }, status=400)
+                # Status is always 'active' — no ended check needed
                 
                 # Check if removed_by is the host
                 if str(removed_by) != str(host_id):
@@ -4953,12 +4864,7 @@ def remove_participant_from_meeting(request):
                 logging.info(f"[REMOVE-PARTICIPANT] Meeting: {meeting_name}, Status: {status}, Host: {host_id}")
                 
                 # Check if meeting has ended
-                if status == 'ended':
-                    logging.warning(f"[REMOVE-PARTICIPANT] Meeting {meeting_id} has ended")
-                    return JsonResponse({
-                        'success': False,
-                        'error': 'Cannot remove participant from ended meeting'
-                    }, status=400)
+                # Status is always 'active' — no ended check needed
                 
                 # Check if trying to remove the host
                 if str(user_id_to_remove) == str(host_id):
