@@ -12,4 +12,5 @@ urlpatterns = [
     path('', include('chat.urls')),
     path('', include('reactions.urls')),
     path('', include('hand_raise.urls')),
+    path('', include('polls.urls')),
 ]

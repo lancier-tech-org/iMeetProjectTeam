@@ -20,6 +20,7 @@ INSTALLED_APPS = [
     'chat',
     'reactions',
     'hand_raise',
+    'polls'
 ]
 
 MIDDLEWARE = [
