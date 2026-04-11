@@ -357,6 +357,28 @@ def verify_and_repair_video_url(video_doc: dict) -> dict:
         # URL is invalid, attempt to rebuild correct path
         logger.info(f"🔧 Attempting to rebuild S3 path for meeting_id={meeting_id}, user_id={user_id}, type={meeting_type}")
         
+        # CRITICAL FIX: Try file_path from MongoDB first (this is the merged file with audio)
+        file_path_key = video_doc.get("file_path")
+        if file_path_key:
+            try:
+                size = get_s3_object_size(file_path_key)
+                if size > 0:
+                    rebuilt_url = f"https://{AWS_S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{file_path_key}"
+                    logger.info(f"✅ Found video at file_path: {file_path_key} ({size} bytes)")
+                    try:
+                        collection.update_one(
+                            {"_id": video_doc.get("_id")},
+                            {"$set": {"video_url": rebuilt_url}}
+                        )
+                        logger.info(f"✅ Updated video URL from file_path in MongoDB")
+                    except Exception as update_error:
+                        logger.warning(f"⚠️ Failed to update MongoDB: {update_error}")
+                    video_doc["video_url"] = rebuilt_url
+                    video_doc["url_repaired"] = True
+                    return video_doc
+            except Exception as fp_error:
+                logger.warning(f"⚠️ file_path check failed: {fp_error}")
+        
         rebuilt_key = build_s3_key_from_parts(
             base_folder="videos",
             meeting_id=meeting_id,
@@ -3066,8 +3088,20 @@ def stream_video(request, id):
             logger.error(f"Video URL still missing after repair attempt for ID {id}")
             return JsonResponse({"Error": "Video not accessible"}, status=404)
 
+        # SAFETY: Prefer file_path (merged with audio) over rebuilt video_url (may be video-only)
+        file_path_key = video.get("file_path")
+        if file_path_key:
+            fp_size = get_s3_object_size(file_path_key)
+            if fp_size > 0:
+                current_key = extract_s3_key_from_url(video_url, AWS_S3_BUCKET)
+                current_size = get_s3_object_size(current_key) if current_key else 0
+                if fp_size > current_size:
+                    logger.info(f"📹 Streaming merged file: {file_path_key} ({fp_size} bytes) instead of {current_key} ({current_size} bytes)")
+                    video_url = f"https://{AWS_S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{file_path_key}"
+
         # Extract S3 key with improved method
         s3_key = extract_s3_key_from_url(video_url, AWS_S3_BUCKET)
+        
         if not s3_key:
             logger.error(f"Failed to extract S3 key from URL: {video_url}")
             return JsonResponse({"Error": "Invalid video URL format"}, status=400)

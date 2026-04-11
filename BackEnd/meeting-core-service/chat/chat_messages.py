@@ -18,6 +18,9 @@ from django.conf import settings
 from redis import ConnectionPool
 from functools import wraps
 
+# cache_only_chat.py - Fixed Enhanced Ephemeral Chat System with Private File Upload
+
+
 # Configure logging
 logger = logging.getLogger('cache_chat')
 
@@ -373,6 +376,7 @@ class EnhancedCacheOnlyChatManager:
                 'sender_is_host': message_data.get('sender_is_host', False),
                 'file_id': message_data.get('file_id'),
                 'file_metadata': message_data.get('file_metadata'),
+                'reply_to': message_data.get('reply_to'),
                 'file_data': message_data.get('file_data')
             }
             
@@ -966,7 +970,8 @@ def send_cache_chat_message(request):
             'is_private': data.get('is_private', False),
             'recipients': data.get('recipients', []),
             'sender_is_host': data.get('sender_is_host', False),
-            'file_data': data.get('file_data')
+            'file_data': data.get('file_data'),
+            'reply_to': data.get('reply_to'),
         }
         
         message_id = enhanced_cache_chat_manager.add_message(data['meeting_id'], message_data)
@@ -991,6 +996,44 @@ def send_cache_chat_message(request):
         logger.error(f"❌ Error sending enhanced cache chat message: {e}")
         return JsonResponse({'error': 'Internal server error'}, status=500)
     pass
+
+@require_http_methods(["POST"])
+@csrf_exempt
+def react_to_message(request):
+    try:
+        data = json.loads(request.body)
+        meeting_id = data.get('meeting_id')
+        message_id = data.get('message_id')
+        user_id = data.get('user_id')
+        user_name = data.get('user_name', 'Anonymous')
+        emoji = data.get('emoji')
+
+        if not all([meeting_id, message_id, user_id, emoji]):
+            return JsonResponse({'error': 'Missing required fields'}, status=400)
+
+        redis_client = get_redis_client()
+        reaction_key = f"chat_reactions:{meeting_id}"
+        field = f"{message_id}|{user_id}"
+
+        existing = redis_client.hget(reaction_key, field)
+        if existing:
+            existing_data = json.loads(existing)
+            if existing_data.get('emoji') == emoji:
+                redis_client.hdel(reaction_key, field)
+                return JsonResponse({'success': True, 'action': 'removed', 'emoji': emoji})
+
+        redis_client.hset(reaction_key, field, json.dumps({
+            'emoji': emoji,
+            'user_id': str(user_id),
+            'user_name': user_name,
+            'timestamp': timezone.now().isoformat()
+        }))
+
+        return JsonResponse({'success': True, 'action': 'added', 'emoji': emoji})
+
+    except Exception as e:
+        logger.error(f"❌ Error reacting to message: {e}")
+        return JsonResponse({'error': 'Internal server error'}, status=500)
 
 @require_http_methods(["POST"])
 @csrf_exempt
@@ -1213,9 +1256,28 @@ def get_cache_chat_history(request, meeting_id):
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning(f"Failed to update file_data URLs: {e}")
         
+        # Fetch reactions for this meeting
+        redis_client = get_redis_client()
+        reactions_key = f"chat_reactions:{meeting_id}"
+        raw_reactions = redis_client.hgetall(reactions_key)
+        reactions = {}
+        for field, value in raw_reactions.items():
+            parts = field.split('|', 1)
+            if len(parts) == 2:
+                msg_id, uid = parts
+                rdata = json.loads(value)
+                if msg_id not in reactions:
+                    reactions[msg_id] = []
+                reactions[msg_id].append({
+                    'userId': rdata.get('user_id', uid),
+                    'userName': rdata.get('user_name', 'Unknown'),
+                    'emoji': rdata.get('emoji', '')
+                })
+
         return JsonResponse({
             'success': True,
             'messages': messages,
+            'reactions': reactions,           # ← ADD THIS
             'count': len(messages),
             'total_count': total_count,
             'storage_type': 'enhanced_cache_only',
@@ -1515,3 +1577,4 @@ def health_check(request):
             'status': 'unhealthy',
             'error': str(e)
         }, status=500)
+

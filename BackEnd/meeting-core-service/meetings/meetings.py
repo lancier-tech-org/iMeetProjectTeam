@@ -3500,14 +3500,31 @@ def Get_Meeting(request, id):
             'LiveKit_Room_Name', 'LiveKit_Room_SID'
         ], row))
 
-        # Add host_name
+        # Add host_name and host_email
         try:
             with connection.cursor() as cursor2:
-                cursor2.execute("SELECT Full_Name FROM tbl_Users WHERE ID = %s", [meeting['Host_ID']])
+                cursor2.execute(
+                    "SELECT full_name, email FROM tbl_Users WHERE ID = %s",
+                    [meeting['Host_ID']]
+                )
                 name_row = cursor2.fetchone()
-                meeting['host_name'] = name_row[0] if name_row else "Host"
+                if name_row:
+                    meeting['host_name'] = name_row[0] or "Host"
+                    meeting['host_email'] = name_row[1] or ""
+                    meeting['Host_Name'] = name_row[0] or "Host"      # ✅ Capitalized version for frontend
+                    meeting['Host_Email'] = name_row[1] or ""         # ✅ Capitalized version for frontend
+                else:
+                    meeting['host_name'] = "Host"
+                    meeting['host_email'] = ""
+                    meeting['Host_Name'] = "Host"
+                    meeting['Host_Email'] = ""
+                logging.info(f"✅ Host info fetched for meeting {id}: name={meeting['host_name']}, email={meeting['host_email']}")
         except Exception as e:
+            logging.error(f"❌ Failed to fetch host info: {e}")
             meeting['host_name'] = "Host"
+            meeting['host_email'] = ""
+            meeting['Host_Name'] = "Host"
+            meeting['Host_Email'] = ""
 
         # ENHANCED: Add LiveKit information
         meeting['LiveKit_URL'] = LIVEKIT_CONFIG['url'] if LIVEKIT_ENABLED else None
