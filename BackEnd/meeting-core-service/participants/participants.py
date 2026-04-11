@@ -2643,6 +2643,17 @@ def Get_Live_Participants_Enhanced_No_Status(request, meeting_id):
         
         db_participants = []
         
+        # ===== STEP 0: Get meeting host_user_id from tbl_Meetings =====
+        host_user_id = None
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT Host_ID FROM tbl_Meetings WHERE ID = %s", [meeting_id])
+                host_row = cursor.fetchone()
+                if host_row:
+                    host_user_id = str(host_row[0])
+        except Exception as e:
+            logging.warning(f"Could not fetch host_user_id: {e}")
+
         # ===== STEP 1: Get database participants with CORRECTED SCHEMA =====
         try:
             with connection.cursor() as cursor:
@@ -2688,6 +2699,9 @@ def Get_Live_Participants_Enhanced_No_Status(request, meeting_id):
                     leave_times_json = row[5]
                     end_meeting_time = row[6]
                     role = row[7]
+                    # ✅ FIX: Force 'host' if this user is the meeting host in tbl_Meetings
+                    if host_user_id and str(user_id) == host_user_id:
+                        role = 'host'
                     meeting_type = row[8]
                     total_duration = row[9]
                     # CORRECT:
@@ -2891,6 +2905,7 @@ def Get_Live_Participants_Enhanced_No_Status(request, meeting_id):
                 db_participant['LiveKit_Connected'] = True
                 db_participant['Has_Stream'] = lk_data.get('total_tracks', 0) > 0
                 db_participant['Status'] = 'live'
+                db_participant['Is_Currently_Active'] = True  # ← ADD THIS
                 db_participant['LiveKit_Data'] = lk_data
                 db_participant['Debug_Info'] = {
                     'parsing_method': lk_data.get('parsing_method'),
@@ -2959,6 +2974,7 @@ def Get_Live_Participants_Enhanced_No_Status(request, meeting_id):
         response_data = {
             'success': True,
             'meeting_id': meeting_id,
+            'host_user_id': host_user_id,  # ✅ FIX: expose for frontend role detection
             'summary': {
                 'total_participants': total_participants,
                 'filtered_participants': filtered_count,
