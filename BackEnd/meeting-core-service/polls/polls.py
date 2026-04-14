@@ -1,3 +1,4 @@
+# core/WebSocketConnection/polls.py
 # Cache-based Poll/MCQ system - follows reactions.py pattern exactly
 
 import redis
@@ -106,9 +107,9 @@ def _build_results(poll_data, votes_raw):
             'votes': count,
             'percentage': pct,
         }
-        stored_correct = poll_data.get('correct_option')
-        if stored_correct is not None:
-            result['is_correct'] = (i == stored_correct)
+        stored_corrects = poll_data.get('correct_options')
+        if stored_corrects is not None:
+            result['is_correct'] = (i in stored_corrects)
         results.append(result)
 
     return results
@@ -171,14 +172,35 @@ def create_poll(request):
     if poll_type not in POLL_TYPES:
         return JsonResponse({'error': f'poll_type must be one of {POLL_TYPES}'}, status=400)
 
-    # correct_option is optional for single/multiple, required for quiz
+    # Normalise correct_option → correct_options list
+    # Accepts: None | int | [int,...] | tuple | JSON-string from frontend
+    correct_options = None
     if correct_option is not None:
-        try:
-            correct_option = int(correct_option)
-            if not (0 <= correct_option < len(options)):
-                return JsonResponse({'error': 'correct_option index out of range'}, status=400)
-        except (TypeError, ValueError):
-            return JsonResponse({'error': 'correct_option must be an integer index'}, status=400)
+        # Unwrap JSON string e.g. "[0,2]"
+        if isinstance(correct_option, str):
+            try:
+                import json as _json
+                correct_option = _json.loads(correct_option)
+            except Exception:
+                pass
+
+        # Now handle list / tuple
+        if isinstance(correct_option, (list, tuple)):
+            try:
+                correct_options = [int(x) for x in correct_option]
+                if any(not (0 <= x < len(options)) for x in correct_options):
+                    return JsonResponse({'error': 'correct_option index out of range'}, status=400)
+            except (TypeError, ValueError):
+                return JsonResponse({'error': 'correct_options must be integer indices'}, status=400)
+        else:
+            # Single integer
+            try:
+                idx = int(correct_option)
+                if not (0 <= idx < len(options)):
+                    return JsonResponse({'error': 'correct_option index out of range'}, status=400)
+                correct_options = [idx]
+            except (TypeError, ValueError):
+                return JsonResponse({'error': 'correct_option must be an integer or list of integers'}, status=400)
     elif poll_type == 'quiz':
         return JsonResponse({'error': 'correct_option is required for quiz type'}, status=400)
 
@@ -201,7 +223,7 @@ def create_poll(request):
         'question':        question,
         'options':         options,
         'poll_type':       poll_type,
-        'correct_option':  correct_option,
+        'correct_options': correct_options,   # list or None
         'timer_seconds':   timer_seconds,
         'show_results_live': show_live,
         'status':          'active',          # active | closed
@@ -335,9 +357,14 @@ def submit_vote(request):
 
     # Quiz: check correctness
     is_correct = None
-    stored_correct = poll_data.get('correct_option')
-    if stored_correct is not None:
-        is_correct = (stored_correct in selected_options)
+    stored_corrects = poll_data.get('correct_options')
+    if stored_corrects is not None:
+        # Fully correct = selected exactly the correct set
+        is_correct = (set(selected_options) == set(stored_corrects))
+        # Partial = selected some correct but not all (or extra wrong)
+        selected_set = set(selected_options)
+        correct_set  = set(stored_corrects)
+        partial_correct = selected_set & correct_set  # intersection
 
     now_iso = timezone.now().isoformat()
 
@@ -363,10 +390,10 @@ def submit_vote(request):
     if poll_data['show_results_live']:
         response['live_results'] = results
 
-    stored_correct = poll_data.get('correct_option')
-    if stored_correct is not None:
-        response['is_correct'] = is_correct
-        response['correct_option'] = stored_correct
+    stored_corrects = poll_data.get('correct_options')
+    if stored_corrects is not None:
+        response['is_correct']      = is_correct
+        response['correct_options'] = stored_corrects  # list for frontend
 
     return JsonResponse(response, status=200)
 
@@ -434,6 +461,7 @@ def get_poll_results(request, meeting_id, poll_id):
         'created_at':     poll_data['created_at'],
         'closed_at':      poll_data.get('closed_at'),
         'host_user_id':   poll_data.get('host_user_id', ''),
+        'correct_options': poll_data.get('correct_options'),   # list or None – for color feedback
     }, status=200)
 
 
@@ -466,17 +494,19 @@ def list_polls(request, meeting_id):
         results   = _build_results(poll_data, votes_raw)
 
         entry = {
-            'poll_id':       pid,
-            'question':      poll_data['question'],
-            'options':       poll_data['options'],
-            'poll_type':     poll_data['poll_type'],
-            'status':        poll_data['status'],
-            'total_voters':  poll_data['total_voters'],
-            'results':       results,
-            'created_at':    poll_data['created_at'],
-            'closed_at':     poll_data.get('closed_at'),
-            'timer_seconds': poll_data.get('timer_seconds', 0),
+            'poll_id':           pid,
+            'question':          poll_data['question'],
+            'options':           poll_data['options'],
+            'poll_type':         poll_data['poll_type'],
+            'status':            poll_data['status'],
+            'total_voters':      poll_data['total_voters'],
+            'results':           results,
+            'created_at':        poll_data['created_at'],
+            'closed_at':         poll_data.get('closed_at'),
+            'timer_seconds':     poll_data.get('timer_seconds', 0),
             'show_results_live': poll_data.get('show_results_live', True),
+            'correct_options':   poll_data.get('correct_options'),   # list or None
+            'host_user_id':      poll_data.get('host_user_id', ''),
         }
 
         if user_id:

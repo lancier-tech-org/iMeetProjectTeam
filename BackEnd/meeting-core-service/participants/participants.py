@@ -878,18 +878,33 @@ def record_participant_join(request):
                     
                     # Append new join time
                     join_times.append(join_time_str)
-                    
+
+                    # Remove phantom leave: if last leave is within 30 seconds
+                    # of the previous join, it was written by a reconnection
+                    # cycle (not a real departure) and must be removed.
+                    if len(leave_times) > 0 and len(join_times) >= len(leave_times):
+                        try:
+                            last_join_dt = datetime.strptime(join_times[-2], '%Y-%m-%d %H:%M:%S')
+                            last_leave_dt = datetime.strptime(leave_times[-1], '%Y-%m-%d %H:%M:%S')
+                            seconds_apart = (last_leave_dt - last_join_dt).total_seconds()
+                            if 0 <= seconds_apart <= 30:
+                                leave_times.pop()
+                                logging.info(f"[JOIN] Removed phantom leave for user {user_id} "
+                                             f"(leave was only {seconds_apart:.0f}s after join)")
+                        except Exception as _phantom_err:
+                            logging.warning(f"[JOIN] Could not check phantom leave: {_phantom_err}")
+
                     cursor.execute("""
                         UPDATE tbl_Participants 
                         SET Join_Times = %s,
+                            Leave_Times = %s,
                             Is_Currently_Active = TRUE,
                             Full_Name = %s
                         WHERE ID = %s
-                    """, [json.dumps(join_times), actual_user_name, participant_id])
+                    """, [json.dumps(join_times), json.dumps(leave_times), actual_user_name, participant_id])
                     
                     action = 'rejoin'
                     logging.info(f"✅ [JOIN] User {user_id} rejoined occurrence #{occurrence_number} (session #{len(join_times)})")
-                
                 return JsonResponse({
                     'success': True,
                     'message': f'Participant join recorded - {action}',
@@ -3309,297 +3324,35 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
                 "details": str(e)
             }, status=500)      
               
-        # ===== STEP 4: Sync logic =====
+        # ===== STEP 4: READ-ONLY status comparison =====
+        # NO DATABASE WRITES — the poller is the ONLY authority for marking users as left.
+        # record_participant_join is the ONLY authority for creating/updating join records.
+        # This endpoint only REPORTS current state for frontend UI and debugging.
+        
         sync_results = {
-            'added': 0, 
-            'removed': 0, 
-            'rejoined': 0, 
-            'already_synced': 0,
-            'rejected_phantom_joins': 0,  # ✅ Track phantom join rejections
-            'errors': []
+            'in_livekit_and_db_active': 0,
+            'in_livekit_not_in_db': 0,
+            'in_db_active_not_in_livekit': 0,
+            'in_db_inactive': len(inactive_db_users),
         }
         
-        # Mark users as left if not in LiveKit (with grace period)
-        for user_id, participant_info in list(active_db_users.items()):
-            if user_id not in livekit_user_mapping:
-                join_times = participant_info.get('join_times', [])
-                
-                if join_times and len(join_times) > 0:
-                    try:
-                        last_join_str = join_times[-1]
-                        last_join_dt = datetime.strptime(last_join_str, '%Y-%m-%d %H:%M:%S')
-                        
-                        # Make timezone aware
-                        if last_join_dt.tzinfo is None:
-                            last_join_dt = IST_TIMEZONE.localize(last_join_dt)
-                        
-                        time_since_join = (current_time - last_join_dt).total_seconds()
-                        
-                        # 30 second grace period before marking as left
-                        if time_since_join > 30:
-                            try:
-                                with connection.cursor() as cursor:
-                                    # Get current leave times
-                                    cursor.execute("""
-                                        SELECT Leave_Times FROM tbl_Participants WHERE ID = %s
-                                    """, [participant_info['id']])
-                                    leave_times_row = cursor.fetchone()
-                                    
-                                    if leave_times_row:
-                                        leave_times = []
-                                        try:
-                                            if leave_times_row[0] is None:
-                                                leave_times = []
-                                            elif isinstance(leave_times_row[0], str):
-                                                leave_times = json.loads(leave_times_row[0]) if leave_times_row[0].strip() else []
-                                            elif isinstance(leave_times_row[0], list):
-                                                leave_times = leave_times_row[0]
-                                        except Exception as e:
-                                            logging.error(f"[SYNC-FIXED] Error parsing leave_times: {e}")
-                                            leave_times = []
-                                        
-                                        # Append current time to leave times
-                                        leave_times.append(current_time_str)
-                                        
-                                        # Calculate total duration
-                                        total_duration = calculate_duration_from_arrays(join_times, leave_times)
-                                        
-                                        # Update participant
-                                        cursor.execute("""
-                                            UPDATE tbl_Participants 
-                                            SET Leave_Times = %s,
-                                                Is_Currently_Active = FALSE,
-                                                Total_Duration_Minutes = %s,
-                                                Total_Sessions = %s
-                                            WHERE ID = %s
-                                        """, [
-                                            json.dumps(leave_times), 
-                                            total_duration, 
-                                            len(leave_times), 
-                                            participant_info['id']
-                                        ])
-                                        
-                                        if cursor.rowcount > 0:
-                                            sync_results['removed'] += 1
-                                            logging.info(f"[SYNC-FIXED] User {user_id} marked as left (grace period expired)")
-                                            del active_db_users[user_id]
-                                            
-                            except Exception as e:
-                                logging.error(f"[SYNC-FIXED] Error updating user {user_id}: {e}")
-                                sync_results['errors'].append(f"Failed to update user {user_id}: {str(e)}")
-                                
-                    except Exception as e:
-                        logging.error(f"[SYNC-FIXED] Error calculating grace period for user {user_id}: {e}")
-        
-        # Process LiveKit participants
         for user_id in livekit_user_mapping.keys():
-            try:
-                if user_id in active_db_users:
-                    # User already active - no action needed
-                    sync_results['already_synced'] += 1
-                    
-                elif user_id in inactive_db_users:
-                    # ✅ CHECK End_Meeting_Time BEFORE ALLOWING REJOIN!
-                    
-                    participant_id = inactive_db_users[user_id]['id']
-                    end_meeting_time = inactive_db_users[user_id].get('end_meeting_time')
-                    should_rejoin = True
-                    
-                    # ✅ Check if this occurrence has already ended
-                    if end_meeting_time is not None:
-                        logging.warning(f"🔴 [SYNC-FIXED] Rejecting rejoin for user {user_id} - occurrence ended at {end_meeting_time}")
-                        sync_results['rejected_phantom_joins'] += 1
-                        sync_results['errors'].append(f"User {user_id}: Phantom join rejected (occurrence ended at {end_meeting_time})")
-                        should_rejoin = False
-                    
-                    # Check if meeting has passed Ended_At (fallback for non-recurring meetings)
-                    elif ended_at_time:
-                        try:
-                            ist_timezone = IST_TIMEZONE
-                            
-                            # Parse Ended_At timestamp
-                            if isinstance(ended_at_time, str):
-                                ended_at_dt = datetime.strptime(ended_at_time, '%Y-%m-%d %H:%M:%S')
-                                ended_at_dt = ist_timezone.localize(ended_at_dt)
-                            else:
-                                ended_at_dt = ended_at_time.astimezone(ist_timezone) if ended_at_time.tzinfo else ist_timezone.localize(ended_at_time)
-                            
-                            # Check if current time is AFTER meeting ended
-                            if current_time > ended_at_dt:
-                                # ❌ REJECT REJOIN - Phantom join attempt!
-                                logging.warning(f"🔴 [SYNC-FIXED] Rejecting rejoin for user {user_id} - meeting already ended at {ended_at_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-                                logging.warning(f"🔴 [SYNC-FIXED] Current time: {current_time_str}, Meeting ended: {ended_at_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-                                
-                                sync_results['rejected_phantom_joins'] += 1
-                                sync_results['errors'].append(f"User {user_id}: Phantom join rejected (meeting ended)")
-                                should_rejoin = False
-                            else:
-                                logging.info(f"[SYNC-FIXED] User {user_id} rejoin allowed - meeting still active (ends at {ended_at_dt.strftime('%Y-%m-%d %H:%M:%S')})")
-                        
-                        except Exception as e:
-                            logging.error(f"[SYNC-FIXED] Error checking Ended_At for user {user_id}: {e}")
-                            # On error, allow rejoin (fail open)
-                            should_rejoin = True
-                    else:
-                        logging.info(f"[SYNC-FIXED] User {user_id} rejoin allowed - no end time set")
-                    
-                    # ✅ CHECK 3: Stale LiveKit connection detection
-                    # If the LiveKit identity was created BEFORE the user's last leave time,
-                    # it's a stale connection (not a real rejoin) — reject it
-                    if should_rejoin:
-                        lk_data = livekit_user_mapping.get(user_id, {})
-                        identity_ts = lk_data.get('identity_timestamp', 0)
-                        user_leave_times = inactive_db_users[user_id].get('leave_times', [])
-                        
-                        if identity_ts > 0 and user_leave_times:
-                            try:
-                                last_leave_str = user_leave_times[-1]
-                                last_leave_dt = datetime.strptime(last_leave_str, '%Y-%m-%d %H:%M:%S')
-                                if last_leave_dt.tzinfo is None:
-                                    last_leave_dt = IST_TIMEZONE.localize(last_leave_dt)
-                                last_leave_epoch = int(last_leave_dt.timestamp())
-                                
-                                if identity_ts <= last_leave_epoch:
-                                    logging.warning(
-                                        f"🔴 [SYNC-FIXED] Rejecting STALE LiveKit connection for user {user_id} - "
-                                        f"identity timestamp {identity_ts} <= last leave epoch {last_leave_epoch}"
-                                    )
-                                    sync_results['rejected_phantom_joins'] += 1
-                                    sync_results['errors'].append(
-                                        f"User {user_id}: Stale connection rejected (identity from before last leave)"
-                                    )
-                                    should_rejoin = False
-                                else:
-                                    logging.info(
-                                        f"[SYNC-FIXED] User {user_id} genuine rejoin - "
-                                        f"identity timestamp {identity_ts} > last leave epoch {last_leave_epoch}"
-                                    )
-                            except Exception as ts_err:
-                                logging.warning(f"[SYNC-FIXED] Could not validate identity timestamp for user {user_id}: {ts_err}")
-
-                    # ✅ ONLY REJOIN IF ALLOWED
-                    if should_rejoin:
-                        try:
-                            with connection.cursor() as cursor:
-                                cursor.execute("""
-                                    SELECT Join_Times FROM tbl_Participants WHERE ID = %s
-                                """, [participant_id])
-                                row = cursor.fetchone()
-                                
-                                if row:
-                                    join_times = []
-                                    try:
-                                        if row[0] is None:
-                                            join_times = []
-                                        elif isinstance(row[0], str):
-                                            join_times = json.loads(row[0]) if row[0].strip() else []
-                                        elif isinstance(row[0], list):
-                                            join_times = row[0]
-                                    except Exception as e:
-                                        logging.error(f"[SYNC-FIXED] Error parsing join_times: {e}")
-                                        join_times = []
-                                    
-                                    # Append new join time
-                                    join_times.append(current_time_str)
-                                    
-                                    # ✅ FIX: Also update Full_Name on rejoin to prevent stale fallback names
-                                    rejoin_user_name = f"User {user_id}"
-                                    try:
-                                        cursor.execute("SELECT full_name FROM tbl_Users WHERE ID = %s", [int(user_id)])
-                                        name_row = cursor.fetchone()
-                                        if name_row and name_row[0]:
-                                            rejoin_user_name = name_row[0].strip()
-                                    except Exception as name_err:
-                                        logging.warning(f"[SYNC-FIXED] Could not get name for rejoin user {user_id}: {name_err}")
-                                    
-                                    cursor.execute("""
-                                        UPDATE tbl_Participants 
-                                        SET Join_Times = %s, Is_Currently_Active = TRUE, Full_Name = %s
-                                        WHERE ID = %s
-                                    """, [json.dumps(join_times), rejoin_user_name, participant_id])
-                                    
-                                    sync_results['rejoined'] += 1
-                                    logging.info(f"[SYNC-FIXED] User {user_id} rejoined (session #{len(join_times)}) with name '{rejoin_user_name}'")
-                        except Exception as e:
-                            logging.error(f"[SYNC-FIXED] Error rejoining user {user_id}: {e}")
-                            sync_results['errors'].append(f"Failed to rejoin user {user_id}: {str(e)}")
-                        
-                else:
-                    # ===== NEW USER - CREATE RECORD =====
-                    # For new users in sync, always create occurrence #1
-                    # (Don't use helper function - that's for JOIN requests only)
-                    occurrence_number = 1
-                    is_new_occurrence = True
-                    
-                    logging.info(f"[SYNC-FIXED] New user {user_id} detected - creating occurrence #1")
-                    
-                    role = 'host' if str(user_id) == str(host_id) else 'participant'
-                    user_name = f"User {user_id}"
-                    
-                    # Get actual user name from tbl_Users
-                    try:
-                        with connection.cursor() as cursor:
-                            cursor.execute("SELECT full_name FROM tbl_Users WHERE ID = %s", [user_id])
-                            user_row = cursor.fetchone()
-                            if user_row and user_row[0]:
-                                user_name = user_row[0].strip()
-                    except Exception as e:
-                        logging.warning(f"[SYNC-FIXED] Could not get user name: {e}")
-                    
-                    try:
-                        with connection.cursor() as cursor:
-                            # ✓ FIX: Include session_start_time and occurrence_number
-                            cursor.execute("""
-                                INSERT INTO tbl_Participants 
-                                (Meeting_ID, User_ID, Full_Name, Role, Meeting_Type,
-                                 Join_Times, Leave_Times, Total_Duration_Minutes, Total_Sessions,
-                                 Is_Currently_Active, Attendance_Percentagebasedon_host,
-                                 session_start_time, occurrence_number)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """, [
-                                meeting_id,                         # 1. Meeting_ID
-                                user_id,                            # 2. User_ID
-                                user_name,                          # 3. Full_Name
-                                role,                               # 4. Role
-                                meeting_type,                       # 5. Meeting_Type
-                                json.dumps([current_time_str]),     # 6. Join_Times
-                                json.dumps([]),                     # 7. Leave_Times
-                                0,                                  # 8. Total_Duration_Minutes
-                                0,                                  # 9. Total_Sessions
-                                True,                               # 10. Is_Currently_Active
-                                0.00,                               # 11. Attendance_Percentagebasedon_host
-                                current_date_str,                   # 12. session_start_time ✓ FIXED
-                                occurrence_number                   # 13. occurrence_number
-                            ])
-                            
-                            sync_results['added'] += 1
-                            logging.info(f"[SYNC-FIXED] Added new user {user_id} ({user_name}) - occurrence #{occurrence_number}")
-
-                    except Exception as e:
-                        logging.error(f"[SYNC-FIXED] Error adding user {user_id}: {e}")
-                        import traceback
-                        logging.error(f"Traceback: {traceback.format_exc()}")
-                        sync_results['errors'].append(f"Failed to add user {user_id}: {str(e)}")
-                        
-            except Exception as e:
-                logging.error(f"[SYNC-FIXED] Error processing user {user_id}: {e}")
-                sync_results['errors'].append(f"Error processing user {user_id}: {str(e)}")
-                continue
+            if user_id in active_db_users:
+                sync_results['in_livekit_and_db_active'] += 1
+            else:
+                sync_results['in_livekit_not_in_db'] += 1
+                logging.info(f"[SYNC-READONLY] User {user_id} in LiveKit but not active in DB — waiting for recordJoin or poller")
         
-        # Log final results
-        logging.info(f"""
-[SYNC-FIXED] Sync complete for meeting {meeting_id}:
-- Added: {sync_results['added']}
-- Removed: {sync_results['removed']}
-- Rejoined: {sync_results['rejoined']}
-- Already synced: {sync_results['already_synced']}
-- Rejected phantom joins: {sync_results['rejected_phantom_joins']}
-- Errors: {len(sync_results['errors'])}
-        """)
+        for user_id in active_db_users.keys():
+            if user_id not in livekit_user_mapping:
+                sync_results['in_db_active_not_in_livekit'] += 1
+                logging.info(f"[SYNC-READONLY] User {user_id} active in DB but not in LiveKit — poller will handle")
+        
+        logging.info(f"[SYNC-READONLY] Meeting {meeting_id}: LiveKit={len(livekit_user_mapping)}, DB_active={len(active_db_users)}, DB_inactive={len(inactive_db_users)}, Matched={sync_results['in_livekit_and_db_active']}")
         
         return JsonResponse({
             'success': True,
-            'message': f"Sync completed - {sync_results['rejected_phantom_joins']} phantom joins prevented" if sync_results['rejected_phantom_joins'] > 0 else 'Sync completed successfully',
+            'message': 'Sync status reported (read-only mode)',
             'meeting_id': meeting_id,
             'sync_results': sync_results,
             'livekit_participants_count': len(livekit_participants),
@@ -3618,7 +3371,6 @@ def Sync_LiveKit_Participants_Fixed(request, meeting_id):
             "details": str(e),
             "meeting_id": meeting_id
         }, status=500)
-
 
 def calculate_overlap_duration(host_join_times, host_leave_times, participant_join_times, participant_leave_times):
     """

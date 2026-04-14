@@ -5754,183 +5754,59 @@ def join_livekit_meeting(request):
                 'participant_identity': participant_identity
             }, status=500)
         
-        # FIXED: Record participant join with correct Meeting_Type
+        # =====================================================================
+        # MEETING STATUS ONLY — participant records handled by record_participant_join
+        # This endpoint only generates tokens and ensures the meeting is active.
+        # =====================================================================
         try:
             ist_timezone = pytz.timezone("Asia/Kolkata")
             join_time = timezone.now().astimezone(ist_timezone)
-            join_time_str = join_time.strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Get actual user name from database if not provided
-            actual_user_name = user_name
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT full_name FROM tbl_Users WHERE ID = %s", [user_id])
-                user_row = cursor.fetchone()
-                if user_row and user_row[0]:
-                    actual_user_name = user_row[0].strip()
-            
-            # ✅ NEW: Get occurrence number
-            occurrence_info = get_or_create_participant_for_occurrence(meeting_id, user_id)
-            occurrence_number = occurrence_info['occurrence_number']
-            is_new_occurrence = occurrence_info['is_new_occurrence']
-            logging.info(f"[JOIN] User {user_id}: occurrence_number={occurrence_number}, is_new_occurrence={is_new_occurrence}")
 
             with connection.cursor() as cursor:
-                # Check if participant already exists for THIS OCCURRENCE
-                cursor.execute("""
-                    SELECT ID, Join_Times, Leave_Times, Is_Currently_Active, Total_Sessions
-                    FROM tbl_Participants 
-                    WHERE Meeting_ID = %s AND User_ID = %s AND occurrence_number = %s
-                """, [meeting_id, user_id, occurrence_number])
-
-                existing = cursor.fetchone()
-                
-                if not existing:
-                    # ===== FIRST TIME JOIN - Insert new participant record =====
-                    logging.info(f"[JOIN] First time join for user {user_id} with Meeting_Type={meeting_type}")
-                    
-                    cursor.execute("""
-                        INSERT INTO tbl_Participants 
-                        (`Meeting_ID`, `User_ID`, `Full_Name`, `Role`, `Meeting_Type`, `session_start_time`,
-                        `Join_Times`, `Leave_Times`, `Total_Duration_Minutes`, `Total_Sessions`,
-                        `Is_Currently_Active`, `Attendance_Percentagebasedon_host`, `occurrence_number`)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, 0, TRUE, 0.00, %s)
-                    """, [
-                        meeting_id, 
-                        user_id, 
-                        actual_user_name, 
-                        participant_role, 
-                        meeting_type,
-                        join_time_str,
-                        json.dumps([join_time_str]),
-                        json.dumps([]),
-                        occurrence_number
-                    ])
-
-                    participant_id = cursor.lastrowid
-                    action = 'first_join'
-                    
-                    # If host is joining, update meeting status
-                    # ScheduleMeetings: Only update Started_At, keep Status='scheduled'
-                    # InstantMeetings & CalendarMeetings: Update both Started_At and Status='active'
-                    if participant_role == 'host':
-                        if meeting_type == 'ScheduleMeeting':
-                            cursor.execute("""
-                                UPDATE tbl_Meetings 
-                                SET Started_At = %s
-                                WHERE ID = %s AND Started_At IS NULL
-                            """, [join_time, meeting_id])
-                            if cursor.rowcount > 0:
-                                logging.info(f"✅ Set Started_At for ScheduleMeeting {meeting_id} (status remains 'scheduled')")
-                        else:  # InstantMeeting or CalendarMeeting
-                            # ✅ FIX: Set Status='active' AND clear Ended_At on host first join
-                            cursor.execute("""
-                                UPDATE tbl_Meetings 
-                                SET Started_At = COALESCE(Started_At, %s), 
-                                    Status = 'active',
-                                    Ended_At = NULL
-                                WHERE ID = %s AND (Started_At IS NULL OR Status = 'ended')
-                            """, [join_time, meeting_id])
-                            if cursor.rowcount > 0:
-                                logging.info(f"✅ Set Started_At, Status='active', Ended_At=NULL for meeting {meeting_id} (host first join)")
-                                status = 'active'  # Update local variable so response reflects the change
-                            else:
-                                # Meeting already active with Started_At — just ensure Status='active'
-                                cursor.execute("""
-                                    UPDATE tbl_Meetings 
-                                    SET Status = 'active', Ended_At = NULL
-                                    WHERE ID = %s AND Status != 'active'
-                                """, [meeting_id])
-                                if cursor.rowcount > 0:
-                                    logging.info(f"✅ Ensured Status='active' for meeting {meeting_id} (host join, was not active)")
-                                    status = 'active'
-                                
-                    logging.info(f"✅ Participant join recorded for user {user_id} with Meeting_Type={meeting_type}")
-                    
-                else:
-                    # ===== REJOIN - Update existing participant record =====
-                    participant_id, join_times_json, leave_times_json, is_active, total_sessions = existing
-                    
-                    # Parse arrays
-                    try:
-                        join_times = json.loads(join_times_json) if isinstance(join_times_json, str) else (join_times_json or [])
-                    except:
-                        join_times = []
-                    
-                    try:
-                        leave_times = json.loads(leave_times_json) if isinstance(leave_times_json, str) else (leave_times_json or [])
-                    except:
-                        leave_times = []
-                    
-                    if is_active:
-                        logging.warning(f"[JOIN] User {user_id} already active - treating as duplicate")
-                        action = 'already_active'
-                    else:
-                        # Append new join time for rejoin
-                        join_times.append(join_time_str)
-                        
+                # Host joining: set Started_At and Status='active'
+                if participant_role == 'host':
+                    if meeting_type == 'ScheduleMeeting':
                         cursor.execute("""
-                            UPDATE tbl_Participants 
-                            SET Join_Times = %s,
-                                Is_Currently_Active = TRUE,
-                                Full_Name = %s,
-                                Meeting_Type = %s
-                            WHERE ID = %s AND occurrence_number = %s
-                        """, [json.dumps(join_times), actual_user_name, meeting_type, participant_id, occurrence_number])
-
-                        action = 'rejoin'
-                        logging.info(f"[JOIN] User {user_id} rejoined (session #{len(join_times)}) with Meeting_Type={meeting_type}")
-                        
-                        # =====================================================
-                        # ✅ BUG FIX: HOST REJOIN — Reset Status to 'active'
-                        # When host rejoins after a brief disconnect, the meeting
-                        # status was stuck at 'ended'. This resets it back to 
-                        # 'active' and clears Ended_At so the meeting continues.
-                        # =====================================================
-                        if participant_role == 'host':
+                            UPDATE tbl_Meetings 
+                            SET Started_At = %s
+                            WHERE ID = %s AND Started_At IS NULL
+                        """, [join_time, meeting_id])
+                        if cursor.rowcount > 0:
+                            logging.info(f"✅ Set Started_At for ScheduleMeeting {meeting_id}")
+                    else:
+                        cursor.execute("""
+                            UPDATE tbl_Meetings 
+                            SET Started_At = COALESCE(Started_At, %s), 
+                                Status = 'active',
+                                Ended_At = NULL
+                            WHERE ID = %s AND (Started_At IS NULL OR Status = 'ended')
+                        """, [join_time, meeting_id])
+                        if cursor.rowcount > 0:
+                            logging.info(f"✅ Set Started_At, Status='active' for meeting {meeting_id} (host join)")
+                            status = 'active'
+                        else:
                             cursor.execute("""
                                 UPDATE tbl_Meetings 
                                 SET Status = 'active', Ended_At = NULL
-                                WHERE ID = %s AND Status = 'ended'
+                                WHERE ID = %s AND Status != 'active'
                             """, [meeting_id])
                             if cursor.rowcount > 0:
-                                logging.info(f"✅ Reset meeting {meeting_id} from 'ended' to 'active' (host rejoin)")
-                                status = 'active'  # Update local variable so response reflects the change
+                                logging.info(f"✅ Ensured Status='active' for meeting {meeting_id}")
+                                status = 'active'
 
-            # =============================================================
-            # ✅✅✅ NEW FIX: UNIVERSAL STATUS RESET — ANY PARTICIPANT ✅✅✅
-            # =============================================================
-            # Problem: If Ended_At gets a bad timestamp (e.g. UTC written
-            # instead of IST), calculate_meeting_status() returns 'ended'
-            # even though the LiveKit room is still live. The sync endpoint
-            # then refuses to work ("Meeting already ended - no sync
-            # performed"), creating a deadlock where nobody can fix it.
-            #
-            # Solution: When ANY participant successfully joins (host or
-            # not), force the meeting back to 'active' and clear Ended_At.
-            # The meeting should ONLY stay 'ended' when the host explicitly
-            # clicks "End Meeting" AND no one is in the LiveKit room.
-            #
-            # This runs OUTSIDE the inner try/except so it executes even
-            # if the participant record insert/update had issues.
-            # =============================================================
-            try:
-                with connection.cursor() as cursor:
-                    cursor.execute("""
-                        UPDATE tbl_Meetings 
-                        SET Status = 'active', Ended_At = NULL
-                        WHERE ID = %s AND Status = 'ended'
-                    """, [meeting_id])
-                    if cursor.rowcount > 0:
-                        logging.info(f"✅ [JOIN-FIX] Force-reset meeting {meeting_id} from 'ended' to 'active' (participant join detected — status was incorrectly 'ended')")
-                        status = 'active'
-            except Exception as fix_error:
-                logging.warning(f"[JOIN-FIX] Could not reset meeting status: {fix_error}")
+                # Any participant joining: force meeting back to active if it was ended
+                cursor.execute("""
+                    UPDATE tbl_Meetings 
+                    SET Status = 'active', Ended_At = NULL
+                    WHERE ID = %s AND Status = 'ended'
+                """, [meeting_id])
+                if cursor.rowcount > 0:
+                    logging.info(f"✅ [JOIN-FIX] Force-reset meeting {meeting_id} from 'ended' to 'active'")
+                    status = 'active'
 
-        except Exception as participant_error:
-            logging.warning(f"Failed to record participant join (non-critical): {participant_error}")
-            import traceback
-            logging.warning(f"Traceback: {traceback.format_exc()}")
-        
+        except Exception as meeting_status_error:
+            logging.warning(f"[JOIN] Could not update meeting status (non-critical): {meeting_status_error}")
+                    
         # SUCCESS: Fast response for immediate connection
         response_data = {
             'success': True,
