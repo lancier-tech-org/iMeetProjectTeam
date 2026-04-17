@@ -76,7 +76,21 @@ except Exception as e:
     redis_client = None
     REDIS_AVAILABLE = False
 
+# =============================================================================
+# SQS CONFIG FOR CLOUD MERGE PIPELINE
+# =============================================================================
+SQS_QUEUE_URL = os.getenv('SQS_QUEUE_URL', '')
+SQS_RESULTS_QUEUE_URL = os.getenv('SQS_RESULTS_QUEUE_URL', '')
+sqs_client = boto3.client('sqs', region_name=AWS_REGION) if SQS_QUEUE_URL else None
+
+if SQS_QUEUE_URL:
+    logging.info(f"✅ SQS merge queue configured: {SQS_QUEUE_URL}")
+    logging.info(f"✅ SQS results queue configured: {SQS_RESULTS_QUEUE_URL}")
+else:
+    logging.warning("⚠️ SQS_QUEUE_URL not set — cloud merge disabled, using local merge")
+
 # Configure SSL to trust self-signed certificates BEFORE importing LiveKit
+
 def configure_ssl_bypass():
     """Configure SSL to accept self-signed certificates"""
     try:
@@ -468,9 +482,15 @@ class S3ChunkUploader:
                 )
                 
                 logger.info(f"✅ Multipart upload completed: {response['Key']}")
-                logger.info(f"📊 Final file ETag: {response['ETag']}")
-            else:
-                logger.warning("⚠️ No multipart upload to complete")
+                # CRITICAL FIX: Re-upload complete file to fix corrupt MP4/WAV headers
+                # Multipart upload during recording has stale headers (FFmpeg seeks back to update them)
+                try:
+                    if os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
+                        logger.info(f"📤 Re-uploading complete file to fix headers: {self.s3_key}")
+                        s3_client.upload_file(local_file_path, self.bucket, self.s3_key)
+                        logger.info(f"✅ Complete file re-uploaded: {self.s3_key}")
+                except Exception as reupload_error:
+                    logger.warning(f"⚠️ Re-upload failed (multipart version still exists): {reupload_error}")
         
         except Exception as e:
             logger.error(f"❌ Multipart upload completion failed: {e}")
@@ -639,7 +659,9 @@ class StreamingRecordingWithChunks:
 
         # S3 upload - ✅ NOW INCLUDES SESSION ID
         self.s3_video_key = f"{self.s3_prefix}/recording_{meeting_id}_{self.session_id}.mp4"
+        self.s3_audio_key = f"{self.s3_prefix}/audio_{meeting_id}_{self.session_id}.wav"
         self.chunk_uploader = None
+        self.audio_chunk_uploader = None
         
         # Track guard for LiveKit compatibility (NO buffering, just flags)
         self.processing_tracks = set()
@@ -1040,13 +1062,21 @@ class StreamingRecordingWithChunks:
             self._create_placeholder_frame()
             self._start_video_writer_thread()
 
-            # Start chunk uploader (video only)
+            # Start chunk uploader (video)
             self.chunk_uploader = S3ChunkUploader(
                 bucket=AWS_S3_BUCKET,
                 s3_key=self.s3_video_key,
                 chunk_size_mb=5
             )
             self.chunk_uploader.start_chunk_monitor(self.temp_video_path)
+            
+            # Start chunk uploader (audio) - uploads audio to S3 during recording
+            self.audio_chunk_uploader = S3ChunkUploader(
+                bucket=AWS_S3_BUCKET,
+                s3_key=self.s3_audio_key,
+                chunk_size_mb=5
+            )
+            self.audio_chunk_uploader.start_chunk_monitor(self.temp_audio_path)
             
             logger.info("✅ Recording started - separate video + audio processes")
             
@@ -1567,12 +1597,16 @@ class StreamingRecordingWithChunks:
         logger.info(f"   Video: {video_size:,} bytes ({video_size/(1024*1024):.2f} MB)")
         logger.info(f"   Audio: {audio_size:,} bytes ({audio_size/(1024*1024):.2f} MB)")
         
-        # Phase 7: Upload to S3
+        # Phase 7: Upload to S3 (video + audio)
+        logger.info("🛑 Phase 7: Uploading to S3...")
         if self.chunk_uploader:
-            logger.info("🛑 Phase 7: Uploading to S3...")
+            logger.info("📹 Uploading final video chunks...")
             self.chunk_uploader.stop_and_upload_final(self.temp_video_path)
+        if self.audio_chunk_uploader:
+            logger.info("🎤 Uploading final audio chunks...")
+            self.audio_chunk_uploader.stop_and_upload_final(self.temp_audio_path)
         
-        logger.info("✅ Recording stopped - ready for merge")
+        logger.info("✅ Recording stopped - video + audio both in S3")
 
     def get_output_file(self):
         """Get the output file path"""
@@ -2141,6 +2175,11 @@ class FixedGoogleMeetRecorder:
         # ✅ START REDIS MONITOR FOR CROSS-POD STOP REQUESTS
         if REDIS_AVAILABLE:
             self._start_redis_monitor()
+        
+        # ✅ START SQS RESULTS POLLER FOR CLOUD MERGE
+        if SQS_RESULTS_QUEUE_URL:
+            self._start_sqs_results_poller()
+        
         logger.info(f"✅ FAST Google Meet Style Recorder initialized")
     
     # =============================================================================
@@ -2148,16 +2187,183 @@ class FixedGoogleMeetRecorder:
     #         (Add after __init__ method, around line 2020)
     # =============================================================================
 
+    def _start_sqs_results_poller(self):
+        """Poll SQS results queue for completed merges from Fargate"""
+        def poll_loop():
+            logger.info("🔄 SQS results poller thread running...")
+            while True:
+                try:
+                    response = sqs_client.receive_message(
+                        QueueUrl=SQS_RESULTS_QUEUE_URL,
+                        MaxNumberOfMessages=1,
+                        WaitTimeSeconds=20
+                    )
+                    messages = response.get('Messages', [])
+                    if not messages:
+                        continue
+                    
+                    for message in messages:
+                        try:
+                            body = json.loads(message['Body'])
+                            status = body.get('status')
+                            meeting_id = body.get('meeting_id', 'unknown')
+                            session_id = body.get('session_id', 'unknown')
+                            
+                            if status == 'success':
+                                logger.info(f"✅ Cloud merge complete: {meeting_id}/{session_id}")
+                                self._handle_merge_result(body)
+                            else:
+                                error = body.get('error', 'Unknown error')
+                                logger.error(f"❌ Cloud merge failed: {meeting_id}/{session_id} — {error}")
+                            
+                            sqs_client.delete_message(
+                                QueueUrl=SQS_RESULTS_QUEUE_URL,
+                                ReceiptHandle=message['ReceiptHandle']
+                            )
+                        except Exception as msg_err:
+                            logger.error(f"❌ SQS message processing error: {msg_err}")
+                
+                except Exception as e:
+                    logger.error(f"❌ SQS poll error: {e}")
+                    time.sleep(5)
+        
+        thread = threading.Thread(target=poll_loop, daemon=True, name="SQSResultsPoller")
+        thread.start()
+        logger.info("✅ SQS results poller started")
+    
+    def _handle_merge_result(self, result):
+        """Handle successful merge result from Fargate"""
+        try:
+            meeting_id = result['meeting_id']
+            session_id = result['session_id']
+            user_id = result.get('user_id', 'unknown')
+            recording_doc_id = result.get('recording_doc_id')
+            merged_s3_key = result['merged_s3_key']
+            file_size = result.get('file_size', 0)
+            duration = result.get('duration', 0)
+            timestamp = result.get('timestamp', int(time.time()))
+            
+            logger.info(f"🔀 Processing merge result: {meeting_id}/{session_id}")
+            logger.info(f"   Merged file: {merged_s3_key} ({file_size/(1024*1024):.2f} MB)")
+            
+            video_url = s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': AWS_S3_BUCKET, 'Key': merged_s3_key},
+                ExpiresIn=604800
+            )
+            
+            from video_processing.recordings import (
+                get_user_details,
+                get_meeting_participants_emails,
+                get_meeting_type,
+                send_recording_completion_notifications
+            )
+            
+            host_user_id = user_id
+            try:
+                user_details = get_user_details(host_user_id)
+                user_name = user_details.get("user_name", f"User {host_user_id}")
+                user_email = user_details.get("user_email", "")
+                visible_to_emails = get_meeting_participants_emails(meeting_id)
+                meeting_type = get_meeting_type(meeting_id)
+            except Exception as e:
+                logger.warning(f"⚠️ Metadata error: {e}")
+                user_name = f"User {host_user_id}"
+                user_email = ""
+                visible_to_emails = []
+                meeting_type = "InstantMeeting"
+            
+            logger.info(f"👤 User: {user_name} ({user_email})")
+            logger.info(f"📋 Meeting type: {meeting_type}")
+            
+            # Custom name will be claimed by Celery's process_video_sync
+            timestamp_str = datetime.now().strftime("%d-%m-%Y")
+            filename = f"Recording_{timestamp_str}.mp4"
+            custom_recording_name = None
+
+            video_document = {
+                "meeting_id": meeting_id,
+                "session_id": session_id,
+                "recording_sequence": int(time.time()),
+                "user_id": host_user_id,
+                "user_name": user_name,
+                "user_email": user_email,
+                "meeting_type": meeting_type,
+                "filename": filename,
+                "original_filename": filename,
+                "custom_recording_name": custom_recording_name,
+                "video_url": video_url,
+                "timestamp": datetime.now(),
+                "visible_to": visible_to_emails,
+                "file_size": file_size,
+                "duration": duration,
+                "recording_status": "completed",
+                "processing_status": "processing",
+                "processing_completed": False,
+                "transcription_available": False,
+                "summary_available": False,
+                "is_final_video": True,
+                "completed_at": datetime.now(),
+                "file_path": merged_s3_key,
+                "s3_bucket": AWS_S3_BUCKET,
+                "s3_url": f"s3://{AWS_S3_BUCKET}/{merged_s3_key}",
+                "video_type": "cloud_merged",
+                "file_type": "video/mp4",
+                "smooth_playback": True,
+                "embedded_subtitles": False
+            }
+            
+            try:
+                if recording_doc_id and len(str(recording_doc_id)) == 24:
+                    self.collection.update_one(
+                        {"_id": ObjectId(recording_doc_id)},
+                        {"$set": video_document}
+                    )
+                    logger.info(f"✅ Updated existing MongoDB document")
+                else:
+                    result_db = self.collection.insert_one(video_document)
+                    recording_doc_id = result_db.inserted_id
+                    logger.info(f"✅ Created new MongoDB document: {recording_doc_id}")
+            except Exception as db_error:
+                logger.error(f"❌ MongoDB operation failed: {db_error}")
+            
+            try:
+                notification_count = send_recording_completion_notifications(
+                    meeting_id=meeting_id,
+                    video_url=video_url
+                )
+                logger.info(f"✅ Sent {notification_count} notifications")
+            except Exception as notif_error:
+                logger.warning(f"⚠️ Notification failed: {notif_error}")
+            
+            try:
+                self._trigger_processing_pipeline(
+                    merged_s3_key,
+                    meeting_id,
+                    host_user_id,
+                    str(recording_doc_id)
+                )
+                logger.info(f"✅ Processing pipeline triggered")
+            except Exception as e:
+                logger.warning(f"⚠️ Processing pipeline failed: {e}")
+            
+            logger.info(f"🎉 Cloud merge finalized successfully for {meeting_id}")
+        
+        except Exception as e:
+            logger.error(f"❌ Handle merge result failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
     def _redis_key(self, meeting_id: str, session_id: str = None) -> str:
         """Generate Redis key for recording state - unique per session"""
         if session_id:
             return f"recording:active:{meeting_id}:{session_id}"
         return f"recording:active:{meeting_id}"
-    
+        
     def _redis_sessions_key(self, meeting_id: str) -> str:
         """Redis SET key tracking all active session_ids for a meeting"""
         return f"recording:sessions:{meeting_id}"
-    
+        
     def _get_pod_name(self) -> str:
         """Get current Kubernetes pod name"""
         return os.getenv('HOSTNAME', f'unknown-{os.getpid()}')
@@ -3067,8 +3273,56 @@ class FixedGoogleMeetRecorder:
             except Exception as e:
                 logger.warning(f"⚠️ Audio verification error: {e}")
 
-            # ==================== MERGE VIDEO + AUDIO ====================
-            logger.info(f"🔀 Merging video + audio...")
+            # ==================== SEND TO CLOUD MERGE OR LOCAL MERGE ====================
+            if SQS_QUEUE_URL and sqs_client:
+                # ===== CLOUD MERGE: Send SQS message, Fargate does the merge =====
+                SQS_FALLBACK = False
+                try:
+                    video_s3_key = bot_instance.stream_recorder.s3_video_key
+                    audio_s3_key = bot_instance.stream_recorder.s3_audio_key
+                    host_user_id = recording_info.get("host_user_id", "unknown")
+                    recording_doc_id = recording_info.get("recording_doc_id", "")
+                    timestamp = int(time.time())
+                    
+                    merge_message = {
+                        "meeting_id": meeting_id,
+                        "session_id": session_id,
+                        "video_s3_key": video_s3_key,
+                        "audio_s3_key": audio_s3_key,
+                        "user_id": host_user_id,
+                        "recording_doc_id": str(recording_doc_id) if recording_doc_id else "",
+                        "timestamp": timestamp
+                    }
+                    
+                    sqs_client.send_message(
+                        QueueUrl=SQS_QUEUE_URL,
+                        MessageBody=json.dumps(merge_message)
+                    )
+                    logger.info(f"✅ Merge request sent to SQS: {meeting_id}/{session_id}")
+                    logger.info(f"   Video: {video_s3_key}")
+                    logger.info(f"   Audio: {audio_s3_key}")
+                    
+                    # Clean up local temp files (raw files already in S3)
+                    try:
+                        if os.path.exists(video_file):
+                            os.remove(video_file)
+                        if os.path.exists(audio_file):
+                            os.remove(audio_file)
+                        logger.info("🧹 Cleaned up local temp files")
+                    except Exception as cleanup_err:
+                        logger.warning(f"⚠️ Temp file cleanup: {cleanup_err}")
+                    
+                    logger.info(f"🎉 Recording sent to cloud merge for {meeting_id}")
+                    
+                except Exception as sqs_error:
+                    logger.error(f"❌ SQS send failed: {sqs_error} — falling back to local merge")
+                    SQS_FALLBACK = True
+                
+                if not SQS_FALLBACK:
+                    return  # Cloud merge handled, exit
+            
+            # ===== LOCAL MERGE FALLBACK (when SQS not configured or SQS send failed) =====
+            logger.info(f"🔀 Local merge: video + audio...")
 
             merged_fd, merged_file = tempfile.mkstemp(
                 suffix='.mp4',
@@ -3077,66 +3331,28 @@ class FixedGoogleMeetRecorder:
             os.close(merged_fd)
 
             try:
-                # Check if both files exist
                 video_exists = os.path.exists(video_file) and os.path.getsize(video_file) > 0
                 audio_exists = os.path.exists(audio_file) and os.path.getsize(audio_file) > 0
                 
                 if not video_exists:
                     raise Exception("No video file generated")
-                
-                # Step 1: Detect actual video and audio durations
-                logger.info("📊 Analyzing video and audio durations...")
-                
-                # Get video duration
-                video_duration = 0
-                try:
-                    probe_cmd = [
-                        'ffprobe', '-v', 'error', '-show_entries',
-                        'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1',
-                        video_file
-                    ]
-                    result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
-                    video_duration = float(result.stdout.strip())
-                    logger.info(f"📹 Video duration: {video_duration:.2f}s")
-                except Exception as e:
-                    logger.warning(f"⚠️ Video duration detection failed: {e}")
-                
-                # Get audio duration
-                audio_duration = 0
-                if audio_exists:
-                    try:
-                        probe_cmd = [
-                            'ffprobe', '-v', 'error', '-show_entries',
-                            'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1',
-                            audio_file
-                        ]
-                        result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
-                        audio_duration = float(result.stdout.strip())
-                        logger.info(f"🎵 Audio duration: {audio_duration:.2f}s")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Audio duration detection failed: {e}")
-                
-                # No normalization needed - timeline-driven writing ensures sync
-                normalized_video_file = video_file
-                logger.info("✅ Using timeline-synced video (no normalization needed)")
 
-                # Step 2: Merge video with audio (no normalization needed)
                 if audio_exists:
                     merge_cmd = [
                         'ffmpeg', '-y',
-                        '-i', normalized_video_file,  # Already correct from timeline-driven writer
+                        '-i', video_file,
                         '-i', audio_file,
-                        '-c:v', 'copy',  # Copy video stream (no re-encode)
+                        '-c:v', 'copy',
                         '-c:a', 'aac',
                         '-b:a', '192k',
-                        '-shortest',  # Safety: use shortest stream
+                        '-shortest',
                         merged_file
                     ]
-                    logger.info("🔀 Merging video + audio (timeline-synced)...")
+                    logger.info("🔀 Merging video + audio (local fallback)...")
                 else:
                     merge_cmd = [
                         'ffmpeg', '-y',
-                        '-i', normalized_video_file,
+                        '-i', video_file,
                         '-f', 'lavfi',
                         '-i', 'anullsrc=r=48000:cl=stereo',
                         '-c:v', 'copy',
@@ -3145,33 +3361,20 @@ class FixedGoogleMeetRecorder:
                         '-shortest',
                         merged_file
                     ]
-                    logger.warning("⚠️ Video only - adding silent audio")
+                    logger.warning("⚠️ Video only — adding silent audio")
                 
-                result = subprocess.run(
-                    merge_cmd,
-                    capture_output=True,
-                    timeout=300
-                )
+                result = subprocess.run(merge_cmd, capture_output=True, timeout=300)
                 
                 if result.returncode != 0:
                     stderr = result.stderr.decode('utf-8', errors='ignore')
                     raise Exception(f"Merge failed: {stderr[-1000:]}")
                 
                 merged_size = os.path.getsize(merged_file)
-                logger.info(f"✅ Merge complete: {merged_size:,} bytes ({merged_size/(1024*1024):.2f} MB)")
-                
-                # Cleanup normalized video if it was created
-                if normalized_video_file != video_file and os.path.exists(normalized_video_file):
-                    try:
-                        os.remove(normalized_video_file)
-                        logger.info("🧹 Cleaned up normalized video temp file")
-                    except:
-                        pass
-                
+                logger.info(f"✅ Local merge complete: {merged_size:,} bytes ({merged_size/(1024*1024):.2f} MB)")
                 output_file = merged_file
 
             except Exception as merge_error:
-                logger.error(f"❌ Merge failed: {merge_error}")
+                logger.error(f"❌ Local merge failed: {merge_error}")
                 if os.path.exists(video_file):
                     output_file = video_file
                 else:
@@ -3179,7 +3382,6 @@ class FixedGoogleMeetRecorder:
                     return
 
             # ==================== EXTRACT DURATION ====================
-            import json
             duration = 0
             try:
                 probe_cmd = [
@@ -3192,7 +3394,6 @@ class FixedGoogleMeetRecorder:
                 logger.info(f"📊 Video duration: {duration:.2f}s")
             except Exception as e:
                 logger.warning(f"⚠️ Duration extraction failed: {e}")
-                duration = 0
 
             # ==================== VALIDATE FRAME COUNT ====================
             try:
@@ -3208,71 +3409,53 @@ class FixedGoogleMeetRecorder:
                 
                 if expected_frames > 0:
                     frame_diff_pct = abs(expected_frames - actual_frames_written) / expected_frames * 100
-                    
                     if frame_diff_pct > 5:
                         logger.warning(f"⚠️ Frame count mismatch: {frame_diff_pct:.1f}% difference")
-                        logger.warning(f"   This indicates video writer timing issues")
                     else:
                         logger.info(f"✅ Frame count acceptable: {frame_diff_pct:.1f}% difference")
-                
             except Exception as e:
                 logger.warning(f"⚠️ Frame validation error: {e}")
 
-            # Verify file exists with retry logic
+            # ==================== VERIFY OUTPUT FILE ====================
             logger.info(f"🔍 Checking output file: {output_file}")
             max_retries = 5
             for attempt in range(max_retries):
                 if os.path.exists(output_file):
                     file_size = os.path.getsize(output_file)
                     logger.info(f"📊 Attempt {attempt+1}/{max_retries}: File size = {file_size:,} bytes")
-                    
                     if file_size > 0:
                         break
-                    
                 logger.info(f"⏳ Waiting for file to be written (attempt {attempt+1}/{max_retries})...")
                 time.sleep(3)
             else:
-                if not os.path.exists(output_file):
-                    logger.error(f"❌ Output file not found after {max_retries} attempts")
-                    self._cleanup_recording(meeting_id, session_id=session_id)
-                    return
-                
-                file_size = os.path.getsize(output_file)
-                if file_size == 0:
-                    logger.error(f"❌ Output file is empty after {max_retries} attempts")
+                if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
+                    logger.error(f"❌ Output file not found or empty after {max_retries} attempts")
                     self._cleanup_recording(meeting_id, session_id=session_id)
                     return
 
+            file_size = os.path.getsize(output_file)
             logger.info(f"✅ Recording file ready: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB)")
-            
+
             # ==================== UPLOAD TO S3 ====================
-            # session_id already extracted at top of method
             timestamp = int(time.time())
             final_s3_key = f"videos/{meeting_id}_{session_id}_{timestamp}.mp4"
+            host_user_id = recording_info.get("host_user_id", "unknown")
+            recording_doc_id = recording_info.get("recording_doc_id", "")
 
             try:
                 logger.info(f"📤 Uploading merged file to S3: {final_s3_key}")
-                
-                # with open(output_file, 'rb') as f:
-                #     s3_client.upload_fileobj(f, AWS_S3_BUCKET, final_s3_key)
-
                 with open(output_file, 'rb') as f:
                     s3_client.upload_fileobj(
                         f, AWS_S3_BUCKET, final_s3_key,
                         ExtraArgs={'ContentType': 'video/mp4'}
                     )
                 
-                # Generate presigned URL so browser can play the video
                 video_url = s3_client.generate_presigned_url(
                     'get_object',
                     Params={'Bucket': AWS_S3_BUCKET, 'Key': final_s3_key},
-                    ExpiresIn=604800  # 7 days
+                    ExpiresIn=604800
                 )
-                
                 logger.info(f"✅ Uploaded to S3: {final_s3_key}")
-                
-                # Build video URL
-                # video_url = f"https://{AWS_S3_BUCKET}.s3.amazonaws.com/{final_s3_key}"
                 logger.info(f"🔗 Video URL: {video_url}")
                 
                 # Clean up temp files
@@ -3301,25 +3484,19 @@ class FixedGoogleMeetRecorder:
                     send_recording_completion_notifications
                 )
                 
-                host_user_id = recording_info.get("host_user_id")
-                
-                # Get user details
                 user_details = get_user_details(host_user_id)
                 user_name = user_details.get("user_name", f"User {host_user_id}")
                 user_email = user_details.get("user_email", "")
                 logger.info(f"👤 User: {user_name} ({user_email})")
                 
-                # Get meeting participants
                 visible_to_emails = get_meeting_participants_emails(meeting_id)
                 logger.info(f"✅ Recording visible to {len(visible_to_emails)} users")
                 
-                # Get meeting type
                 meeting_type = get_meeting_type(meeting_id)
                 logger.info(f"📋 Meeting type: {meeting_type}")
                 
             except Exception as metadata_error:
                 logger.error(f"❌ Failed to get metadata: {metadata_error}")
-                # Use defaults
                 host_user_id = recording_info.get("host_user_id", "unknown")
                 user_name = f"User {host_user_id}"
                 user_email = ""
@@ -3327,13 +3504,11 @@ class FixedGoogleMeetRecorder:
                 meeting_type = "InstantMeeting"
             
             # ==================== GENERATE FILENAME ====================
-            # ✅ CRITICAL FIX: Include date only (no time) to differentiate multiple recordings
-            timestamp_str = datetime.now().strftime("%d-%m-%Y")  # Changed from "%Y%m%d_%H%M%S" to "%d-%m-%Y"
+            timestamp_str = datetime.now().strftime("%d-%m-%Y")
             custom_recording_name = None
             try:
                 from bson import ObjectId
                 
-                # ✅ FIX: Match custom name by session_id FIRST (prevents name swap)
                 custom_name_doc = None
                 
                 if session_id:
@@ -3345,7 +3520,6 @@ class FixedGoogleMeetRecorder:
                     if custom_name_doc:
                         logger.info(f"📝 Found custom name by session_id {session_id}")
                 
-                # Fallback: Get OLDEST unclaimed name (FIFO order, not most recent)
                 if not custom_name_doc:
                     custom_name_doc = collection.find_one(
                         {
@@ -3353,14 +3527,13 @@ class FixedGoogleMeetRecorder:
                             "pending_name_update": True,
                             "claimed_by_session": {"$exists": False}
                         },
-                        sort=[("name_stored_at", 1)]  # ✅ FIX: OLDEST first (FIFO)
+                        sort=[("name_stored_at", 1)]
                     )
                     if custom_name_doc:
                         logger.info(f"📝 Found custom name by FIFO fallback")
                 
                 if custom_name_doc:
                     custom_recording_name = custom_name_doc.get("custom_recording_name")
-                    # ✅ FIX: Claim this name so other recordings don't grab it
                     collection.update_one(
                         {"_id": custom_name_doc["_id"]},
                         {"$set": {
@@ -3376,13 +3549,13 @@ class FixedGoogleMeetRecorder:
             if custom_recording_name:
                 filename = f"{custom_recording_name}_{timestamp_str}.mp4"
             else:
-                filename = f"Recording_{timestamp_str}.mp4"  # Removed meeting_id from default name
+                filename = f"Recording_{timestamp_str}.mp4"
+            
             # ==================== CREATE COMPLETE MONGODB DOCUMENT ====================
-            # ✅ CRITICAL FIX: Add session_id to track multiple recordings
             video_document = {
                 "meeting_id": meeting_id,
-                "session_id": session_id,  # ✅ NEW: Unique session identifier
-                "recording_sequence": int(time.time()),  # ✅ NEW: Helps sort multiple recordings
+                "session_id": session_id,
+                "recording_sequence": int(time.time()),
                 "user_id": host_user_id,
                 "user_name": user_name,
                 "user_email": user_email,
@@ -3405,7 +3578,7 @@ class FixedGoogleMeetRecorder:
                 "file_path": final_s3_key,
                 "s3_bucket": AWS_S3_BUCKET,
                 "s3_url": f"s3://{AWS_S3_BUCKET}/{final_s3_key}",
-                "video_type": "fast_smooth_duplicated",
+                "video_type": "local_merged",
                 "file_type": "video/mp4",
                 "smooth_playback": True,
                 "embedded_subtitles": False
@@ -3413,24 +3586,20 @@ class FixedGoogleMeetRecorder:
             
             # Insert or update MongoDB
             from bson import ObjectId
-            recording_doc_id = recording_info.get("recording_doc_id")
             
             try:
                 if recording_doc_id and len(str(recording_doc_id)) == 24:
-                    # Update existing document
                     self.collection.update_one(
                         {"_id": ObjectId(recording_doc_id)},
                         {"$set": video_document}
                     )
                     logger.info(f"✅ Updated existing MongoDB document")
                 else:
-                    # Insert new document
                     result = self.collection.insert_one(video_document)
                     recording_doc_id = result.inserted_id
                     logger.info(f"✅ Created new MongoDB document: {recording_doc_id}")
             except Exception as db_error:
                 logger.error(f"❌ MongoDB operation failed: {db_error}")
-                # Continue anyway - notification can still work
             
             # ==================== SEND NOTIFICATION ====================
             try:

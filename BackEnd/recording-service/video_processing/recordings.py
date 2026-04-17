@@ -2559,32 +2559,46 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             
             logging.info(f"💾 Saving video data to MongoDB...")
 
-            # ✅ CRITICAL FIX: ALWAYS query by session_id if available
+            # ✅ Find existing document for this session and update it
             if session_id:
-                # First try to find the metadata entry created by start_recording_with_metadata
-                query_filter = {
-                    "meeting_id": meeting_id,
-                    "recording_status": {"$in": ["active", "stopped"]},
-                    "session_id": {"$exists": False}
-                }
-                existing_doc = collection.find_one(query_filter)
-                if not existing_doc:
-                    # Then try exact session match
-                    query_filter = {
-                        "meeting_id": meeting_id,
-                        "session_id": session_id
-                    }
-                    
-                existing_doc = collection.find_one(query_filter)
+                # Query by session_id, prefer the most recent document
+                existing_doc = collection.find_one(
+                    {"meeting_id": meeting_id, "session_id": session_id},
+                    sort=[("_id", -1)]  # Newest first
+                )
                 
                 if existing_doc:
-                    # This is the SAME recording being reprocessed - UPDATE it
                     collection.replace_one({"_id": existing_doc["_id"]}, video_document)
                     logging.info(f"✅ Updated existing document for session: {session_id}")
+                    
+                    # Clean up any duplicate docs for this session (from stale start-recording entries)
+                    try:
+                        duplicates = collection.find(
+                            {"meeting_id": meeting_id, "session_id": session_id, "_id": {"$ne": existing_doc["_id"]}}
+                        )
+                        dup_count = 0
+                        for dup in duplicates:
+                            collection.delete_one({"_id": dup["_id"]})
+                            dup_count += 1
+                        if dup_count > 0:
+                            logging.info(f"🧹 Cleaned up {dup_count} duplicate docs for session {session_id}")
+                    except Exception as cleanup_err:
+                        logging.warning(f"⚠️ Duplicate cleanup failed: {cleanup_err}")
                 else:
-                    # New recording session - CREATE it
                     collection.insert_one(video_document)
                     logging.info(f"✅ Created new document for session: {session_id}")
+                
+                # Also clean up stale start-recording docs without session_id for this meeting
+                try:
+                    stale_result = collection.delete_many({
+                        "meeting_id": meeting_id,
+                        "recording_status": {"$in": ["active", "stopped", "starting"]},
+                        "session_id": {"$exists": False}
+                    })
+                    if stale_result.deleted_count > 0:
+                        logging.info(f"🧹 Cleaned up {stale_result.deleted_count} stale start-recording docs")
+                except Exception:
+                    pass
             else:
                 # Legacy recording without session_id - fall back to old behavior
                 query_filter = {
