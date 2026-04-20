@@ -371,11 +371,13 @@ def submit_vote(request):
     logger.info(f"🗳  User {user_id} voted in poll {poll_id} (meeting {meeting_id})")
 
     broadcast_data = {
-        'type':          'poll_vote_update',
-        'poll_id':       poll_id,
-        'total_voters':  poll_data['total_voters'],
-        'results':       results,
-        'timestamp':     now_iso,
+        'type':            'poll_vote_update',
+        'poll_id':         poll_id,
+        'total_voters':    poll_data['total_voters'],
+        'results':         results,
+        'timestamp':       now_iso,
+        'correct_options': poll_data.get('correct_options'),  # ✅ ADD
+        'poll_type':       poll_data.get('poll_type'),        # ✅ ADD
     }
 
     response = {
