@@ -1186,10 +1186,82 @@ class EnhancedAttendanceDetection(APIView):
                 
                 # Perform automatic face verification
                 try:
-                    logger.info("📸 Extracting face embedding from frame...")
+                    logger.info("📸 Detecting face from frame (direct method)...")
                     
-                    # Extract face embedding
-                    live_embedding = face_model.extract_embedding(frame_data)
+                    # Decode frame_data to numpy array
+                    img_data = frame_data
+                    if isinstance(img_data, str):
+                        if 'base64,' in img_data:
+                            img_data = img_data.split('base64,', 1)[1]
+                        img_bytes = base64.b64decode(img_data)
+                        pil_img = Image.open(BytesIO(img_bytes)).convert('RGB')
+                        np_img = np.array(pil_img)
+                    elif hasattr(img_data, 'read'):
+                        img_bytes = img_data.read()
+                        np_img = np.array(Image.open(BytesIO(img_bytes)).convert('RGB'))
+                    else:
+                        np_img = np.array(img_data)
+                    
+                    # Use face app DIRECTLY — doesn't raise ValueError, returns face list
+                    faces = face_model.app.get(np_img)
+                    face_count = len(faces) if faces else 0
+                    
+                    logger.info(f"📊 Detected {face_count} face(s) in frame")
+                    
+                    # No face at all
+                    if face_count == 0:
+                        violation_entry = {
+                            "reason": "No face visible",
+                            "action": "warning",
+                            "type": "no_face"
+                        }
+                        db[VERIFICATION_SESSIONS_COLLECTION].update_one(
+                            {"_id": session["_id"]},
+                            {"$push": {"violations": violation_entry},
+                             "$set": {"pending_reverification": False}}
+                        )
+                        updated = db[VERIFICATION_SESSIONS_COLLECTION].find_one({"_id": session["_id"]})
+                        vcount = len(updated.get("violations", []))
+                        return JsonResponse({
+                            "status": "no_face_detected",
+                            "message": "No face visible on camera",
+                            "allowed": False,
+                            "action": "warn" if vcount < 3 else "kick",
+                            "violations": vcount,
+                            "error_code": "NO_FACE_DETECTED",
+                            "popup": "⚠️ No face detected on camera. Please face the camera.",
+                            "session_active": vcount < 3
+                        })
+                    
+                    # Multiple faces
+                    if face_count > 1:
+                        violation_entry = {
+                            "reason": f"Multiple people detected ({face_count})",
+                            "action": "warning",
+                            "type": "multiple_faces"
+                        }
+                        db[VERIFICATION_SESSIONS_COLLECTION].update_one(
+                            {"_id": session["_id"]},
+                            {"$push": {"violations": violation_entry},
+                             "$set": {"pending_reverification": False}}
+                        )
+                        updated = db[VERIFICATION_SESSIONS_COLLECTION].find_one({"_id": session["_id"]})
+                        vcount = len(updated.get("violations", []))
+                        return JsonResponse({
+                            "status": "multiple_faces",
+                            "message": f"Multiple people detected ({face_count})",
+                            "allowed": False,
+                            "action": "warn" if vcount < 3 else "kick",
+                            "violations": vcount,
+                            "face_count": face_count,
+                            "error_code": "MULTIPLE_FACES_DETECTED",
+                            "popup": f"🚫 Multiple people detected ({face_count}). Only registered user allowed.",
+                            "session_active": vcount < 3
+                        })
+                    
+                    # Exactly 1 face — compare to stored embedding
+                    largest_face = faces[0]
+                    live_embedding = largest_face.embedding.tolist()
                     
                     # Get stored embedding
                     user_record = get_user_embedding(user_id)
@@ -1323,18 +1395,19 @@ class EnhancedAttendanceDetection(APIView):
                             warnings_remaining = 3 - violation_count
                             
                             return JsonResponse({
-                                "status": "reverification_failed",
-                                "message": f"⚠️ Face verification failed after camera re-enable. Warning {violation_count}/3",
+                                "status": "identity_mismatch",
+                                "message": f"⚠️ Face on camera is NOT the registered user. Warning {violation_count}/3",
                                 "allowed": False,
                                 "action": "warn",
                                 "violations": violation_count,
                                 "warnings_remaining": warnings_remaining,
                                 "distance": round(distance, 4),
                                 "confidence": round(confidence, 2),
+                                "error_code": "IDENTITY_MISMATCH",
                                 "attendance_percentage": 100,
                                 "engagement_score": 100,
                                 "session_active": True,
-                                "popup": f"⚠️ Face verification failed after camera re-enable. {warnings_remaining} attempts remaining before removal.",
+                                "popup": f"⚠️ Different person detected on camera. {warnings_remaining} warning(s) remaining.",
                                 "camera_state": state_info["new_state"]
                             })
                 

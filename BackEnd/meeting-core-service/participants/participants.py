@@ -4118,6 +4118,13 @@ def assign_co_host(request):
                 'details': str(e)
             }, status=500)
         
+        # ✅ Ensure attendance tracking continues for co-host (same as participant)
+        try:
+            start_attendance_tracking(meeting_id, str(user_id))
+            logging.info(f"[COHOST] Attendance tracking ensured for co-host {user_id}")
+        except Exception as e:
+            logging.warning(f"[COHOST] Could not ensure attendance tracking: {e}")
+        
         # Store in Redis (if available)
         redis_success = False
         redis_conn = get_redis()
@@ -4345,6 +4352,13 @@ def remove_co_host(request):
                 'error': 'Database update failed',
                 'details': str(e)
             }, status=500)
+        
+        # ✅ Ensure attendance tracking continues after demotion to participant
+        try:
+            start_attendance_tracking(meeting_id, str(user_id))
+            logging.info(f"[REMOVE-COHOST] Attendance tracking ensured for demoted participant {user_id}")
+        except Exception as e:
+            logging.warning(f"[REMOVE-COHOST] Could not ensure attendance tracking after demotion: {e}")
         
         # Remove from Redis (if available)
         redis_success = False

@@ -1,5 +1,5 @@
 
-
+# attendance.py
 import json
 import time
 import threading
@@ -97,7 +97,7 @@ class AttendanceConfig:
     IDENTITY_CHECK_INTERVAL = 1.0  # Check identity every 1 second
     IDENTITY_UNKNOWN_THRESHOLD = 5  # 5 consecutive seconds of unknown person = 1 warning
     IDENTITY_MAX_WARNINGS = 3  # 3 warnings = removal from meeting
-    IDENTITY_FACE_THRESHOLD = 0.6  # Face recognition similarity threshold (0.0-1.0)
+    IDENTITY_FACE_THRESHOLD = 0.65  # Face recognition similarity threshold (0.0-1.0)
     
     # ==================== SYSTEM CONSTANTS (EXISTING) ====================
     MAX_FRAME_HISTORY = 30  # Maximum frames to keep in history
@@ -1514,25 +1514,92 @@ def restore_session_from_db(meeting_id: str, user_id: str, session_key: str) -> 
 # ==================== HELPER: Run async code in sync context ====================
 
 # ==================== IDENTITY VERIFICATION HELPER FUNCTIONS ====================
-
 def run_async_verification(frame, user_id):
     """
-    Identity verification via HTTP call to Face Auth Service
+    ✅ FIXED: Identity verification using direct face model + MongoDB embedding lookup.
+    No HTTP call, no missing clients module. Uses face_auth.face_model directly.
+    
+    Returns: (verified: bool, similarity: float)
     """
     try:
-        from clients.face_auth_client import verify_face_identity
-        result = verify_face_identity(frame, user_id, AttendanceConfig.IDENTITY_FACE_THRESHOLD)
+        # Import face model + MongoDB collection (already loaded in face_auth.py)
+        try:
+            from core.FaceAuth.face_auth import face_model, db, FACE_EMBEDDINGS_COLLECTION
+        except ImportError as e:
+            logger.error(f"[IDENTITY] Could not import face_model from face_auth: {e}")
+            # Fail open so registered users don't get locked out if service is broken
+            return (True, 1.0)
         
-        logger.debug(
-            f"Identity verification result for {user_id}: "
-            f"verified={result[0]}, similarity={result[1]:.3f}"
+        # 1. Detect faces in frame (frame is already numpy BGR from decode_image)
+        try:
+            # face_model.app.get() expects RGB, so convert BGR→RGB
+            import cv2
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            faces = face_model.app.get(rgb_frame)
+        except Exception as e:
+            logger.warning(f"[IDENTITY] Face detection error for {user_id}: {e}")
+            # No face detection possible → treat as unknown (consecutive counter will build up)
+            return (False, 0.0)
+        
+        face_count = len(faces) if faces else 0
+        
+        # 2. No face → return UNVERIFIED (this accumulates the consecutive counter)
+        if face_count == 0:
+            logger.debug(f"[IDENTITY] No face detected in frame for {user_id}")
+            return (False, 0.0)
+        
+        # 3. Get registered user's stored embedding from MongoDB
+        try:
+            record = db[FACE_EMBEDDINGS_COLLECTION].find_one({"user_id": str(user_id)})
+            if not record:
+                record = db[FACE_EMBEDDINGS_COLLECTION].find_one({"user_id": int(user_id)})
+            
+            if not record or not record.get("embedding"):
+                logger.warning(f"[IDENTITY] User {user_id} has no registered embedding — passing through")
+                # User never registered a face → don't penalize them
+                return (True, 1.0)
+            
+            stored_embedding = record["embedding"]
+        except Exception as e:
+            logger.error(f"[IDENTITY] Could not fetch stored embedding for {user_id}: {e}")
+            # DB issue → fail open
+            return (True, 1.0)
+        
+        # 4. Compare largest face to stored embedding
+        largest_face = max(
+            faces,
+            key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
+        )
+        live_embedding = largest_face.embedding
+        
+        # Cosine similarity (1 - cosine_distance)
+        v1 = np.array(stored_embedding, dtype=np.float32)
+        v2 = np.array(live_embedding, dtype=np.float32)
+        n1 = np.linalg.norm(v1)
+        n2 = np.linalg.norm(v2)
+        
+        if n1 == 0 or n2 == 0:
+            logger.warning(f"[IDENTITY] Zero-norm embedding for {user_id}")
+            return (False, 0.0)
+        
+        similarity = float(np.dot(v1, v2) / (n1 * n2))
+        
+        # 5. Threshold decision — similarity >= threshold means same person
+        threshold = AttendanceConfig.IDENTITY_FACE_THRESHOLD  # 0.6 by default
+        is_verified = similarity >= threshold
+        
+        logger.info(
+            f"[IDENTITY] user={user_id} similarity={similarity:.3f} "
+            f"threshold={threshold} verified={is_verified} "
+            f"face_count={face_count}"
         )
         
-        return result
+        return (is_verified, similarity)
         
     except Exception as e:
-        logger.error(f"Error in identity verification for {user_id}: {e}")
+        logger.error(f"[IDENTITY] Unexpected error verifying {user_id}: {e}")
         logger.error(traceback.format_exc())
+        # Any unexpected error → fail open so registered users don't get locked out
         return (True, 1.0)
 
 def check_identity_verification(session, db_session, frame, user_id, current_time):
@@ -4463,7 +4530,31 @@ def detect_violations(request):
         session["frame_processing_count"] += 1
         
         # ✅ UPDATED: Uses pooled MediaPipe instances (0ms init instead of 150ms)
-        face_results, mesh_results, pose_results, hand_results = get_mediapipe_results(rgb)
+        # ✅ EXPLICIT NULL CHECK: mediapipe_pool may return None tuple if pool failed to init
+        try:
+            mp_result = get_mediapipe_results(rgb)
+        except Exception as _mp_err:
+            logger.error(f"❌ MediaPipe pool threw exception for {user_id}: {type(_mp_err).__name__}: {_mp_err}")
+            SessionManager.save_session(meeting_id, user_id, session)
+            return JsonResponse({
+                "status": "ok",
+                "popup": "",
+                "violations": [],
+                "attendance_percentage": max(0, 100 - session.get("attendance_penalty", 0)),
+                "frame_skipped": True,
+                "reason": f"MediaPipe pool error: {type(_mp_err).__name__}",
+                "frame_count": session.get("frame_processing_count", 0),
+            })
+        if mp_result is None or not isinstance(mp_result, tuple) or len(mp_result) != 4:
+            logger.error(f"❌ MediaPipe returned invalid shape: {type(mp_result)} for {user_id}")
+            SessionManager.save_session(meeting_id, user_id, session)
+            return JsonResponse({
+                "status": "ok", "popup": "", "violations": [],
+                "attendance_percentage": max(0, 100 - session.get("attendance_penalty", 0)),
+                "frame_skipped": True, "reason": "MediaPipe returned invalid result",
+                "frame_count": session.get("frame_processing_count", 0),
+            })
+        face_results, mesh_results, pose_results, hand_results = mp_result
 
         # Check if MediaPipe processing failed
         if face_results is None:
@@ -4944,9 +5035,21 @@ def detect_violations(request):
     except ValidationError as e:
         return JsonResponse({"status": "error", "message": str(e)}, status=400)
     except Exception as e:
-        logger.error(f"Error in detect_violations: {e}")
-        logger.error(traceback.format_exc())
-        return JsonResponse({"status": "error", "message": "Internal server error"}, status=500)
+        import traceback as _tb
+        tb_str = _tb.format_exc()
+        logger.error(f"❌ DETECT_VIOLATIONS CRASHED for meeting={data.get('meeting_id') if 'data' in dir() else '?'} user={data.get('user_id') if 'data' in dir() else '?'}")
+        logger.error(f"❌ Exception type: {type(e).__name__}")
+        logger.error(f"❌ Exception message: {str(e)}")
+        logger.error(f"❌ Full traceback:\n{tb_str}")
+        # TEMPORARY: expose real error to frontend so we can see it in DevTools.
+        # REMOVE this debug payload once the root cause is fixed.
+        return JsonResponse({
+            "status": "error",
+            "message": "Internal server error",
+            "debug_exception_type": type(e).__name__,
+            "debug_exception_message": str(e),
+            "debug_traceback_tail": tb_str.splitlines()[-6:] if tb_str else [],
+        }, status=500)
         
 # ==================== BREAK ENDPOINT ====================
 
@@ -4991,7 +5094,34 @@ def take_break(request):
         # OLD: session = attendance_sessions[session_key]
         session = SessionManager.get_session(meeting_id, user_id)
         if session is None:
+            logger.error(f"❌ DETECT: get_session returned None for {meeting_id}/{user_id}")
             return JsonResponse({"status": "error", "message": "Session not found"}, status=404)
+
+        # ✅ SCHEMA GUARD: ensure required keys exist on session (handles Redis sessions
+        # stored under older code versions missing newer keys).
+        _required_session_keys = {
+            'frame_processing_count': 0,
+            'last_frame_processed': 0,
+            'attendance_penalty': 0,
+            'face_detected': False,
+            'baseline_established': False,
+            'violation_continuous_timer': None,
+            'violation_current_type': None,
+            'violation_popup_shown': False,
+            'continuous_violation_start_time': None,
+            'last_face_movement_time': time.time(),
+            'inactivity_popup_shown': False,
+            'is_currently_on_break': False,
+            'session_active': True,
+            'identity_is_removed': False,
+        }
+        _was_patched = False
+        for _k, _default in _required_session_keys.items():
+            if _k not in session:
+                session[_k] = _default
+                _was_patched = True
+        if _was_patched:
+            logger.warning(f"⚠️ DETECT: Session schema patched for {user_id} (missing keys filled with defaults)")
         
         # Check if break already used (legacy single-break logic) (unchanged)
         if session.get("break_used", False):
