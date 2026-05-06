@@ -149,13 +149,45 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
 AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET", "imeetpro-prod-recordings")
 
-# S3 Client
-s3_client = boto3.client(
-    "s3",
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-    region_name=AWS_REGION
-)
+# S3 Client — fork-safe lazy initialization
+# 
+# WHY THIS IS NEEDED:
+# Celery uses prefork workers. boto3's underlying urllib3 connection pool is
+# NOT fork-safe. If we create s3_client at module import time, child processes
+# inherit broken file descriptors and download_file() hangs silently forever.
+# This proxy creates a fresh client per-process on first use.
+from botocore.config import Config
+import threading
+
+_s3_client_local = threading.local()
+
+def _build_s3_client():
+    return boto3.client(
+        "s3",
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        region_name=AWS_REGION,
+        config=Config(
+            connect_timeout=15,
+            read_timeout=300,
+            retries={'max_attempts': 3, 'mode': 'standard'}
+        )
+    )
+
+def get_s3_client():
+    """Return a boto3 S3 client unique to this process. Recreates after fork()."""
+    pid = os.getpid()
+    if not hasattr(_s3_client_local, 'client') or getattr(_s3_client_local, 'pid', None) != pid:
+        _s3_client_local.client = _build_s3_client()
+        _s3_client_local.pid = pid
+    return _s3_client_local.client
+
+class _S3ClientProxy:
+    """Proxy so existing code like `s3_client.download_file(...)` keeps working."""
+    def __getattr__(self, name):
+        return getattr(get_s3_client(), name)
+
+s3_client = _S3ClientProxy()
 
 S3_FOLDERS = {
     "videos": os.getenv("S3_FOLDER_VIDEOS", "videos"),
@@ -165,20 +197,26 @@ S3_FOLDERS = {
     "subtitles": os.getenv("S3_FOLDER_SUBTITLES", "subtitles")
 }
 
-try:
-    client = OpenAI()
-except Exception as e:
-    client = None
-    print(f"Warning: OpenAI client not initialized: {e}")
     
-# try:
-#     groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-# except Exception as e:
-#     groq_client = None
-#     print(f"Warning: Groq client not initialized: {e}")
+# ============================================
+# OPENAI CLIENT INITIALIZATION - for transcription
+# ============================================
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+client = None
+if OPENAI_API_KEY:
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        print(f"✅ OpenAI client initialized successfully (key: {OPENAI_API_KEY[:8]}...)")
+    except Exception as e:
+        client = None
+        print(f"❌ OpenAI client initialization FAILED: {e}")
+else:
+    print(f"❌ OPENAI_API_KEY is EMPTY or NOT SET in environment")
+    print(f"❌ Transcription will NOT work!")
+
 
 # ============================================
-# GROQ CLIENT INITIALIZATION - ENHANCED
+# GROQ CLIENT INITIALIZATION - for summary, translation, trainer eval, subtitles
 # ============================================
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 groq_client = None
@@ -192,7 +230,7 @@ if GROQ_API_KEY:
         print(f"❌ Groq client initialization FAILED: {e}")
 else:
     print(f"❌ GROQ_API_KEY is EMPTY or NOT SET in environment")
-    print(f"❌ Transcription, summary, and trainer evaluation will NOT work!")
+    print(f"❌ Summary, translation, and trainer evaluation will NOT work!")
     
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -895,6 +933,61 @@ def sanitize_dot_code(dot_code: str) -> str:
     
     return final
 
+def enhance_dot_styling(dot_code: str) -> str:
+    """
+    Inject professional styling into LLM-generated DOT code.
+    Adds colors, rounded boxes, fonts to make mind map visually appealing.
+    """
+    if not dot_code:
+        return dot_code
+ 
+    # Don't double-inject if already styled
+    if "fillcolor" in dot_code and "fontname" in dot_code:
+        return dot_code
+ 
+    brace_idx = dot_code.find('{')
+    if brace_idx == -1:
+        return dot_code
+ 
+    # Inject default node/edge styling after opening brace
+    style_block = """
+    graph [rankdir=LR, splines=ortho, nodesep=0.8, ranksep=1.2];
+    node [
+        shape=box,
+        style="rounded,filled",
+        fontname="Arial",
+        fontsize=11,
+        color="#2E86C1",
+        fillcolor="#EBF5FB",
+        penwidth=1.5
+    ];
+    edge [
+        color="#5DADE2",
+        penwidth=1.2,
+        arrowsize=0.8
+    ];
+"""
+    styled = dot_code[:brace_idx + 1] + style_block + dot_code[brace_idx + 1:]
+ 
+    # FIX: Find the FIRST real node (skip graph/node/edge/digraph/subgraph keywords)
+    import re
+    skip_keywords = {'node', 'edge', 'graph', 'digraph', 'subgraph'}
+    for match in re.finditer(r'(\w+)\s*\[', styled):
+        node_name = match.group(1)
+        if node_name.lower() not in skip_keywords:
+            # Found the actual root node — style it with dark blue
+            # Use exact match with word boundary to avoid replacing partial names
+            old_pattern = f'{node_name}['
+            new_pattern = f'{node_name}[fillcolor="#1A5276", fontcolor="white", fontsize=13, penwidth=2, '
+            # Replace only the FIRST occurrence after style block
+            pos = styled.find(old_pattern, brace_idx + len(style_block))
+            if pos != -1:
+                styled = styled[:pos] + new_pattern + styled[pos + len(old_pattern):]
+            break  # Only style the first real node as root
+ 
+    return styled
+
+
 def get_meeting_participants_emails(meeting_id: str) -> list:
     """Get all participant emails for a meeting from different meeting types."""
     visible_to_emails = []
@@ -934,51 +1027,6 @@ def get_meeting_participants_emails(meeting_id: str) -> list:
     except Exception as e:
         logger.error(f"Failed to get meeting participants emails for meeting {meeting_id}: {e}")
         return []
-
-def get_user_details(user_id: str) -> dict:
-    """Get user details (name, email) from database."""
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                SELECT ID, full_name, email 
-                FROM tbl_Users 
-                WHERE ID = %s
-            """, [user_id])
-            row = cursor.fetchone()
-            
-            if row:
-                user_id_db, full_name, email = row
-                
-                # Priority: full_name > email prefix > User ID
-                if full_name and full_name.strip():
-                    display_name = full_name.strip()
-                elif email and email.strip():
-                    display_name = email.split('@')[0]
-                else:
-                    display_name = f"User {user_id}"
-                
-                logger.info(f"✅ Found user {user_id}: full_name='{full_name}', email='{email}', display='{display_name}'")
-                
-                return {
-                    "user_id": str(user_id_db),
-                    "user_name": display_name,
-                    "user_email": email or ""
-                }
-            
-            logger.warning(f"❌ User {user_id} not found in tbl_Users")
-            return {
-                "user_id": str(user_id),
-                "user_name": f"User {user_id}",
-                "user_email": ""
-            }
-            
-    except Exception as e:
-        logger.error(f"❌ Error getting user details for {user_id}: {e}")
-        return {
-            "user_id": str(user_id),
-            "user_name": f"User {user_id}",
-            "user_email": ""
-        }
 
 def get_user_details(user_id: str) -> dict:
     """Get user details (name, email) from database."""
@@ -1094,55 +1142,355 @@ def generate_graph(dot_code: str, output_path: str):
     s = Source(dot_code)
     return s.render(filename=output_path, format="png", cleanup=True)
 
+# =============================================================================
+# NARRATION STRIPPER — removes "The speaker X" / "They X" / etc. prefixes
+# so summaries read like reference docs (textbook/SAP/Oracle/Google style),
+# not meeting minutes. Universal — applies to every domain (tech, business,
+# medical, cooking, legal, fitness, education, etc.).
+# Applied ONLY to summary documents (is_summary=True) — transcripts untouched.
+# =============================================================================
+_NARRATION_VERBS = (
+    r"discussed|explained|demonstrated|showed|emphasized|highlighted|covered|"
+    r"talked about|touched on|touched upon|mentioned|described|outlined|"
+    r"presented|introduced|elaborated on|elaborated|went over|walked through|"
+    r"reviewed|noted|stated|pointed out|illustrated|compared|also discussed|"
+    r"further explained|then explained|also explained|also mentioned|"
+    r"also touched on|also demonstrated|also showed|continued to explain|"
+    r"continued discussing"
+)
+
+_NARRATION_PATTERNS = [
+    re.compile(rf"^the speaker (?:{_NARRATION_VERBS})\s+", re.IGNORECASE),
+    re.compile(rf"^they (?:{_NARRATION_VERBS})\s+", re.IGNORECASE),
+    re.compile(rf"^the (?:instructor|trainer|presenter|teacher|lecturer|host) (?:{_NARRATION_VERBS})\s+", re.IGNORECASE),
+    re.compile(r"^in the (?:meeting|session|class|lecture|presentation|talk),?\s+", re.IGNORECASE),
+    re.compile(r"^during the (?:meeting|session|class|lecture|presentation|talk),?\s+", re.IGNORECASE),
+    re.compile(rf"^the speaker['\u2019]s (?:explanation|discussion|demonstration|description|presentation) of\s+", re.IGNORECASE),
+]
+
+def _strip_narration_sentence(sentence: str) -> str:
+    """Strip leading 'The speaker X' / 'They X' narration from one sentence."""
+    s = sentence.strip()
+    if not s:
+        return s
+    for pat in _NARRATION_PATTERNS:
+        m = pat.match(s)
+        if m:
+            rest = s[m.end():].strip()
+            if rest:
+                rest = rest[0].upper() + rest[1:] if len(rest) > 1 else rest.upper()
+                return rest
+    return s
+
+def strip_narration_voice(text: str) -> str:
+    """Apply narration stripping sentence-by-sentence over a block of text."""
+    if not text:
+        return text
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    cleaned = [_strip_narration_sentence(p) for p in parts if p.strip()]
+    return " ".join(cleaned)
+
 def save_docx(content: str, path: str, image_path: str = None, title: str = ""):
-    from docx.shared import RGBColor
-
+    """
+    Save content to DOCX with professional formatting.
+    Handles: Executive Summary, Key Topics, Action Items, Detailed Discussion,
+    Examples & Demonstrations (conditional), Key Takeaways, Concept Map
+    """
+    from docx.shared import RGBColor, Pt, Inches
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx import Document
+    import re
+    from datetime import datetime
+ 
     doc = Document()
-
-    # === Title ===
+ 
+    # Set default font
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = 'Arial'
+    font.size = Pt(11)
+ 
+    # === Document Header: Title ===
     if title:
         heading = doc.add_heading(title, level=1)
         heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        for run in heading.runs:
+            run.font.color.rgb = RGBColor(0x1A, 0x52, 0x76)
+ 
+    # === Date line ONLY for summary documents, NOT for transcript ===
+    is_summary = title and "summary" in title.lower()
+    if is_summary:
+        import pytz
+        ist = pytz.timezone("Asia/Kolkata")
+        now = datetime.now(ist)
+        date_str = now.strftime("%B %d, %Y at %I:%M %p")
+        date_para = doc.add_paragraph()
+        date_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        date_run = date_para.add_run(f"Generated: {date_str}")
+        date_run.font.size = Pt(10)
+        date_run.font.color.rgb = RGBColor(0x7F, 0x8C, 0x8D)
+        date_run.font.italic = True
+        doc.add_paragraph()  # spacer
+ 
+    # Track block states separately:
+    #   inside_dot_block   → ```dot / ```graphviz blocks (mind map source — skip, image renders elsewhere)
+    #   inside_code_fence  → ```python / ```js / ```sql / etc. (real code — keep, render with monospace)
+    inside_dot_block = False
+    inside_code_fence = False
+    current_section = ""
 
-    # === Main Content ===
     for line in content.splitlines():
-        line = line.strip()
-        if not line:
+        stripped = line.strip()
+        if not stripped:
+            # Preserve blank lines inside code blocks for readability
+            if inside_code_fence:
+                doc.add_paragraph()
             continue
 
-        # Headings
-        if line.startswith("### "):
-            run = doc.add_heading(line[4:].strip(), level=3).runs[0]
-            run.font.color.rgb = RGBColor(0, 0, 0)
+        # === Triple-backtick fence handling ===
+        # ```dot / ```graphviz       → DOT block (SKIP — mind map renders as image at end)
+        # ```python / ```javascript /
+        # ```sql / etc. or plain ``` → CODE block (KEEP — render with monospace font)
+        if stripped.startswith("```"):
+            lang_hint = stripped[3:].strip().lower()
+            if not inside_dot_block and not inside_code_fence:
+                # Opening a fence — decide DOT vs code
+                if lang_hint in ("dot", "graphviz"):
+                    inside_dot_block = True
+                else:
+                    inside_code_fence = True
+            elif inside_dot_block:
+                inside_dot_block = False  # closing DOT block
+            elif inside_code_fence:
+                inside_code_fence = False  # closing code block
+            continue
 
-        elif line.startswith("## "):
-            run = doc.add_heading(line[3:].strip(), level=2).runs[0]
-            run.font.color.rgb = RGBColor(0, 0, 0)
+        # Inside DOT block — skip (mind map source code; image renders separately)
+        if inside_dot_block:
+            continue
 
-        elif line.startswith("# "):
-            run = doc.add_heading(line[2:].strip(), level=1).runs[0]
-            run.font.color.rgb = RGBColor(0, 0, 0)
-
-        # Bold Example headings
-        elif line.lower().startswith("example"):
+        # Inside code fence — render with monospace font, preserving original indentation
+        # (use `line` not `stripped` so Python indentation survives in the .docx)
+        if inside_code_fence:
             p = doc.add_paragraph()
-            run = p.add_run(line)
+            run = p.add_run(line.rstrip())
+            run.font.name = 'Consolas'
+            run.font.size = Pt(10)
+            run.font.color.rgb = RGBColor(0x2C, 0x3E, 0x50)
+            continue
+ 
+        # Skip raw DOT syntax that leaked outside backticks
+        if stripped.lower().startswith(("digraph", "graph ")) and "{" in stripped:
+            inside_dot_block = True
+            continue
+        if stripped == "}" and inside_dot_block:
+            inside_dot_block = False
+            continue
+        if "->" in stripped and ("[" in stripped or ";" in stripped):
+            continue
+        if stripped.startswith("node[") or stripped.startswith("edge["):
+            continue
+ 
+        # === Section Headers (## Executive Summary, etc.) ===
+        if stripped.startswith("## "):
+            section_name = stripped[3:].strip()
+            current_section = section_name.upper()
+ 
+            # Skip Concept Map header (image added separately at the end)
+            if "CONCEPT MAP" in current_section or "MIND MAP" in current_section:
+                continue
+
+            # Skip "Action Items" heading if no real action items follow (only filler placeholder)
+            if "ACTION ITEMS" in current_section:
+                remaining = content.split(stripped, 1)[-1] if stripped in content else ""
+                has_real_action_items = False
+                for future_line in remaining.splitlines():
+                    fl = future_line.strip()
+                    if not fl:
+                        continue
+                    if fl.startswith("## "):
+                        break
+                    fl_lower = fl.lower()
+                    # Skip filler placeholder lines
+                    if any(p in fl_lower for p in [
+                        "no specific action", "no action item", "no tasks were",
+                        "were not identified", "not identified in this",
+                        "no follow-up", "no next steps"
+                    ]):
+                        continue
+                    # Real action item starts with bullet or bracket tag
+                    if fl.startswith("- ") or fl.startswith("[") or fl.startswith("• "):
+                        has_real_action_items = True
+                        break
+                if not has_real_action_items:
+                    continue
+
+            # Skip "Complete Code Example" heading if no real code follows
+            if "COMPLETE CODE" in current_section:
+                remaining = content.split(stripped, 1)[-1] if stripped in content else ""
+                has_real_code = False
+                for future_line in remaining.splitlines():
+                    fl = future_line.strip()
+                    if not fl:
+                        continue
+                    if fl.startswith("## "):
+                        break
+                    if fl.lower().startswith(("since no", "no specific", "no code", "no coding", "not applicable", "there is no")):
+                        break
+                    if fl.startswith(("import ", "from ", "def ", "class ", "print(", "    ", "\t")) or "=" in fl:
+                        has_real_code = True
+                        break
+                if not has_real_code:
+                    continue
+
+            # Skip "Examples & Demonstrations" heading if no real examples follow
+            if "EXAMPLES" in current_section and "DEMONSTRATIONS" in current_section:
+                remaining = content.split(stripped, 1)[-1] if stripped in content else ""
+                has_real_examples = False
+                for future_line in remaining.splitlines():
+                    fl = future_line.strip()
+                    if not fl:
+                        continue
+                    if fl.startswith("## "):
+                        break
+                    if any(neg in fl.lower() for neg in ["no specific", "no example", "no demonstration", "no code", "not applicable", "were not", "was not", "did not"]):
+                        continue
+                    if fl.startswith("### ") or fl.startswith("- ") or len(fl) > 50:
+                        has_real_examples = True
+                        break
+                if not has_real_examples:
+                    continue
+
+            heading = doc.add_heading(section_name, level=1)
+            for run in heading.runs:
+                run.font.color.rgb = RGBColor(0x1A, 0x52, 0x76)
+                run.font.size = Pt(16)
+            continue
+ 
+        # === Sub-headers (### Topic Name) ===
+        if stripped.startswith("### "):
+            heading = doc.add_heading(stripped[4:].strip(), level=2)
+            for run in heading.runs:
+                run.font.color.rgb = RGBColor(0x2E, 0x86, 0xC1)
+                run.font.size = Pt(13)
+            continue
+ 
+        # === Bullet points (- text) ===
+        if stripped.startswith("- "):
+            bullet_text = stripped[2:].strip()
+            p = doc.add_paragraph(style='List Bullet')
+ 
+            # Check for bold prefix like [Learners] or [Group]
+            bold_match = re.match(r'\[([^\]]+)\]\s*(.*)', bullet_text)
+            if bold_match:
+                run_bold = p.add_run(f"[{bold_match.group(1)}] ")
+                run_bold.bold = True
+                run_bold.font.color.rgb = RGBColor(0xE6, 0x7E, 0x22)
+                run_bold.font.size = Pt(11)
+                rest_text = bold_match.group(2)
+                if is_summary:
+                    rest_text = strip_narration_voice(rest_text)
+                run_normal = p.add_run(rest_text)
+                run_normal.font.size = Pt(11)
+            else:
+                p.text = ""
+                cleaned_bullet = strip_narration_voice(bullet_text) if is_summary else bullet_text
+                run = p.add_run(cleaned_bullet)
+                run.font.size = Pt(11)
+            continue
+ 
+        # === Numbered items (1. text) ===
+        if re.match(r'^\d+\.\s', stripped):
+            p = doc.add_paragraph(stripped, style='List Number')
+            for run in p.runs:
+                run.font.size = Pt(11)
+            continue
+ 
+        # === Code lines (in code section or indented) ===
+        if "COMPLETE CODE" in current_section or stripped.startswith("    ") or stripped.startswith("\t"):
+            p = doc.add_paragraph()
+            run = p.add_run(stripped)
+            run.font.name = 'Consolas'
+            run.font.size = Pt(10)
+            run.font.color.rgb = RGBColor(0x2C, 0x3E, 0x50)
+            continue
+ 
+        # === Feedback line at the end ===
+        if stripped.lower().startswith("was this summary helpful"):
+            doc.add_paragraph()  # spacer
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(stripped)
+            run.font.size = Pt(10)
+            run.font.color.rgb = RGBColor(0x7F, 0x8C, 0x8D)
+            run.font.italic = True
+            continue
+ 
+        # === Separator line ===
+        if stripped == "---":
+            continue
+ 
+        # === Bold wrapped text (**text**) ===
+        if stripped.startswith("**") and stripped.endswith("**"):
+            clean_text = stripped.replace("**", "").strip()
+            p = doc.add_paragraph()
+            run = p.add_run(clean_text)
             run.bold = True
-            run.font.color.rgb = RGBColor(0, 0, 0)
+            run.font.size = Pt(11)
+            run.font.color.rgb = RGBColor(0x2C, 0x3E, 0x50)
+            continue
+ 
+        # === Skip "no content" filler — ONLY inside conditional summary sections.
+        # These filters exist to clean up summary text like "no code example was provided".
+        # They must NOT run on transcripts (where current_section is empty) or on regular
+        # summary prose, because real sentences contain words like "not" + "example".
+        if current_section in ("EXAMPLES & DEMONSTRATIONS", "COMPLETE CODE EXAMPLE"):
+            lower = stripped.lower()
+            has_negative = any(w in lower for w in ["no ", "not ", "without ", "didn't", "did not", "does not", "is not", "were not", "was not"])
+            has_topic_word = any(w in lower for w in ["code example", "code is", "code was", "coding", "programming", "example", "demonstration"])
+            if has_negative and has_topic_word:
+                continue
 
-        # Normal text
-        else:
-            p = doc.add_paragraph(line)
-            p.style.font.size = Pt(12)
+            if ("no code" in lower or "no example" in lower or "no demonstration" in lower or "no specific example" in lower) and ("not" in lower or "no " in lower):
+                continue
 
-    # === Add Mind Map (ONE TIME ONLY) ===
+        # === GLOBAL FILLER-TEXT FILTER ===
+        # Drops "No X was discussed" / "No specific X" placeholders that appear ANYWHERE
+        # in the summary, regardless of section. These are LLM-written explanations of
+        # absence (for Action Items, Code, Examples) that should have been omitted entirely.
+        # Without this, standalone filler paragraphs leak through when they appear without
+        # their parent heading (which save_docx already skipped).
+        lower_global = stripped.lower()
+        global_filler_starters = (
+            "no ", "no specific ", "since no ", "there is no ",
+            "there are no ", "there were no ", "not applicable"
+        )
+        global_filler_topics = [
+            "code", "coding", "programming",
+            "example", "demonstration", "demo",
+            "action item", "specific action",
+            "tasks were", "task were",
+            "follow-up", "next steps"
+        ]
+        if any(lower_global.startswith(s) for s in global_filler_starters):
+            if any(t in lower_global for t in global_filler_topics):
+                continue
+
+        # === Regular paragraph ===
+        para_text = strip_narration_voice(stripped) if is_summary else stripped
+        p = doc.add_paragraph(para_text)
+        for run in p.runs:
+            run.font.size = Pt(11)
+ 
+    # === Add Concept Map Image at end ===
     if image_path and os.path.exists(image_path):
         doc.add_page_break()
-        doc.add_heading("Mind Map", level=2)
+        heading = doc.add_heading("Concept Map", level=1)
+        for run in heading.runs:
+            run.font.color.rgb = RGBColor(0x1A, 0x52, 0x76)
         doc.add_picture(image_path, width=Inches(6))
         doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-    # === Save once ===
+ 
     doc.save(path)
 
 
@@ -1350,10 +1698,12 @@ def send_recording_completion_notifications(meeting_id, video_url, transcript_ur
 async def transcribe_chunk(chunk_file: str, offset: float):
     try:
         with open(chunk_file, "rb") as f:
-            result = groq_client.audio.transcriptions.create(
-                model="whisper-large-v3-turbo",
+            result = groq_client.audio.translations.create(
+                model="whisper-large-v3",
                 file=f,
-                response_format="verbose_json"
+                response_format="verbose_json",
+                prompt="Technical training session. Preserve technical terms, product names, commands, and acronyms exactly (e.g., SAP HANA, HDBLCM, HCMT, RPM, nslookup, hostname, IP address). Output strictly in English.",
+                temperature=0.0
             )
 
         segments = []
@@ -1389,256 +1739,1036 @@ async def transcribe_chunk(chunk_file: str, offset: float):
             "text": "[Transcription failed]"
         }]
 
-
 def summarize_segment(transcript: str, context: str = ""):
-    # ✅ CRITICAL: Check if Groq client is available
+    """
+    Generate summary for transcript.
+    - Short transcripts (<15K words): Single API call with full detailed prompt
+    - Long transcripts (>=15K words): Split into chunks, summarize each, then combine
+    Supports 1-4 hour meetings reliably.
+    """
     if groq_client is None:
         logger.error("❌ Cannot generate summary - groq_client is None!")
         logger.error(f"❌ GROQ_API_KEY value: '{os.getenv('GROQ_API_KEY', 'NOT_SET')[:10]}...'")
         return "Summary unavailable - Groq API not configured. Please check GROQ_API_KEY environment variable."
+    
+    word_count = len(transcript.split())
+    logger.info(f"📝 Transcript length: {word_count} words")
+    
+    # For short transcripts (< 1 hour meetings), use single-call approach with full detailed prompt
+    if word_count < 15000:
+        logger.info(f"📝 Short transcript - using single API call with full detailed prompt")
+        return _generate_single_summary(transcript, context)
+    
+    # For long transcripts (2+ hour meetings), use chunked summarization
+    logger.info(f"📚 Long transcript detected ({word_count} words), using chunked summarization")
+    return _generate_chunked_summary(transcript, context)
+
+
+# ============================================================
+# UPDATED CHANGE 2 & CHANGE 3 ONLY
+# 
+# Changes 1, 4, 5 remain EXACTLY as in FINAL_CODE_CHANGES_FIXED.py
+# Only _generate_single_summary and CHUNKED_FINAL_PROMPT_TEMPLATE 
+# + _generate_chunked_summary are updated here.
+# ============================================================
+
+
+# ============================================================
+# CHANGE 2: REPLACE _generate_single_summary ENTIRELY
+# ============================================================
+
+def _generate_single_summary(transcript: str, context: str = "") -> str:
+    """
+    Detailed summarization for short transcripts (< 15K words / ~1 hour meetings).
+    Merges old enterprise documentation quality rules with new structured format.
+    """
     prompt = f"""
-You are a senior documentation and technical writing expert. Your task is to convert the following raw transcript segment into a comprehensive, highly accurate, and formal implementation or study guide based on the subject matter discussed.
-
-The final output must:
-
-- Be structured and formatted according to professional standards for enterprise-level training, onboarding, line pictures, and technical enablement.
-- Include step-by-step procedures, clearly numbered and logically ordered.
-- Provide real-world tools, technologies, configurations, commands, and screenshots/images (placeholders if needed) relevant to the topic.
-- Embed technical examples, use cases, CLI/GUI instructions, and expected outputs or screenshots where applicable.
-- Cover common pitfalls, troubleshooting tips, and best practices to ensure full practical understanding.
-- Use terminology and instructional depth suitable for readers to gain 100% conceptual and hands-on knowledge of the subject.
-- The final document should resemble internal documentation used at organizations like SAP, Oracle, Java, Selenium, AI/ML, Data Science, AWS, Microsoft, or Google — clear, comprehensive, and instructional in tone.
----
----------------------------------------------------------------------
-EXPLANATION STYLE RULE (VERY IMPORTANT – LARGE SCALE):
-
-The output must follow a TEACHING STYLE similar to real instructors on YouTube:
-- Step-by-step explanation
-- Beginner-friendly structure
-- Concepts explained in simple language
-- Real examples in EVERY section
-- Coding examples ONLY when transcript includes coding
-- If NOT coding → produce real-life scenario examples (not code)
-
-The explanation must look like a proper "Getting Started Guide" or "Beginner-Friendly Training Material".
+You are a senior documentation and technical writing expert. Your task is to convert the following raw transcript into a comprehensive, highly accurate, and professionally structured meeting summary document.
 
 ---------------------------------------------------------------------
-FINAL FULL CODE OUTPUT RULE (LARGE SCALE – ALWAYS CORRECT):
+GROUNDING RULES (HIGHEST PRIORITY — TOPIC-LEVEL FIDELITY):
 
-Before generating the Conclusion and Mind Map, create a new section titled:
+The TRANSCRIPT decides WHAT topics to write about. WITHIN those topics, you may write naturally and clearly.
 
-"Complete Code Example (Only When Coding Is Detected)"
+ALLOWED — when a topic IS discussed in the transcript:
+- Explain it well with natural depth, related context, and helpful clarity for a reader who wasn't there.
+- Cover what the speaker said and elaborate enough to make the discussion understandable.
+- Use proportional length — short discussions get short sections, long discussions get long sections.
 
-TRIGGER CONDITIONS (coding = TRUE):
-Coding is TRUE if ANY of the following occur:
-1. Transcript or explanation includes ANY code snippet.
-2. Transcript mentions ANY programming language:
-   (Python, Java, C++, JavaScript, SQL, React, Node, HTML, etc.)
-3. Transcript mentions ANY programming concepts:
-   (function, class, variable, loop, API, script, project, compiler, debugging, IDE)
-4. The assistant generated ANY inline code earlier in the explanation.
+NOT ALLOWED — even if it would make the document "better":
+- DO NOT introduce topics the speaker never mentioned. If the speaker talked about Python and automation, do not add sections about Java, AWS, web development, finance, or healthcare just because they're related.
+- DO NOT fabricate action items. If no tasks were assigned, OMIT the entire Action Items section (no heading, no placeholder text). Same rule for Examples & Demonstrations and Complete Code Example.
+- DO NOT invent examples or demonstrations. The Examples & Demonstrations section may only include things the speaker actually showed. If none, omit the section entirely.
+- DO NOT invent code. Complete Code Example may only appear if the speaker actually wrote or showed code.
+- DO NOT invent key takeaways. Takeaways must reflect what the speaker actually emphasized.
+- DO NOT correct, modernize, or substitute tools/commands/APIs the speaker mentioned. Quote them as said.
 
-IF coding = TRUE:
-    • ALWAYS generate the "Complete Code Example" section.
-    • Provide ONE clean, runnable, complete code example that represents the main topic.
-    • Include:
-        - Imports (if applicable)
-        - Functions or classes
-        - Main execution block
-        - Comments explaining the logic
-        - Proper indentation & syntax
-        - Output example (if applicable)
-
-IF coding = FALSE:
-    • Do NOT generate this section.
-
-Placement requirements:
-This section must appear:
-    ✔ RIGHT BEFORE "Conclusion"
-    ✔ After all explanation sections
-    ✔ Before "Mind Map" and "Diagram Placeholder"
----------------------------------------------------------------------
-
-OBJECTIVE:
-
-Create a detailed, real-world step-by-step implementation or process guide for [INSERT TOPIC/SUBJECT], designed specifically to support the creation of over 100 technical or comprehension questions. The guide must:
-
-- Reflect real-world tools, technologies, workflows, and industry terminology.
-- Break down each phase of the implementation or process logically and sequentially.
-- Include practical examples, code snippets (if applicable), key decisions, best practices, and commonly used tools at each step.
-- Highlight common challenges or misconceptions, and how they’re addressed in real practice.
-- Use terminology and structure that would support SMEs or instructional designers in generating high-quality technical questions based on the guide.
-- Avoid abstract or overly generic statements — focus on precision, clarity, and applied knowledge.
-- If the transcript is fully or mostly coding-related (Python, Java, JavaScript, React, SQL, DevOps, automation, APIs, backend, etc.), you must include complete coding examples with correct indentation, working syntax, and explanatory comments. You must also expand the matter to look like a proper coding implementation guide, including functions, scripts, API samples, folder structures, command-line usage, debugging steps, and real-world coding workflows.
-
----
-
-DOCUMENT FORMAT & STRUCTURE RULES:
-
-1. STRUCTURE
-- Use numbered sections and sub-sections (e.g., 1, 1.1, 1.2.1)
-- No markdown, emojis, or decorative formatting
-- Use plain, formal, enterprise-grade language
-
-2. EACH SECTION MUST INCLUDE:
-- A *clear title* and *brief purpose statement*
-- *Step-by-step technical or procedural instructions*, including:
-    - All relevant tools, platforms, or interfaces used (if any)
-    - Any paths, commands, actions, configurations, or API calls involved
-    - All required inputs, values, parameters, or dependencies
-    - A logical sequence of operations, clearly numbered or separated by actionable steps
-    - Tips, warnings, and Important Notes, or expected outcomes where necessary
-- **5-10 sentence description** of each main topic, explaining what the concept is, its use cases, and real-world applications. This should be clear and concise for technical audiences to understand why the topic is essential and how it fits into practical workflows.
-
-3. VALIDATION
-
-- Describe how to confirm success (e.g., Expected Outputs, System or Health Checks, Technical and Functional Verifications, Visual Indicators, Fallback/Error Conditions indicators)
-
-4. TROUBLESHOOTING (if applicable)
-
-- Clearly list frequent or known issues that may arise during or after the procedure
-- Describe the conditions or misconfigurations that typically lead to each issue
-- Provide step-by-step corrective actions or configuration changes needed to resolve each problem
-- Mention specific file paths, log viewer tools, console commands, or dashboard areas where errors and diagnostics can be found
-- Include example error codes or system messages that help in identifying the issue
-
-5. BEST PRACTICES
-
-- You are a senior technical writer. Based on the following transcript or topic, create a BEST PRACTICES section suitable for formal technical documentation, onboarding materials, or enterprise IT guides.
-- Efficiency improvements (e.g., time-saving configurations, automation tips)
-- Security or compliance tips (e.g., encryption, IAM roles, audit logging)
-- Standard operating procedures (SOPs) used in enterprise environments
-- Avoided pitfalls and why they should be avoided
-- Format the content using bullet points or short sections for clarity and actionability.
-- Avoid vague, obvious, or overly general suggestions — focus on real-world, practical insights derived from field experience or best-in-class implementation norms.
-
-6. CONCLUSION
-- Summarize what was implemented or discussed
-- Confirm expected outcomes and readiness indicators
-
----
-
-IMPORTANT:
-If the input contains any values such as usernames, IP addresses, server names, passwords, port numbers, or similar technical identifiers — replace their actual content with generic XML-style tags, while preserving the sentence structure and purpose. For example:
-
-- Replace any specific IP address with: <ip>
-- Replace any actual password or secret with: <password>
-- Replace any actual hostname with: <hostname>
-- Replace any actual port number with: <port>
-- Replace any username with: <username>
-- Replace any email with: <email>
-
-Do NOT alter the sentence structure, meaning, or flow — keep the language intact while swapping the actual values with tags.
-Do not display or retain real values — just show the placeholder tag. Maintain the original meaning and flow of the instructions.
-Format the output as clean, professional documentation, suitable for inclusion in implementation guides, SOPs, or training materials.
-Highlight any placeholders in a way that makes it easy for the user to identify where to substitute their own values later.
-
----
-
-Also:
-- Cross-check all tools, commands, file paths, service names, APIs, and utilities with reliable, real-world sources (e.g., official vendor documentation, widely accepted best practices).
-
- 1. If something appears ambiguous, incorrect, or outdated, correct it to its current, supported version.
- 2. Use only commands, APIs, or tool names that are verifiably valid and relevant to the topic context.
-- Consolidate duplicate or f                          ragmented instructions:
- 1. If a step or process is repeated across segments, merge them into a single, complete, and accurate version.
- 2. Remove redundancy and preserve the most detailed and correct version of each step.
- 3. Do NOT include deprecated or unverifiable content:
- 4. Exclude outdated commands, legacy references, or tools no longer maintained.
- 5. Replace such content with modern equivalents where available.
-
-- Output the final result as a formal technical guide, with:
-  1. Clear section headings
-  2. Correct and tested commands/scripts
-  3. Accurate tool names and workflows
-  4. Logical flow suitable for developers, engineers, or IT teams
-
----
+THE TEST: Could a reader of the transcript point to where this topic / action item / example came from? If yes, include it. If no, leave it out.
 
 ---------------------------------------------------------------------
-FINAL FULL CODE OUTPUT RULE (ADD AT END OF SUMMARY)
-Before generating the Conclusion and Mind Map, create a new section titled:
+VOICE RULE — CONTENT-FIRST, NOT NARRATION (CRITICAL — APPLIES TO EVERY TOPIC):
 
-"Complete Code Example (Only When Coding Is Detected)"
+This rule is universal. It applies whether the meeting is about Python, SAP HANA, Kubernetes, sales pipeline, Q3 revenue, recruitment process, GST calculation, blood pressure measurement, a recipe, a yoga routine, a history lesson, contract law, IELTS prep, car maintenance, or anything else. There is no exception. Treat every meeting summary like a textbook chapter or SAP/Oracle/Google/Microsoft/AWS internal documentation — never like meeting minutes.
 
-RULES:
-1. This section must appear at the END of the summary, right before Conclusion.
-2. Add this section ONLY if the transcript contains ANY coding-related content.
-3. Detect coding language automatically (Python, Java, C++, JavaScript, SQL, etc.)
-4. Provide ONE clean, runnable, complete code example:
-      - Full imports / package statements
-      - Functions or classes
-      - Main execution block
-      - Comments explaining the logic
-      - Correct indentation and syntax
-5. The code must represent the MAIN concept taught in the transcript.
-6. If transcript is NOT coding related → do NOT generate this section.
-7. After this code block, continue with:
-      • Conclusion
-      • Mind map (DOT)
-      • Diagram placeholder
+ABSOLUTELY BANNED — NEVER start a sentence with these phrases, no matter the subject:
+- "The speaker discussed/explained/demonstrated/showed/emphasized/highlighted/covered/talked about/touched on/mentioned/described/presented/introduced/illustrated/compared..."
+- "They discussed/explained/demonstrated/showed/emphasized/..." (when referring back to the speaker)
+- "The instructor/trainer/presenter/teacher/lecturer/host discussed/explained/..."
+- "In the meeting/session/class/lecture/presentation, the speaker..."
+- "During the meeting/session/class/lecture/presentation, ..."
+- "The speaker's explanation/discussion/demonstration of..."
+
+REQUIRED — Write in CONTENT-FIRST DECLARATIVE VOICE in every section:
+- The TOPIC, CONCEPT, TOOL, PROCESS, or SUBJECT MATTER is the subject of the sentence — NEVER the speaker.
+- Explain WHAT something is, HOW it works, WHY it matters, WHEN it applies — not WHO said it.
+- Use teaching verbs: "is", "are", "works by", "requires", "produces", "consists of", "depends on", "follows the formula", "is calculated by", "is performed using", "begins with", "indicates", "is measured by".
+
+UNIVERSAL EXAMPLES — these patterns hold for every domain:
+
+1) Software / Programming —
+WRONG: "The speaker explained how to create a K-means model and calculate the sum of squared errors."
+RIGHT: "A K-means model is created with KMeans(n_clusters=k) and fitted via .fit(). The sum of squared errors is accessed through the .inertia_ attribute and indicates cluster tightness — lower values mean tighter clusters."
+
+2) Enterprise IT (SAP / networking / cloud) —
+WRONG: "The speaker demonstrated how to install SAP HANA using the HDBLCM tool."
+RIGHT: "SAP HANA is installed using the HDBLCM tool, which provides a guided installation flow covering system parameters, network configuration, and license setup. The installer requires the SID, instance number, and system administrator password before proceeding."
+
+3) Business meeting (sales / project / quarterly review) —
+WRONG: "The speaker discussed Q3 revenue performance and explained how the team missed targets."
+RIGHT: "Q3 revenue came in 8% below target, driven by delayed enterprise renewals and slower mid-market pipeline conversion. Pipeline coverage for Q4 is currently 2.1x against the standard 3x benchmark, indicating a need for accelerated outbound activity."
+
+4) HR / recruitment / process —
+WRONG: "The speaker described the recruitment process and explained that screening happens before interviews."
+RIGHT: "The recruitment process begins with resume screening, followed by a phone interview, a technical or role-specific assessment, and a panel interview before final selection. Each stage has a defined rejection criteria sheet."
+
+5) Finance / accounting —
+WRONG: "The speaker explained how to calculate ROI by dividing net profit by total investment."
+RIGHT: "ROI is calculated by dividing net profit by total investment and multiplying by 100 to express as a percentage. A positive ROI indicates the investment generated a return greater than its cost; a negative ROI indicates a loss."
+
+6) Healthcare / medical —
+WRONG: "The speaker described how blood pressure should be measured at the same time each day."
+RIGHT: "Blood pressure should be measured at the same time each day, after 5 minutes of seated rest, with the arm supported at heart level. Two readings taken one minute apart are averaged for the final value."
+
+7) Cooking / lifestyle —
+WRONG: "The speaker demonstrated how to make pasta dough by mixing flour and eggs."
+RIGHT: "Pasta dough is made by combining 100g of flour per egg, kneading for 10 minutes until smooth and elastic, and resting it covered for 30 minutes before rolling. Resting allows the gluten to relax, making the dough easier to roll thin."
+
+8) Fitness / general instructional —
+WRONG: "The speaker emphasized that proper squat form requires keeping the knees aligned with the toes."
+RIGHT: "Proper squat form requires keeping the knees aligned with the toes, the chest upright, and the weight distributed through the heels. Allowing the knees to collapse inward places stress on the medial ligaments and reduces force transfer."
+
+The pattern is the same in every example: subject of the sentence = the topic, not the speaker.
+
+Speaker attribution is permitted ONLY in two cases:
+1. Action Items section — naming who owns each task is the whole point.
+2. A specific decision or stated opinion whose weight depends on the speaker (e.g., "The CFO approved the revised budget.", "The team lead decided to defer the migration to next sprint.").
+
+For ALL concept explanations, definitions, procedures, examples, troubleshooting steps, best practices, and key takeaways — across every domain — NO speaker references. Just the content.
 ---------------------------------------------------------------------
 
+QUALITY STANDARDS (apply WITHIN grounded topics):
+- Tone: clear, professional, instructional, like SAP/Oracle/Google/Microsoft/AWS internal documentation.
+- Teaching style: step-by-step explanation, beginner-friendly structure, simple language.
+- Depth: proportional to how much was actually said about each topic. If 20 minutes with 15 steps, write all 15 steps. Never pad to hit a length target.
+- Tools/commands/APIs: preserve exactly as the speaker mentioned them. Do not add tools that were not mentioned.
+- Consolidate duplicate or fragmented instructions: if a step is repeated, merge into one. Do not invent missing steps to "complete" a procedure.
+- Replace any real values (IP addresses, passwords, hostnames, ports, usernames, emails) with placeholder tags: <ip>, <password>, <hostname>, <port>, <username>, <email>. Do NOT alter sentence structure — just swap the values.
+---------------------------------------------------------------------
 
-COMBINED INPUT:
+TRANSCRIPT:
 \"\"\"{transcript}\n\n{context}\"\"\"
 
+---------------------------------------------------------------------
+OUTPUT FORMAT — Use these EXACT section headers in this EXACT order:
+---------------------------------------------------------------------
+
+## Executive Summary
+Write a comprehensive overview of the entire meeting/session. Cover: what was the main topic, what was discussed or taught, what tools/technologies were mentioned, what procedures were demonstrated, and what was the outcome or conclusion. Write as many sentences as needed to fully capture the scope — do NOT compress to just 2-3 sentences if the meeting covered substantial content.
+
+## Key Topics
+
+### [Topic Name 1]
+The topic must come from the transcript. Describe it clearly with proportional depth — short if briefly mentioned, longer if extensively explained. You may add natural context and explanation that helps the reader understand what the speaker said. Do NOT add unrelated topics or applications the speaker never mentioned.
+
+### [Topic Name 2]
+Same — topic must be from the transcript, written with appropriate depth and clarity.
+
+### [Topic Name 3]
+Same — topic must be from the transcript, written with appropriate depth and clarity.
+
+(Add as many topics as were covered in the transcript. Typically 3-7 topics.)
+
+## Action Items
+CONDITIONAL: Include this section ONLY if the speaker explicitly assigned tasks. If no action items were assigned, DO NOT include this section at all — skip the heading entirely. Do NOT write "No specific action items..." or any placeholder text.
+- [Who/Group] Action item or task to complete.
+- [Who/Group] Another action item.
+## Detailed Discussion
+
+### [Topic Name 1]
+- Detailed bullet point covering a key concept, step, or decision discussed. Include all relevant tools, platforms, or interfaces used.
+- Another detailed point with specifics — commands, values, tools, configurations, paths, parameters.
+- Step-by-step technical or procedural instructions if any were discussed, clearly numbered and logically ordered.
+- Tips, warnings, Important Notes, or expected outcomes where necessary.
+- Validation: how to confirm success — expected outputs, system checks, visual indicators.
+- Continue with ALL important details from the transcript for this topic. Do NOT skip or compress steps.
+
+### [Topic Name 2]
+- Same thorough treatment. Include any commands, code, configurations, or procedures mentioned.
+- Cover technical specifics, parameter values, tool names.
+- Include troubleshooting content if discussed: frequent issues, conditions that cause them, corrective actions, file paths, log tools, error codes.
+- Include best practices if discussed: efficiency improvements, security tips, SOPs, pitfalls to avoid.
+
+(Repeat for each topic from Key Topics. Each topic should have as many bullets as needed — 3 minimum, but no upper limit. Write everything that was discussed.)
+
+## Examples & Demonstrations
+IMPORTANT CONDITIONAL RULE: Include this section ONLY if the transcript contains ACTUAL demonstrations, live examples, code walkthroughs, calculations, predictions, sample data walkthroughs, or hands-on demos performed by the speaker.
+If this is a general meeting (standup, project update, review, planning, discussion) with NO demonstrations or worked examples, DO NOT include this section at all — skip the heading entirely.
+
+### Example 1: [Short Descriptive Title]
+Full description of the example that was demonstrated. Include:
+- Specific input values, parameters, data used
+- Step-by-step walkthrough of what was done
+- Output/results obtained
+- What the example proved, showed, or taught
+- Any observations or comparisons made during the demo
+
+### Example 2: [Short Descriptive Title]
+Same thorough treatment for the next example.
+
+(Extract ALL real examples from the transcript. Include specific values, inputs, outputs. Do NOT summarize examples in one line — write the full walkthrough as it was demonstrated.)
+
+## Complete Code Example
+DECISION RULE — only two outcomes are allowed. NO middle ground.
+
+OUTCOME A: Generate real working code (include the heading + full code)
+Trigger this if ANY of the following is true in the transcript:
+1. The speaker wrote or dictated actual code
+2. The speaker mentioned ANY programming language (Python, Java, JavaScript, C++, SQL, R, Go, Ruby, etc.)
+3. The speaker mentioned ANY programming concept (function, class, variable, loop, library, framework, API, IDE, debugging, package, module, etc.)
+4. The speaker discussed any algorithm or technique that is normally implemented in code (K-means, linear regression, sorting, neural networks, decision trees, REST APIs, web scraping, data analysis, machine learning, etc.)
+
+When triggered: ANALYZE what concept the speaker actually taught, then GENERATE a complete runnable code example that demonstrates EXACTLY that concept. Use the language the speaker mentioned (default to Python if no specific language). The code MUST include:
+- Full imports / package statements
+- Real implementation (not pseudocode, not comments-only)
+- Inline comments explaining each step
+- Correct indentation and syntax
+- Sample data or example call so it runs end-to-end
+- Expected output written as a comment
+
+Example: speaker discussed K-means clustering and mentioned Python → generate real working Python code using sklearn.cluster.KMeans with sample data, fit/predict, and the elbow technique. NOT an apology paragraph.
+
+OUTCOME B: Omit the entire section
+Trigger ONLY when the transcript has ZERO programming content (no language, no programming concept, no algorithm normally implemented in code). Examples: cooking lessons, history lectures, pure business meetings, philosophy discussions.
+When triggered: DO NOT write the heading. DO NOT write any text. The reader should see Detailed Discussion flow directly into Key Takeaways with no Code section between them.
+
+ABSOLUTELY FORBIDDEN — these phrases must NEVER appear:
+- "No code was discussed in the transcript"
+- "No code was explicitly mentioned"
+- "No code example was provided"
+- "While no code was shown..."
+- "Since no code was demonstrated..."
+- "However, the speaker mentioned [language]..." (as a substitute for actual code)
+- ANY apology text about absent code
+
+If you find yourself about to write apology text, that is the signal to either (a) GENERATE real code based on what was discussed, or (b) OMIT the section entirely. There is no third option.
+
+## Key Takeaways
+Write a thorough summary of the most important points from the session. What should attendees remember? What are the critical insights? Include:
+- What was implemented or discussed
+- Expected outcomes and readiness indicators
+- Best practices highlighted during the session
+- Any prerequisites or tools required for follow-up
+Write as many sentences as needed — do NOT compress to just 2-3 sentences if the meeting was substantial.
+
+## Concept Map
+```dot
+digraph ConceptMap {{
+    node[shape=box, style="rounded,filled"];
+    root[label="Main Topic"];
+    topic1[label="Topic 1"];
+    topic2[label="Topic 2"];
+    sub1[label="Sub-topic 1"];
+    sub2[label="Sub-topic 2"];
+    root -> topic1;
+    root -> topic2;
+    topic1 -> sub1;
+    topic2 -> sub2;
+}}
+```
+(Build a proper concept map covering ALL key topics and their relationships. Include sub-topics, tools, and concepts as nodes.)
+
 ---
 
-FINAL INSTRUCTION:
-Return only the fully formatted implementation or process guide that includes below:
+Was this summary helpful? Share your feedback to help us improve.
 
-- A clear, descriptive title
-- A concise purpose statement or overview
-- Prerequisites and tools required
-- Numbered step-by-step instructions with:
-   1. Commands, paths, configuration settings, or code blocks (as needed)
-   2. GUI or CLI actions explained clearly
-   3. Expected inputs, parameters, or options
-   4. Confirmation of success (outputs, logs, tests, or validation steps)
-   5. Troubleshooting (common issues, causes, and resolutions — if applicable)
-   6. Best Practices (efficiency, reliability, security — if applicable)
-   7. **Include a mind map diagram in DOT format enclosed in triple backticks at the end**
-   8. **Insert chart/diagram placeholders inline to represent where the visual mind map image should appear**
-
-- Replace any real usernames, IP addresses, passwords, ports, or hostnames with <username>, <ip>, <password>, <port>, or <hostname> where needed.
-- Eliminate all redundant or outdated, abused content. Only use valid and current tools and commands.
-
-End Document with Standardized "Suggested Next Steps" Note  
-*Suggested next steps: No specific next steps mentioned in this segment.*
+---------------------------------------------------------------------
+FINAL RULES:
+---------------------------------------------------------------------
+1. Use the EXACT section headers shown above: ## Executive Summary, ## Key Topics, ## Action Items, ## Detailed Discussion, ## Examples & Demonstrations, ## Complete Code Example, ## Key Takeaways, ## Concept Map
+2. Topic names in Key Topics and Detailed Discussion must match exactly.
+3. Examples & Demonstrations: ONLY include if transcript has real demos/examples/walkthroughs. General meetings without demos must NOT have this section.
+4. Complete Code Example: ONLY include if coding detected per trigger conditions. Non-coding meetings must NOT have this section.
+5. Keep technical terms, tool names, commands, and code exactly as mentioned in transcript.
+6. The concept map must be valid Graphviz DOT format enclosed in triple backticks.
+7. Replace real values with <ip>, <password>, <hostname>, <port>, <username>, <email>.
+8. No emojis or decorative formatting.
+9. DO NOT compress content. Write proportionally to how much was discussed. Long discussions = long sections.
+10. Always end with: "Was this summary helpful? Share your feedback to help us improve."
+11. Cross-check all tools, commands, APIs — correct outdated or wrong ones.
+12. Merge duplicate instructions into single complete versions.
+13. If a conditional section (Action Items, Examples & Demonstrations, Complete Code Example) has no content from the transcript, OMIT it entirely — no heading, no explanation, no placeholder. Do NOT write text like "No code was discussed in the transcript", "No specific examples were given", or "No specific action items were identified". Just leave nothing in its place.
 """
 
     try:
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a technical documentation expert."},
+                {"role": "system", "content": "You are a technical documentation writer producing a content-first reference summary (like SAP/Oracle/Google internal docs), NOT meeting minutes. The transcript decides WHAT topics to cover — never invent NEW topics, action items, or examples. CRITICAL UNIVERSAL VOICE RULE (applies to every topic — software, enterprise, business, healthcare, cooking, fitness, education, anything): NEVER start sentences with 'The speaker discussed/explained/demonstrated', 'They explained/showed', 'The instructor/trainer/presenter...', 'In the meeting/session/class...', or 'During the meeting/session...'. Write content-first declarative sentences where the SUBJECT is the topic/concept/tool/process, not the speaker. Use 'is/works by/requires/produces/is calculated by/begins with' instead of 'the speaker explained/showed/demonstrated'. Speaker attribution allowed ONLY in Action Items (task owners) and for specific decisions whose weight depends on the speaker. SPECIAL RULE for Complete Code Example: if the transcript mentions any programming language, concept, or algorithm normally implemented in code, GENERATE complete working code demonstrating that exact concept. If zero programming content, omit the Code section entirely. NEVER write apology text like 'No code was discussed but...' — produce real code or produce nothing. Same omit-or-nothing rule for Action Items and Examples sections."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.4,
-            max_tokens=6000
+            max_tokens=8000
         )
-
         return response.choices[0].message.content.strip()
-
     except Exception as e:
         logger.error(f"[GROQ SUMMARY ERROR] {e}")
         return "Summary generation failed."
-    # try:
-    #     response = client.chat.completions.create(
-    #         model="gpt-4o",
-    #         messages=[
-    #             {"role": "system", "content": "You are a technical documentation assistant."},
-    #             {"role": "user", "content": prompt}
-    #         ],
-    #         temperature=0.4,
-    #         max_tokens=14000 # new param in v1.x
-    #     )
-    #     return response.choices[0].message.content.strip()
-    # except Exception as e:
-    #     logger.error(f"[ERROR] Summary generation failed: {e}")
-    #     return "Summary generation failed."
+
+
+# ============================================================
+# CHANGE 3: ADD this template + REPLACE _generate_chunked_summary
+# ============================================================
+
+CHUNKED_FINAL_PROMPT_TEMPLATE = """
+You are a senior documentation and technical writing expert. Your task is to convert the following extracted transcript content into a comprehensive, highly accurate, and professionally structured meeting summary document.
+
+---------------------------------------------------------------------
+GROUNDING RULES (HIGHEST PRIORITY — TOPIC-LEVEL FIDELITY):
+
+The extracted content decides WHAT topics to cover. Within those topics, write naturally with clear explanation.
+
+ALLOWED — when a topic IS in the extractions:
+- Explain it well with natural depth and helpful context.
+- Merge related content from multiple section extractions into one unified topic description.
+- Use proportional length based on how much was actually extracted.
+
+NOT ALLOWED:
+- DO NOT introduce topics the extractions never mention.
+- DO NOT fabricate action items. If none in the extractions, OMIT the entire Action Items section (no heading, no placeholder text). Same rule for Examples & Demonstrations and Complete Code Example.
+- DO NOT invent examples for the Examples & Demonstrations section. Omit it if no examples are in the extractions.
+- DO NOT invent code. Omit Complete Code Example if no code was in the extractions.
+- DO NOT correct or modernize tools/commands/APIs — keep as recorded.
+- DO NOT add applications, use cases, or industry context the extractions don't mention.
+
+VOICE RULE — CONTENT-FIRST, NOT NARRATION (CRITICAL — APPLIES TO EVERY TOPIC):
+Universal rule. Applies whether the meeting is about software, enterprise IT, sales, HR, finance, healthcare, cooking, fitness, history, law, education, or any other subject. Treat the document like a textbook/reference doc, not meeting minutes.
+
+ABSOLUTELY BANNED — never start a sentence with:
+"The speaker discussed/explained/demonstrated/showed/emphasized/highlighted/covered/talked about/touched on/mentioned/described/presented/introduced..."
+"They discussed/explained/demonstrated/showed/emphasized..."
+"The instructor/trainer/presenter/teacher/host discussed/explained..."
+"In the meeting/session/class..." or "During the meeting/session/class..."
+"The speaker's explanation/discussion/demonstration of..."
+
+REQUIRED — content-first declarative voice everywhere:
+- Subject of each sentence = the topic / concept / tool / process / subject matter, NOT the speaker.
+- Use teaching verbs: "is", "works by", "requires", "produces", "is calculated by", "begins with", "follows the formula", "depends on".
+
+UNIVERSAL EXAMPLES (pattern is the same in every domain):
+- Coding: WRONG "The speaker explained how to create a K-means model." → RIGHT "A K-means model is created with KMeans(n_clusters=k) and fitted via .fit(); SSE is read from the .inertia_ attribute."
+- Enterprise IT: WRONG "The speaker demonstrated how to install SAP HANA using HDBLCM." → RIGHT "SAP HANA is installed using HDBLCM, which provides a guided flow covering system parameters, network config, and license setup."
+- Business: WRONG "The speaker discussed Q3 revenue and explained the team missed targets." → RIGHT "Q3 revenue came in 8% below target, driven by delayed enterprise renewals and slower mid-market conversion."
+- Process/HR: WRONG "The speaker described the recruitment process." → RIGHT "The recruitment process begins with resume screening, followed by a phone interview, technical assessment, and panel interview before final selection."
+- General/lifestyle: WRONG "The speaker demonstrated how to make pasta dough." → RIGHT "Pasta dough is made by combining 100g of flour per egg, kneading 10 minutes until smooth, and resting 30 minutes before rolling."
+- Healthcare: WRONG "The speaker described how blood pressure should be measured." → RIGHT "Blood pressure should be measured at the same time each day, after 5 minutes of seated rest, with the arm at heart level."
+
+Speaker attribution allowed ONLY in Action Items (task owners) and for specific decisions whose weight depends on the speaker (e.g., "The CFO approved the revised budget."). Everywhere else: omit speaker references entirely.
+
+QUALITY STANDARDS (apply within grounded topics):
+- Tone: clear, professional, instructional, like SAP/Oracle/Google/Microsoft/AWS internal documentation.
+- Depth: proportional to how much was extracted.
+- Consolidate duplicate or fragmented instructions across sections into one. Do not invent missing steps to "complete" a procedure.
+- Replace real values with: <ip>, <password>, <hostname>, <port>, <username>, <email>.
+---------------------------------------------------------------------
+
+EXTRACTED CONTENT FROM {num_sections} SECTIONS:
+{combined_partials}
+
+---------------------------------------------------------------------
+OUTPUT FORMAT — Use these EXACT section headers in this EXACT order:
+---------------------------------------------------------------------
+
+## Executive Summary
+Comprehensive overview of the entire meeting/session. Write as many sentences as needed — do NOT compress.
+
+## Key Topics
+
+### [Topic Name 1]
+The topic must come from the extractions. Describe it clearly with proportional depth. You may add natural context and explanation, but do NOT add topics or applications the extractions don't mention.
+
+### [Topic Name 2]
+Same — topic must come from the extractions, written with appropriate depth and clarity.
+
+(Add all topics. Merge related content from different sections into unified topics.)
+
+## Action Items
+CONDITIONAL: Include ONLY if the speaker explicitly assigned tasks. If none, DO NOT include this section at all — skip the heading entirely. Do NOT write any placeholder text.
+- [Who/Group] Action item or task.
+
+## Detailed Discussion
+
+### [Topic Name 1]
+- Detailed bullet points with ALL specifics: commands, tools, configurations, procedures, parameters
+- Step-by-step instructions if discussed, clearly numbered
+- Validation steps, troubleshooting, best practices where applicable
+- As many bullets as needed — no compression
+
+### [Topic Name 2]
+- Same thorough treatment
+
+(Merge content from multiple sections for same topic. Each topic: no minimum limit, write everything.)
+
+## Examples & Demonstrations
+CONDITIONAL: Include ONLY if extracted content contains ACTUAL demonstrations, live examples, code walkthroughs, calculations, hands-on demos. If general meeting with NO demos, DO NOT include this section.
+
+### Example 1: [Short Title]
+Full walkthrough with specific inputs, steps, outputs, observations.
+
+## Complete Code Example
+DECISION RULE — only two outcomes. NO middle ground.
+
+OUTCOME A: Generate real working code
+Trigger if the extractions mention ANY of:
+1. Actual code dictated by the speaker
+2. ANY programming language (Python, Java, JavaScript, C++, SQL, R, etc.)
+3. ANY programming concept (function, class, variable, library, framework, API, etc.)
+4. Any algorithm normally implemented in code (K-means, regression, sorting, neural networks, REST API, etc.)
+
+When triggered: ANALYZE the concept actually taught, then GENERATE complete runnable code demonstrating EXACTLY that concept. Use the language mentioned (default Python). Include real imports, real implementation, inline comments, sample data, and expected output as a comment. Not pseudocode.
+
+OUTCOME B: Omit the entire section
+Trigger only when extractions have ZERO programming content. Do NOT write the heading. Do NOT write any text.
+
+ABSOLUTELY FORBIDDEN — never write phrases like:
+- "No code was discussed"
+- "No code was explicitly mentioned but the speaker discussed..."
+- "While no code was shown..."
+- ANY apology text about absent code
+
+Either generate real working code, or omit the section completely. No third option.
+
+## Key Takeaways
+Thorough summary — what was implemented, expected outcomes, best practices, prerequisites. Write proportionally.
+
+## Concept Map
+```dot
+digraph ConceptMap {{{{
+    node[shape=box, style="rounded,filled"];
+    root[label="Main Topic"];
+    (build proper concept map covering ALL key topics and relationships)
+}}}}
+```
+
+---
+
+Was this summary helpful? Share your feedback to help us improve.
+
+---------------------------------------------------------------------
+FINAL RULES:
+---------------------------------------------------------------------
+1. Use EXACT section headers: ## Executive Summary, ## Key Topics, ## Action Items, ## Detailed Discussion, ## Examples & Demonstrations, ## Complete Code Example, ## Key Takeaways, ## Concept Map
+2. Topic names must match between Key Topics and Detailed Discussion
+3. Merge related topics from different sections — no duplicates
+4. Examples & Demonstrations: ONLY if real demos exist. Skip entirely for general meetings.
+5. Complete Code Example: ONLY if coding detected. Skip entirely otherwise.
+6. DO NOT compress content. Long discussions = long sections.
+7. Replace real values with <ip>, <password>, <hostname>, <port>, <username>, <email>
+8. Concept map must be valid Graphviz DOT format
+9. Cross-check tools/commands — correct outdated ones
+10. Always end with feedback line
+11. If a conditional section (Action Items, Examples & Demonstrations, Complete Code Example) has no content, OMIT it entirely — no heading, no explanation, no placeholder. Do NOT write text like "No code was discussed", "No specific examples", or "No specific action items were identified". Just leave nothing in its place.
+"""
+
+
+def _generate_chunked_summary(transcript: str, context: str = "") -> str:
+    """
+    Summarize long transcripts (2-4 hour meetings) using chunked approach.
+    Same quality and format as single summary.
+    """
+    words = transcript.split()
+    chunk_size = 8000
+    transcript_chunks = []
+    for i in range(0, len(words), chunk_size):
+        chunk_text = " ".join(words[i:i + chunk_size])
+        transcript_chunks.append(chunk_text)
+
+    logger.info(f"Split into {len(transcript_chunks)} chunks for summarization")
+
+    # Step 1: Extract key content from each chunk
+    partial_summaries = []
+    for idx, chunk_text in enumerate(transcript_chunks):
+        try:
+            logger.info(f"Extracting content from chunk {idx + 1}/{len(transcript_chunks)}")
+
+
+            partial_prompt = f"""You are extracting information from a transcript section.
+
+TRANSCRIPT SECTION {idx + 1} of {len(transcript_chunks)}:
+\"\"\"{chunk_text}\"\"\"
+
+For each category below, extract what is actually in this section. The TOPICS, ITEMS, EXAMPLES, and TASKS must come from the transcript — do not invent them. Within topics that ARE present, you may explain them clearly and add helpful context. If a category has nothing in this section, write "Not present in this section."
+
+1. MAIN TOPICS: List topics actually discussed. Describe each clearly with proportional depth — you may add natural explanation, but the TOPIC ITSELF must come from the speaker.
+2. KEY CONCEPTS: Explain each concept the speaker introduced, with helpful clarity.
+3. TECHNICAL TERMS: List tools, technologies, APIs, commands, configurations actually mentioned. Do not add tools that were not mentioned.
+4. STEP-BY-STEP PROCEDURES: Include ALL steps the speaker actually stated, in order, with all commands, parameters, and paths. Do not invent missing steps, but do not skip any either.
+5. EXAMPLES/DEMOS: Include ALL examples the speaker actually performed, with specific input values, steps, and output results. Do not fabricate illustrations.
+6. VALIDATION: Include all validation steps the speaker mentioned — expected outputs, checks, indicators.
+7. TROUBLESHOOTING: Include all issues the speaker discussed — problems, error codes, corrective actions.
+8. BEST PRACTICES: Include all tips, recommendations, efficiency improvements, security tips, SOPs the speaker stated.
+9. ACTION ITEMS: Include only tasks the speaker explicitly assigned.
+10. CHALLENGES: Include all problems, misconceptions, or pitfalls the speaker mentioned.
+
+LENGTH RULE — proportional, not fixed:
+- Output as much as the actual content supports. If the speaker discussed 15 steps, extract all 15.
+- Do NOT compress: extract EVERYTHING substantive that the speaker actually said.
+- Do NOT pad: do not invent content to reach a target length. If the speaker only said a little, extract only a little.
+
+Replace real values with tags: <ip>, <password>, <hostname>, <port>, <username>, <email>."""
+            response = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "You extract information from the provided transcript. Topics, examples, action items, and procedures must come from the transcript — do not invent them. Within topics that ARE present, you may explain clearly with helpful context. CRITICAL UNIVERSAL VOICE RULE (applies to every topic — software, business, medical, cooking, fitness, education, anything): when you write the extracted content, do NOT use narration phrases like 'The speaker discussed/explained/demonstrated', 'They explained/showed', 'The instructor said', 'In the meeting...'. Instead, write content-first declarative sentences where the topic/concept/process is the subject. Examples — instead of 'The speaker explained how MinMaxScaler normalizes values', write 'MinMaxScaler normalizes values to a 0-1 range using (x - min) / (max - min)'. Instead of 'The speaker discussed the recruitment process', write 'The recruitment process begins with resume screening followed by an interview round'. Instead of 'The speaker demonstrated how to make pasta dough', write 'Pasta dough is made by combining 100g flour per egg and kneading for 10 minutes'. If a category has nothing in the transcript, mark it as not present."},
+                    {"role": "user", "content": partial_prompt}
+                ],
+                temperature=0.3,
+                max_tokens=4000
+            )
+
+            partial = response.choices[0].message.content.strip()
+            partial_summaries.append(partial)
+            logger.info(f"Chunk {idx + 1} extracted ({len(partial)} chars)")
+
+        except Exception as chunk_error:
+            logger.error(f"[CHUNK SUMMARY ERROR] Chunk {idx + 1}: {chunk_error}")
+            partial_summaries.append(f"[Section {idx + 1} extraction failed]")
+
+    # Step 2: Combine
+    combined_partials = "\n\n=====================================\n\n".join(
+        f"EXTRACTED CONTENT FROM SECTION {i + 1}:\n{p}" for i, p in enumerate(partial_summaries)
+    )
+
+    # Step 3: Generate final summary using structured format with full quality rules
+    final_prompt = CHUNKED_FINAL_PROMPT_TEMPLATE.format(
+        num_sections=len(partial_summaries),
+        combined_partials=combined_partials
+    )
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You merge transcript extractions into a final content-first reference summary (like SAP/Oracle/Google internal docs), NOT meeting minutes. The TOPICS, action items, and examples must come from the extractions — never invent NEW ones. CRITICAL UNIVERSAL VOICE RULE (applies to every topic — software, enterprise, business, healthcare, cooking, fitness, education, anything): NEVER start sentences with 'The speaker discussed/explained/demonstrated', 'They explained/showed', 'The instructor/trainer/presenter...', 'In the meeting/session/class...', or 'During the meeting/session...'. Write content-first declarative sentences where the SUBJECT is the topic/concept/tool/process, not the speaker. Use 'is/works by/requires/produces/is calculated by/begins with' instead of 'the speaker explained/showed/demonstrated'. Speaker attribution allowed ONLY in Action Items (task owners) and for specific decisions whose weight depends on the speaker. SPECIAL RULE for Complete Code Example: if the extractions mention any programming language, concept, or algorithm normally implemented in code, GENERATE complete working code demonstrating that exact concept. If extractions have zero programming content, omit the Code section entirely. NEVER write apology text like 'No code was discussed but...' — produce real code or produce nothing. Same omit-or-nothing rule for Action Items and Examples."},
+                {"role": "user", "content": final_prompt}
+            ],
+            temperature=0.4,
+            max_tokens=8000
+        )
+        final_summary = response.choices[0].message.content.strip()
+        logger.info(f"Final combined summary generated ({len(final_summary)} chars)")
+        return final_summary
+    except Exception as e:
+        logger.error(f"[FINAL SUMMARY ERROR] {e}")
+        return "\n\n".join(partial_summaries)
+        
+def split_text_into_timed_segments(text: str, chunk_start: float, chunk_duration: float) -> list:
+    """
+    Split a block of text into subtitle-sized segments with estimated timing.
+    Used because gpt-4o-transcribe doesn't return per-segment timestamps.
+    Distributes time proportionally based on character count.
+    """
+    import re
     
+    # Split into sentences
+    sentences = re.split(r'(?<=[.!?।])\s+', text.strip())
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    if not sentences:
+        return [{
+            "start": chunk_start,
+            "end": chunk_start + chunk_duration,
+            "text": text
+        }]
+    
+    # Break long sentences (>80 chars) into subtitle-friendly pieces
+    refined_segments = []
+    for sentence in sentences:
+        if len(sentence) <= 80:
+            refined_segments.append(sentence)
+        else:
+            parts = re.split(r',\s+', sentence)
+            current = ""
+            for part in parts:
+                if len(current) + len(part) <= 80:
+                    current = (current + ", " + part) if current else part
+                else:
+                    if current:
+                        refined_segments.append(current)
+                    current = part
+            if current:
+                refined_segments.append(current)
+    
+    # Calculate timing proportional to character count
+    total_chars = sum(len(s) for s in refined_segments)
+    if total_chars == 0:
+        return []
+    
+    timed_segments = []
+    current_time = chunk_start
+    
+    for segment_text in refined_segments:
+        segment_duration = (len(segment_text) / total_chars) * chunk_duration
+        segment_duration = max(1.0, min(6.0, segment_duration))
+        
+        timed_segments.append({
+            "start": round(current_time, 2),
+            "end": round(current_time + segment_duration, 2),
+            "text": segment_text
+        })
+        current_time += segment_duration
+    
+    # Ensure last segment ends at chunk end
+    if timed_segments:
+        timed_segments[-1]["end"] = round(chunk_start + chunk_duration, 2)
+    
+    return timed_segments
+
+def translate_segments_to_target_lang(segments: list, target_lang: str) -> list:
+    """
+    Translate English segments to target language (Hindi, Telugu, etc.) using Groq Llama.
+    Fast, reliable, preserves technical terms. Used for subtitle generation.
+    
+    CRITICAL: This function translates ENGLISH → TARGET LANGUAGE (Hindi/Telugu/etc.)
+    Opposite direction from translate_segments_batch which goes TO English.
+    """
+    if not segments or target_lang == "en":
+        return segments
+    
+    if groq_client is None:
+        logger.warning(f"groq_client is None, cannot translate to {target_lang}")
+        return segments
+    
+    # Language code to full name mapping
+    LANG_NAMES = {
+        "hi": "Hindi",
+        "te": "Telugu",
+        "ta": "Tamil",
+        "kn": "Kannada",
+        "ml": "Malayalam",
+        "bn": "Bengali",
+        "mr": "Marathi",
+        "gu": "Gujarati",
+        "pa": "Punjabi",
+    }
+    
+    # Script name for validation
+    SCRIPT_NAMES = {
+        "hi": "Devanagari",
+        "te": "Telugu",
+        "ta": "Tamil",
+        "kn": "Kannada",
+        "ml": "Malayalam",
+        "bn": "Bengali",
+        "mr": "Devanagari",
+        "gu": "Gujarati",
+        "pa": "Gurmukhi",
+    }
+    
+    target_lang_name = LANG_NAMES.get(target_lang, target_lang)
+    target_script = SCRIPT_NAMES.get(target_lang, target_lang)
+    
+    BATCH_SIZE = 30
+    translated_all = []
+    
+    for batch_start in range(0, len(segments), BATCH_SIZE):
+        batch = segments[batch_start:batch_start + BATCH_SIZE]
+        
+        try:
+            numbered = "\n".join(f"[{idx}] {s['text']}" for idx, s in enumerate(batch))
+            
+            response = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            f"You are a professional subtitle translator. "
+                            f"You translate English text into {target_lang_name} written in {target_script} script.\n\n"
+                            f"STRICT RULES:\n"
+                            f"1. Translate every numbered English line into natural, conversational {target_lang_name}.\n"
+                            f"2. Output MUST be in {target_script} script (native writing system of {target_lang_name}).\n"
+                            f"3. DO NOT output English text. DO NOT output Latin/Roman letters (except for technical terms in rule 5).\n"
+                            f"4. Use simple, everyday {target_lang_name} suitable for video subtitles (max ~80 characters per line).\n"
+                            f"5. Keep technical English terms UNCHANGED: Python, Java, JavaScript, C++, SQL, React, Node.js, AWS, Azure, GCP, SAP, Oracle, Docker, Kubernetes, Jenkins, Linux, Selenium, API, CPU, IDE, variable, integer, float, string, boolean, dictionary, function, class, loop, array, database.\n"
+                            f"6. Keep product names UNCHANGED: Windows, Linux, macOS, Chrome, Firefox, SAP HANA, Salesforce.\n"
+                            f"7. Output ONLY numbered lines in EXACT format:\n"
+                            f"   [0] {target_lang_name} translation in {target_script} script\n"
+                            f"   [1] {target_lang_name} translation in {target_script} script\n"
+                            f"   [2] {target_lang_name} translation in {target_script} script\n"
+                            f"8. No preamble, no explanation, no markdown, no quotes, no English prefixes.\n\n"
+                            f"EXAMPLE (for Hindi):\n"
+                            f"Input:  [0] Variable name is case sensitive\n"
+                            f"Output: [0] Variable का नाम case sensitive होता है\n\n"
+                            f"EXAMPLE (for Telugu):\n"
+                            f"Input:  [0] Python is a programming language\n"
+                            f"Output: [0] Python ఒక programming language."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Translate these English lines into {target_lang_name} ({target_script} script).\n"
+                            f"Remember: Output MUST be in {target_script} script, NOT in English letters.\n\n"
+                            f"{numbered}"
+                        )
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=4000
+            )
+            
+            translated_text = response.choices[0].message.content.strip()
+            
+            # Parse back into map: index -> translated text
+            translated_map = {}
+            for line in translated_text.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                m = re.match(r"\[(\d+)\]\s*(.*)", line)
+                if m:
+                    translated_map[int(m.group(1))] = m.group(2).strip()
+            
+            # Apply translations, keep original timing
+            for idx, seg in enumerate(batch):
+                translated_seg_text = translated_map.get(idx, seg["text"])
+                translated_all.append({
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "text": translated_seg_text if translated_seg_text else seg["text"]
+                })
+            
+            logger.info(f"[SUBTITLE {target_lang}] Batch {batch_start // BATCH_SIZE + 1}: translated {len(translated_map)}/{len(batch)} segments to {target_script} script")
+            
+        except Exception as batch_error:
+            logger.error(f"[SUBTITLE {target_lang}] Batch translation failed: {batch_error}")
+            for seg in batch:
+                translated_all.append({
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "text": seg["text"]
+                })
+    
+    logger.info(f"[SUBTITLE {target_lang}] Completed: {len(translated_all)}/{len(segments)} segments translated to {target_lang_name}")
+    return translated_all
+
+
+def clean_garbage_scripts(text: str) -> str:
+    """
+    Remove ONLY true garbage/control characters.
+    ALL real languages (Chinese, Japanese, Korean, Arabic, Russian, etc.)
+    are kept and will be translated to English by GPT-4o-mini.
+    """
+    if not text:
+        return text
+    
+    # Remove ONLY non-language garbage (control chars, private use, symbols)
+    garbage_ranges = [
+        (0x0000, 0x001F),   # Control characters
+        (0x007F, 0x009F),   # More control characters
+        (0xFFF0, 0xFFFF),   # Specials
+        (0xE000, 0xF8FF),   # Private Use Area (garbage symbols)
+        (0xFE00, 0xFE0F),   # Variation Selectors
+    ]
+    
+    def is_garbage(char):
+        code = ord(char)
+        for start, end in garbage_ranges:
+            if start <= code <= end:
+                return True
+        return False
+    
+    cleaned = "".join(" " if is_garbage(char) else char for char in text)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+def remove_repetitions(text: str) -> str:
+    """
+    Remove repeated phrases/sentences that Whisper hallucinates.
+    Examples: 'numpy.aray numpy.aray numpy.aray' or 
+    'we will not have an error we will not have an error we will not have an error'
+    """
+    if not text or len(text) < 50:
+        return text
+    
+    # PASS 1: Remove consecutive duplicate sentences
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    deduped_sentences = []
+    prev_sentence = ""
+    repeat_count = 0
+    
+    for sentence in sentences:
+        # Normalize for comparison (lowercase, strip extra spaces)
+        normalized = re.sub(r'\s+', ' ', sentence.strip().lower())
+        prev_normalized = re.sub(r'\s+', ' ', prev_sentence.strip().lower())
+        
+        if normalized == prev_normalized:
+            repeat_count += 1
+            if repeat_count <= 1:
+                # Keep max 1 repeat (original + 1 copy)
+                continue
+            else:
+                logger.warning(f"[REPEAT FILTER] Removed duplicate sentence: '{sentence[:60]}...'")
+                continue
+        else:
+            repeat_count = 0
+            deduped_sentences.append(sentence)
+            prev_sentence = sentence
+    
+    text = " ".join(deduped_sentences)
+    
+    # PASS 2: Remove repeated short phrases (3-8 words repeated 3+ times consecutively)
+    # Pattern: captures a phrase of 3-8 words repeated 3 or more times
+    for word_count in [8, 7, 6, 5, 4, 3]:
+        word_pattern = r'\b(' + r'\S+\s+' * (word_count - 1) + r'\S+)' + r'(?:\s+\1){2,}'
+        matches = re.finditer(word_pattern, text, re.IGNORECASE)
+        for match in matches:
+            repeated_phrase = match.group(1)
+            full_match = match.group(0)
+            logger.warning(f"[REPEAT FILTER] Removed repeated phrase: '{repeated_phrase[:50]}...' (appeared {len(full_match.split(repeated_phrase))} times)")
+            text = text.replace(full_match, repeated_phrase)  # Keep just one copy
+    
+    return text.strip()
+
+def translate_segments_batch(segments: list, source_lang: str) -> list:
+    """
+    Translate a batch of transcript segments to clean English using LLM.
+    Handles Indic languages (Tamil, Hindi, Telugu, Kannada, etc.) and code-switched audio.
+    
+    IMPROVED v2:
+    - Batch size reduced to 15 for better Tamil/Indic reliability
+    - 3 retries with individual segment retry on failure
+    - Stricter 3% non-ASCII threshold
+    - Explicit Tamil script detection and examples in prompt
+    - Indic script detection helper for targeted retries
+    """
+    if not segments:
+        return segments
+    
+    if groq_client is None:
+        logger.warning("groq_client is None, cannot translate - returning original")
+        return segments
+    
+    BATCH_SIZE = 15  # Smaller batches = more reliable for Tamil/Indic
+    MAX_RETRIES = 3
+    translated_all = []
+    
+    def _has_indic_content(text: str) -> bool:
+        """Check if text contains ANY Indic script characters (Tamil, Hindi, Telugu, etc.)."""
+        for char in text:
+            code = ord(char)
+            if (0x0900 <= code <= 0x097F or   # Devanagari (Hindi, Marathi)
+                0x0980 <= code <= 0x09FF or   # Bengali
+                0x0A00 <= code <= 0x0A7F or   # Gurmukhi (Punjabi)
+                0x0A80 <= code <= 0x0AFF or   # Gujarati
+                0x0B00 <= code <= 0x0B7F or   # Oriya
+                0x0B80 <= code <= 0x0BFF or   # Tamil
+                0x0C00 <= code <= 0x0C7F or   # Telugu
+                0x0C80 <= code <= 0x0CFF or   # Kannada
+                0x0D00 <= code <= 0x0D7F):    # Malayalam
+                return True
+        return False
+    
+
+    def _call_llm(batch_segments, retry_count=0):
+        """Single LLM call for a batch. Returns translated_map {idx: text}."""
+        numbered = "\n".join(f"[{idx}] {s['text']}" for idx, s in enumerate(batch_segments))
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a translator. Convert ALL input to English using Latin alphabet ONLY.\n\n"
+                        "RULES:\n"
+                        "1. Output 100% English. ZERO Devanagari/Telugu/Tamil/Kannada/Bengali/Malayalam allowed.\n"
+                        "2. Translate MEANING, not sound. 'है' → 'is', NOT 'hai'. 'चेयाली' → 'should do', NOT 'cheyali'.\n"
+                        "3. Whisper writes Telugu speech in Devanagari. Common Telugu-in-Devanagari words:\n"
+                        "   गद=right?, मनम/मनकी=we/our, चेयाली/चेसको=should do, उन्टे=if there is,\n"
+                        "   राइसेयाम=let us write, अलागे=similarly, तरवात=after that, इप्पुडु=now,\n"
+                        "   एक्सिकुट=execute, दानिको=for that, वेदुन्दी=need to know, लो=in, नी=of\n"
+                        "4. Hindi words: है=is, और=and, में=in, को=to, का/की=of, यह=this, हम=we,\n"
+                        "   पहले=first, अब=now, कैसे=how, करना=to do, देखो=see\n"
+                        "5. Romanized: hai→is, cheyali→should do, ante→means, manam→we, ippudu→now\n"
+                        "6. Keep English technical terms unchanged: install, Linux, command, server, IP, ping, etc.\n"
+                        "7. If text is garbled nonsense (not real English or any language), return ONLY the real words.\n"
+                        "8. One output line per input line. Format: [0] english text\n\n"
+                        "EXAMPLES:\n"
+                        "[0] command line bash bash वा ने नुवु नी virtual machine turn on चेसीन\n"
+                        "[1] modules उन्ने गद, modules so, इ modules लो, मनकी functions उन्टे\n"
+                        "[2] math.seal न राइसेयाम। अलागे math.floor न राइसेयाम।\n"
+                        "[3] So NumPy is complete working on arrays\n"
+                        "[4] तरवात ये version use चेस्थ नम्मु चेएड़ान की दानिको वेदुन्दी\n"
+                        "[5] Patient ko din mein do baar medicine deni hai\n"
+                        "[6] इप्पड़ु इदी मनकी 3-Dimension format लो उस्तों\n"
+                        "[7] haberdigon install the operating system gesht\n"
+                        "[8] பார்க்கலாம் இந்த formula use பண்ணணும்\n"
+                        "[9] ఈ test case execute చేయాలి automation framework లో\n"
+                        "[10] এই function টা database থেকে data fetch করবে\n"
+                        "[11] हा concept मला नीट समजला नाही, please explain\n"
+                        "[12] આ table માં primary key add કરવાની છે\n"
+                        "[13] vamos a configurar el servidor con docker ahora\n"
+                        "[14] 我们 now need to deploy 这个 application\n"
+                        "[15] هذا الكود يحتاج إلى debugging قبل النشر\n\n"
+                        "OUTPUT:\n"
+                        "[0] In command line bash, you need to turn on the virtual machine\n"
+                        "[1] There are modules, in these modules we have functions\n"
+                        "[2] Let us write math.ceil. Similarly let us write math.floor.\n"
+                        "[3] So NumPy is complete working on arrays\n"
+                        "[4] After that we use this version for what we need to know\n"
+                        "[5] Give the patient medicine twice a day\n"
+                        "[6] Now this is in 3-Dimension format for us\n"
+                        "[7] Install the operating system\n"
+                        "[8] Let us see, we need to use this formula\n"
+                        "[9] We need to execute this test case in the automation framework\n"
+                        "[10] This function will fetch data from the database\n"
+                        "[11] I did not understand this concept properly, please explain\n"
+                        "[12] We need to add a primary key in this table\n"
+                        "[13] Now we are going to configure the server with docker\n"
+                        "[14] We now need to deploy this application\n"
+                        "[15] This code needs debugging before deployment"
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Translate {len(batch_segments)} lines to English. Remove garbled nonsense. Keep technical terms.\n\n"
+                        f"{numbered}"
+                    )
+                }
+            ],
+            temperature=0.1,
+            max_tokens=4000
+        )
+        
+        translated_text = response.choices[0].message.content.strip()
+        
+        # Parse numbered output
+        t_map = {}
+        for line in translated_text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            m = re.match(r"\[(\d+)\]\s*(.*)", line)
+            if m:
+                idx = int(m.group(1))
+                text = m.group(2).strip()
+                if text:
+                    t_map[idx] = text
+        return t_map    
+    def _is_clean_english(text: str) -> bool:
+        """Empty/missing translations are NOT clean — they need retry."""
+        if not text or not text.strip():
+            return False
+        non_ascii = sum(1 for c in text if ord(c) > 127)
+        return (non_ascii / len(text)) < 0.03
+    
+    # Process segments in smaller batches
+    for batch_start in range(0, len(segments), BATCH_SIZE):
+        batch = segments[batch_start:batch_start + BATCH_SIZE]
+        
+        try:
+            # First attempt — batch translation
+            translated_map = _call_llm(batch)
+            
+            # Retry loop — check and re-translate segments that are still non-English
+            for retry_round in range(MAX_RETRIES):
+                missing_or_bad = []
+                for idx, seg in enumerate(batch):
+                    text = translated_map.get(idx, "")
+                    if not text or not _is_clean_english(text) or _has_indic_content(text):
+                        missing_or_bad.append(idx)
+                
+                if not missing_or_bad:
+                    break  # All segments are clean English
+                
+                logger.warning(f"[TRANSLATE] Batch {batch_start}, retry {retry_round+1}: {len(missing_or_bad)} segments still non-English")
+                
+                if retry_round == 0:
+                    # First retry: try as a smaller sub-batch
+                    retry_batch = [batch[idx] for idx in missing_or_bad]
+                    retry_map = _call_llm(retry_batch)
+                    for retry_idx, original_idx in enumerate(missing_or_bad):
+                        if retry_idx in retry_map and _is_clean_english(retry_map[retry_idx]) and not _has_indic_content(retry_map[retry_idx]):
+                            translated_map[original_idx] = retry_map[retry_idx]
+                else:
+                    # Subsequent retries: translate individually for maximum accuracy
+                    for bad_idx in missing_or_bad:
+                        try:
+                            single_result = _call_llm([batch[bad_idx]])
+                            if 0 in single_result and _is_clean_english(single_result[0]) and not _has_indic_content(single_result[0]):
+                                translated_map[bad_idx] = single_result[0]
+                                logger.info(f"[TRANSLATE] Individual retry SUCCESS for segment {bad_idx}")
+                        except Exception as single_err:
+                            logger.warning(f"[TRANSLATE] Individual retry FAILED for segment {bad_idx}: {single_err}")
+            
+            # Build translated segments
+            for idx, seg in enumerate(batch):
+                translated_text = translated_map.get(idx, "")
+                
+                # If still no valid translation, force-strip non-ASCII from original
+                if not translated_text or not _is_clean_english(translated_text) or _has_indic_content(translated_text):
+                    # Try stripping from translated text first, then original
+                    source_text = translated_text if translated_text else seg["text"]
+                    stripped = "".join(c if ord(c) < 128 else " " for c in source_text)
+                    stripped = re.sub(r'\s+', ' ', stripped).strip()
+                    
+                    if stripped and len(stripped) > 5:
+                        translated_text = stripped
+                        logger.warning(f"[TRANSLATE] Segment {idx}: LLM failed, used ASCII-stripped fallback")
+                    else:
+                        # Not enough English content to keep - skip this segment
+                        translated_text = ""
+                        logger.warning(f"[TRANSLATE] Segment {idx}: Dropped (mostly non-English, no salvageable content)")
+                
+                # Only keep segments with real content
+                if translated_text and len(translated_text.strip()) > 2:
+                    translated_all.append({
+                        "start": seg["start"],
+                        "end": seg["end"],
+                        "text": translated_text
+                    })
+            
+            logger.info(f"[TRANSLATE] Batch {batch_start // BATCH_SIZE + 1}: kept {len([s for s in translated_all if s])}/{len(batch)} segments")
+            
+        except Exception as e:
+            logger.error(f"[TRANSLATE ERROR] Batch {batch_start}: {e}")
+            # On total failure, try to salvage ASCII content from original
+            for seg in batch:
+                original = seg["text"]
+                stripped = "".join(c if ord(c) < 128 else " " for c in original)
+                stripped = re.sub(r'\s+', ' ', stripped).strip()
+                if stripped and len(stripped) > 5:
+                    translated_all.append({
+                        "start": seg["start"],
+                        "end": seg["end"],
+                        "text": stripped
+                    })
+    
+    logger.info(f"[TRANSLATE] Complete: {len(translated_all)} clean English segments from {len(segments)} input")
+    return translated_all
+
 def analyze_trainer_performance(transcript: str) -> dict:
     """
     Analyze trainer's technical content, explanation clarity, friendliness, and communication
@@ -1667,12 +2797,28 @@ def analyze_trainer_performance(transcript: str) -> dict:
             "error": "groq_client is None"
         }
 
+    # Truncate transcript if too long (trainer eval doesn't need full text)
+    words = transcript.split()
+    MAX_WORDS_FOR_EVAL = 8000  # About 30 mins of speech — sufficient for style evaluation
+    
+    if len(words) > MAX_WORDS_FOR_EVAL:
+        # Sample from beginning, middle, and end for representative evaluation
+        third = MAX_WORDS_FOR_EVAL // 3
+        beginning = " ".join(words[:third])
+        middle_start = (len(words) // 2) - (third // 2)
+        middle = " ".join(words[middle_start:middle_start + third])
+        end = " ".join(words[-third:])
+        sampled_transcript = f"{beginning}\n\n[... middle section ...]\n\n{middle}\n\n[... later section ...]\n\n{end}"
+        logger.info(f"📊 Trainer eval: sampled {MAX_WORDS_FOR_EVAL} words from {len(words)} total words")
+    else:
+        sampled_transcript = transcript
+    
     prompt = f"""
 You are an expert communication and training evaluator.
 Evaluate the trainer's communication quality, tone, and content in the transcript below.
 
 TRANSCRIPT:
-\"\"\"{transcript}\"\"\"
+\"\"\"{sampled_transcript}\"\"\"
 
 Evaluate across the following dimensions (each scored 0–100%):
 1. Technical Content — accuracy, depth, and domain clarity.
@@ -1738,6 +2884,14 @@ except ImportError:
     MarianMTModel = None
     MarianTokenizer = None
 import logging
+
+def get_transformers():
+    """Lazy loader for transformers - returns (None, None) if not installed."""
+    try:
+        from transformers import MarianMTModel, MarianTokenizer
+        return MarianMTModel, MarianTokenizer
+    except ImportError:
+        return None, None
 
 class LocalIndianLanguageTranslator:
     """Fast local translation for Hindi and Telugu using Helsinki-NLP models"""
@@ -1883,12 +3037,21 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
     from tempfile import TemporaryDirectory
     import os
     import json
+    import re
     from datetime import datetime
 
     logging.info(f"🎬 Starting video processing: {video_path}")
     
     with TemporaryDirectory() as workdir:
         try:
+            # Disk space check - need at least 3x video size free
+            import shutil as _shutil
+            disk_stat = _shutil.disk_usage(workdir)
+            free_gb = disk_stat.free / (1024**3)
+            logging.info(f"💾 Free disk in workdir: {free_gb:.2f} GB")
+            if free_gb < 5:
+                raise Exception(f"Insufficient disk space: {free_gb:.2f} GB free (need at least 5 GB)")
+            
             # Check if video_path is an S3 key (not a local file)
             if not os.path.exists(video_path) and '/' in video_path:
                 # Download from S3 to workdir
@@ -2032,8 +3195,14 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
 
             if not skip_compression:
                 try:
+                    # Dynamic timeout: 3 sec per MB, min 10 min, max 2 hours
+                    input_size_mb = input_size / (1024 * 1024)
+                    # Increased ceiling to 6 hours for long training videos
+                    compression_timeout = max(600, min(21600, int(input_size_mb * 5)))
+                    logging.info(f"🕐 Video compression timeout: {compression_timeout}s (input: {input_size_mb:.1f}MB)")
+                    
                     logging.info(f"🔄 Running compression...")
-                    subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True, timeout=600)
+                    subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True, timeout=compression_timeout)
                     logging.info(f"✅ Video compressed using {'GPU' if nvenc_available else 'CPU'}")
                 except subprocess.TimeoutExpired:
                     raise Exception("Video compression timed out")
@@ -2075,72 +3244,392 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             ]
 
             try:
+                # Dynamic timeout: 1 sec per MB, min 2 min, max 30 min
+                video_size_mb = os.path.getsize(video_path) / (1024 * 1024)
+                # Increased ceiling to 2 hours for long videos
+                audio_timeout = max(120, min(7200, int(video_size_mb * 2)))
+                logging.info(f"🕐 Audio extraction timeout: {audio_timeout}s (video: {video_size_mb:.1f}MB)")
+                
                 subprocess.run(
                     audio_extract_cmd,
                     check=True,
                     capture_output=True,
                     text=True,
-                    timeout=120
+                    timeout=audio_timeout
                 )
                 logging.info(f"✅ Raw audio extracted for transcription: {audio}")
             except Exception as e:
                 raise Exception(f"Audio extraction for transcription failed: {e}")
 
-            # ========== TRANSCRIPTION ==========
+            # ========== TRANSCRIPTION (OpenAI gpt-4o-transcribe) ==========
             transcript_text = ""
             segments = []
-            # ✅ CRITICAL: Check if Groq client is available BEFORE attempting transcription
-            if groq_client is None:
-                logging.error("❌ GROQ CLIENT IS NONE - Cannot transcribe!")
-                logging.error(f"❌ GROQ_API_KEY in environment: '{os.getenv('GROQ_API_KEY', 'NOT_SET')[:10]}...'")
-                transcript_text = "Transcription unavailable - Groq API not configured. Please check GROQ_API_KEY environment variable."
+            
+            if client is None:
+                logging.error("❌ OPENAI CLIENT IS NONE - Cannot transcribe!")
+                logging.error(f"❌ OPENAI_API_KEY in environment: '{os.getenv('OPENAI_API_KEY', 'NOT_SET')[:10]}...'")
+                transcript_text = "Transcription unavailable - OpenAI API not configured. Please check OPENAI_API_KEY environment variable."
                 segments = [{
                     "start": 0.0,
                     "end": max(5.0, video_duration),
-                    "text": "Transcription unavailable - Groq API not configured."
+                    "text": "Transcription unavailable - OpenAI API not configured."
                 }]
             else:
-                logging.info("✅ Groq client is available, starting transcription...")
+                logging.info("✅ OpenAI client is available, starting transcription with gpt-4o-transcribe...")
 
                 try:
                     from pydub import AudioSegment
+                    import gc
 
-                    audio_file = AudioSegment.from_file(audio)
-                    chunk_ms = 5 * 60 * 1000
+                    # Get duration first without loading whole file into memory
+                    probe_result = subprocess.run(
+                        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                         "-of", "default=noprint_wrappers=1:nokey=1", audio],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    total_audio_duration = float(probe_result.stdout.strip())
+                    chunk_duration_sec_total = 5 * 60  # 5 minute chunks
+                    chunk_ms = chunk_duration_sec_total * 1000
                     offset = 0.0
+                    
+                    # For very long audio (>2 hours), extract chunks via ffmpeg directly (memory-safe)
+                    use_ffmpeg_chunking = total_audio_duration > 7200
+                    
+                    if not use_ffmpeg_chunking:
+                        audio_file = AudioSegment.from_file(audio)
+                    else:
+                        audio_file = None
+                        logging.info(f"📏 Long audio ({total_audio_duration:.0f}s) - using ffmpeg chunking to save memory")
 
-                    for i in range(0, len(audio_file), chunk_ms):
-                        chunk = audio_file[i:i + chunk_ms]
-                        chunk_path = os.path.join(workdir, f"chunk_{i}.wav")
-                        chunk.export(chunk_path, format="wav")
+                    HALLUCINATION_PATTERNS = [
+                        "thanks for watching", "thank you for watching",
+                        "please subscribe", "subscribe to my channel",
+                        "like and subscribe", "don't forget to subscribe",
+                        "thanks for listening", "see you next time",
+                        "www.", ".com", "udemy", "coursera",
+                        "spotlight shine", "music playing",
+                        "[music]", "[applause]", "[silence]",
+                    ]
 
-                        with open(chunk_path, "rb") as f:
-                            result = groq_client.audio.transcriptions.create(
-                                model="whisper-large-v3-turbo",
-                                file=f,
-                                response_format="verbose_json"
-                            )
+                    def is_hallucination(text: str) -> bool:
+                        if not text or len(text.strip()) < 3:
+                            return True
+                        text_lower = text.lower().strip()
+                        for pattern in HALLUCINATION_PATTERNS:
+                            if pattern in text_lower:
+                                return True
+                        words = text_lower.split()
+                        if len(words) >= 4:
+                            unique_words = set(words)
+                            if len(unique_words) / len(words) < 0.3:
+                                return True
+                        return False
 
-                        if hasattr(result, "segments") and result.segments:
-                            for seg in result.segments:
-                                segments.append({
-                                    "start": offset + float(seg["start"]),
-                                    "end": offset + float(seg["end"]),
-                                    "text": seg["text"].strip()
-                                })
+                    if use_ffmpeg_chunking:
+                        total_chunks = int(total_audio_duration / chunk_duration_sec_total) + 1
+                        chunk_iter = range(0, total_chunks)
+                    else:
+                        chunk_iter = range(0, len(audio_file), chunk_ms)
+                    
+                    for chunk_idx in chunk_iter:
+                        if use_ffmpeg_chunking:
+                            i = chunk_idx
+                            start_sec = chunk_idx * chunk_duration_sec_total
+                            if start_sec >= total_audio_duration:
+                                break
+                            chunk_path = os.path.join(workdir, f"chunk_{i}.wav")
+                            chunk_extract_cmd = [
+                                "ffmpeg", "-y", "-ss", str(start_sec),
+                                "-i", audio, "-t", str(chunk_duration_sec_total),
+                                "-c", "copy", chunk_path
+                            ]
+                            try:
+                                subprocess.run(chunk_extract_cmd, check=True, capture_output=True, timeout=120)
+                                chunk_duration_sec = min(chunk_duration_sec_total, total_audio_duration - start_sec)
+                            except Exception as ext_err:
+                                logging.error(f"[CHUNK {i}] ffmpeg extract failed: {ext_err}")
+                                continue
                         else:
-                            text = (result.text or "[No speech detected]").strip()
-                            segments.append({
-                                "start": offset,
-                                "end": offset + 5,
-                                "text": text
-                            })
+                            i = chunk_idx
+                            chunk = audio_file[i:i + chunk_ms]
+                            chunk_path = os.path.join(workdir, f"chunk_{i}.wav")
+                            chunk.export(chunk_path, format="wav")
+                            chunk_duration_sec = len(chunk) / 1000.0
+                            del chunk
+                            gc.collect()
 
-                        offset += len(chunk) / 1000
-                        os.remove(chunk_path)
+                        # Retry up to 3 times on API failures
+                        result = None
+                        last_error = None
+                        for attempt in range(3):
+                            try:
+                                with open(chunk_path, "rb") as f:
+                                    result = client.audio.transcriptions.create(
+                                        model="gpt-4o-transcribe",
+                                        file=f,
+                                        response_format="json",
+                                        temperature=0.0,
+                                        # NOTE: language intentionally omitted so the decoder auto-detects
+                                        # the spoken language. The prompt below handles translation to English.
+
+                                    prompt=(
+                                        "You are a professional transcription and translation system.\n\n"
+                                        
+                                        "TASK: Listen to the audio and output ONLY clean English text.\n\n"
+                                        
+                                        "ABSOLUTE RULE - READ CAREFULLY:\n"
+                                        "The output MUST be 100% English written in Latin alphabet (A-Z, a-z, 0-9, punctuation).\n"
+                                        "ZERO tolerance for non-Latin scripts. This is non-negotiable.\n\n"
+                                        
+                                        "WHAT THE SPEAKER MIGHT USE:\n"
+                                        "- Pure English → transcribe as spoken\n"
+                                        "- Hindi (Devanagari script or spoken) → TRANSLATE to English\n"
+                                        "- Telugu (Telugu script or spoken) → TRANSLATE to English\n"
+                                        "- Tamil, Kannada, Malayalam, Bengali, Marathi, Gujarati, Punjabi, Urdu → TRANSLATE to English\n"
+                                        "- Mixed Hindi/Telugu + English (code-switching) → TRANSLATE non-English parts, keep English\n"
+                                        "- Romanized Hindi/Telugu (e.g., 'yela chayali', 'manam cheddam') → TRANSLATE to English meaning\n\n"
+                                        
+                                        "FORBIDDEN OUTPUT (these will cause system failure):\n"
+                                        "- Devanagari characters: अ आ इ ई क ख ग घ etc.\n"
+                                        "- Telugu characters: అ ఆ ఇ ఈ క ఖ గ ఘ etc.\n"
+                                        "- Tamil, Chinese, Japanese, Korean, Arabic, Hebrew, Cyrillic, or ANY non-Latin script\n"
+                                        "- Transliteration like 'ek', 'do', 'kya', 'hai' — always translate to meaning: 'one', 'two', 'what', 'is'\n\n"
+                                        
+                                        "CONTENT DOMAINS — the speaker could be teaching ANY subject:\n"
+                                        "- Software & IT: Python, Java, C++, JavaScript, SQL, DevOps, cloud, databases, cybersecurity\n"
+                                        "- Enterprise software: SAP, Oracle, Salesforce, ServiceNow, Workday, Microsoft Dynamics\n"
+                                        "- Data & AI: data science, machine learning, deep learning, NLP, statistics, analytics\n"
+                                        "- Engineering: mechanical, civil, electrical, electronics, chemical, aerospace\n"
+                                        "- Sciences: physics, chemistry, biology, mathematics, astronomy, geology\n"
+                                        "- Medical & health: anatomy, pharmacology, nursing, diagnostics, clinical procedures\n"
+                                        "- Business: finance, accounting, marketing, sales, HR, operations, strategy, management\n"
+                                        "- Legal: contracts, compliance, regulations, corporate law, criminal law\n"
+                                        "- Academic: history, geography, economics, political science, literature, philosophy\n"
+                                        "- Languages: English grammar, spoken English, IELTS, TOEFL, foreign languages\n"
+                                        "- Skills & trades: cooking, carpentry, electrical work, automotive, beauty, fashion\n"
+                                        "- Arts & creative: music, painting, photography, writing, design, video editing\n"
+                                        "- Fitness & lifestyle: yoga, gym, nutrition, meditation, sports coaching\n"
+                                        "- Exam prep: UPSC, SSC, banking, GATE, NEET, JEE, CAT, school/college subjects\n"
+                                        "- Religious & spiritual: scripture study, philosophy, meditation practices\n"
+                                        "- General knowledge: current affairs, news, documentaries, tutorials\n\n"
+                                        
+                                        "TRANSLATION EXAMPLES (showing different subjects):\n\n"
+                                        
+                                        "Speaker (Telugu, tech): 'మనం ఇప్పుడు database లో data insert చేద్దాం'\n"
+                                        "Output: 'Now let us insert data into the database'\n\n"
+                                        
+                                        "Speaker (Hindi, cooking): 'पहले हम pan में oil डालेंगे फिर onion add करेंगे'\n"
+                                        "Output: 'First we will put oil in the pan then add onion'\n\n"
+                                        
+                                        "Speaker (Hindi, medical): 'यह दवा दिन में दो बार लेनी है खाने के बाद'\n"
+                                        "Output: 'This medicine should be taken twice a day after meals'\n\n"
+                                        
+                                        "Speaker (Romanized Telugu, business): 'company profit margin ni improve cheyali ante cost reduce cheyali'\n"
+                                        "Output: 'To improve the company profit margin we need to reduce cost'\n\n"
+                                        
+                                        "Speaker (Mixed, education): 'Indus Valley civilization gurinchi telusukundam ippudu'\n"
+                                        "Output: 'Let us now learn about the Indus Valley civilization'\n\n"
+                                        
+                                        "Speaker (Telugu, fitness): 'ఈ exercise 15 reps చేయాలి three sets లో'\n"
+                                        "Output: 'This exercise should be done 15 reps in three sets'\n\n"
+                                        
+                                        "PRESERVE unchanged (do NOT translate these):\n"
+                                        "- Proper nouns: people's names, place names, company names, product names, brand names\n"
+                                        "- Technical terms, tool names, software names already in English\n"
+                                        "- Acronyms: API, SQL, CPU, CEO, GDP, DNA, UPSC, SSC, IELTS, etc.\n"
+                                        "- Numbers, measurements, units (kg, km, ml, °C, $, %)\n"
+                                        "- Scientific terms, medical terms, legal terms already in English\n\n"
+                                        
+                                        "QUALITY STANDARDS:\n"
+                                        "- Produce complete, grammatical English sentences with proper punctuation.\n"
+                                        "- Keep speaker's depth and terminology intact — do not oversimplify.\n"
+                                        "- Do NOT invent content. Do NOT add advertisements, promotions, or URLs.\n"
+                                        "- If audio is silent or unclear, skip it — do not fabricate.\n\n"
+                                        
+                                        "OUTPUT: Only the clean English translation. No metadata, no labels, no headers."
+                                    )
+                                )
+                                break  # success, exit retry loop
+                            except Exception as api_error:
+                                last_error = api_error
+                                logging.warning(f"[CHUNK {i}] API attempt {attempt+1}/3 failed: {api_error}")
+                                if attempt < 2:
+                                    time.sleep(2 ** attempt)  # 1s, then 2s backoff
+
+                        if result is None:
+                            logging.error(f"[CHUNK {i}] All 3 attempts failed: {last_error}")
+                            offset += chunk_duration_sec
+                            try:
+                                os.remove(chunk_path)
+                            except:
+                                pass
+                            continue
+
+                        # Extract full transcript from this chunk
+                        chunk_text = (getattr(result, "text", "") or "").strip()
+
+                        # STEP 1: Remove garbage scripts (Korean, Chinese, Japanese, Arabic, Hebrew, Cyrillic)
+                        original_length = len(chunk_text)
+                        chunk_text = clean_garbage_scripts(chunk_text)
+                        if len(chunk_text) < original_length:
+                            logging.warning(f"[CHUNK {i}] Removed {original_length - len(chunk_text)} garbage chars")
+
+                        # STEP 2: Remove repeated phrases/sentences (Whisper hallucination)
+                        before_repeat_filter = len(chunk_text)
+                        chunk_text = remove_repetitions(chunk_text)
+                        if len(chunk_text) < before_repeat_filter:
+                            logging.warning(f"[CHUNK {i}] Removed repeated content ({before_repeat_filter - len(chunk_text)} chars)")
+
+                        logging.info(f"[CHUNK {i}] Cleaned transcript: {len(chunk_text)} chars in {chunk_duration_sec:.1f}s audio")
+
+                        # STEP 3: Skip ONLY if truly empty (don't drop whole chunk for hallucination)
+                        if not chunk_text or len(chunk_text) < 10:
+                            logging.info(f"[CHUNK {i}] Skipped (truly empty)")
+                            offset += chunk_duration_sec
+                            try:
+                                os.remove(chunk_path)
+                            except:
+                                pass
+                            continue
+
+                        # STEP 4: Split into subtitle-sized segments with timing
+                        chunk_segments = split_text_into_timed_segments(
+                            chunk_text,
+                            chunk_start=offset,
+                            chunk_duration=chunk_duration_sec
+                        )
+                        logging.info(f"[CHUNK {i}] Split into {len(chunk_segments)} subtitle segments")
+
+                        # Filter hallucinated segments individually (don't drop whole chunk)
+                        before_hall = len(chunk_segments)
+                        chunk_segments = [
+                            seg for seg in chunk_segments
+                            if not is_hallucination(seg["text"]) or len(seg["text"]) > 50
+                        ]
+                        if len(chunk_segments) < before_hall:
+                            logging.info(f"[CHUNK {i}] Filtered {before_hall - len(chunk_segments)} hallucinated segments")
+
+                        # STEP 4.5: Further split long mixed-language segments for better translation
+                        # Long segments with mixed Indic+English confuse the LLM translator
+                        refined_segments = []
+                        for seg in chunk_segments:
+                            seg_text = seg["text"].strip()
+                            if len(seg_text) > 60:
+                                # Split at sentence boundaries
+                                parts = re.split(r'(?<=[.!?।])\s+', seg_text)
+                                if len(parts) > 1:
+                                    seg_duration = seg["end"] - seg["start"]
+                                    part_duration = seg_duration / len(parts)
+                                    for p_idx, part in enumerate(parts):
+                                        part = part.strip()
+                                        if part:
+                                            refined_segments.append({
+                                                "start": round(seg["start"] + (p_idx * part_duration), 2),
+                                                "end": round(seg["start"] + ((p_idx + 1) * part_duration), 2),
+                                                "text": part
+                                            })
+                                else:
+                                    # No sentence boundary found, try splitting at commas
+                                    comma_parts = re.split(r',\s+', seg_text)
+                                    if len(comma_parts) > 1 and len(seg_text) > 100:
+                                        seg_duration = seg["end"] - seg["start"]
+                                        part_duration = seg_duration / len(comma_parts)
+                                        for p_idx, part in enumerate(comma_parts):
+                                            part = part.strip()
+                                            if part:
+                                                refined_segments.append({
+                                                    "start": round(seg["start"] + (p_idx * part_duration), 2),
+                                                    "end": round(seg["start"] + ((p_idx + 1) * part_duration), 2),
+                                                    "text": part
+                                                })
+                                    else:
+                                        refined_segments.append(seg)
+                            else:
+                                refined_segments.append(seg)
+                        
+                        if len(refined_segments) != len(chunk_segments):
+                            logging.info(f"[CHUNK {i}] Refined {len(chunk_segments)} → {len(refined_segments)} segments for better translation")
+                        chunk_segments = refined_segments
+
+                        # # STEP 5: Only run LLM cleaner if non-English content detected
+                        if chunk_segments:
+                            logging.info(f"[CHUNK {i}] Running LLM translator pass (covers all languages)...")
+                            chunk_segments = translate_segments_batch(chunk_segments, "mixed")
+
+                        # STEP 6: Safety net — retry any segment that's still non-English
+                        still_non_english = []
+                        for idx, seg in enumerate(chunk_segments):
+                            text = seg.get("text", "")
+                            non_ascii = sum(1 for c in text if ord(c) > 127)
+                            if len(text) > 0 and (non_ascii / len(text)) > 0.05:
+                                still_non_english.append(idx)
+
+                        if still_non_english:
+                            logging.warning(f"[CHUNK {i}] {len(still_non_english)} segments still non-English — retrying")
+                            retry_segments = [chunk_segments[idx] for idx in still_non_english]
+                            retry_translated = translate_segments_batch(retry_segments, "unknown")
+                            for j, idx in enumerate(still_non_english):
+                                if j < len(retry_translated):
+                                    chunk_segments[idx] = retry_translated[j]
+
+                        # STEP 7: Final cleanup — preserve content even when translation failed
+                        for seg in chunk_segments:
+                            text = seg.get("text", "")
+                            if not text:
+                                continue
+                            non_ascii = sum(1 for c in text if ord(c) > 127)
+                            ratio = non_ascii / len(text)
+                            if ratio < 0.05:
+                                continue  # already clean English
+                            elif ratio < 0.5:
+                                cleaned_text = "".join(c if ord(c) < 128 else " " for c in text)
+                                cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
+                                if cleaned_text and len(cleaned_text) > 5:
+                                    seg["text"] = cleaned_text
+                                # else keep original — too little English to salvage
+                            else:
+                                # Translation failed for this segment — preserve original
+                                # so the user at least sees what was said in the source language.
+                                logger.warning(
+                                    f"[CHUNK {i}] Translation failed, preserving original: {text[:60]}..."
+                                )
+                                # text stays as-is
+                        
+                        # STEP 7.5: Drop only TRUE garbled nonsense (relaxed filter)
+                        clean_segments = []
+                        for seg in chunk_segments:
+                            text = seg.get("text", "").strip()
+                            if not text:
+                                continue
+                            words = text.split()
+                            # Drop only if very short AND no meaningful word
+                            if len(words) < 3 and len(text) < 10:
+                                logging.debug(f"[GARBLE FILTER] Dropped too-short: '{text}'")
+                                continue
+                            # Drop only if NO word is 4+ chars AND segment is short
+                            has_meaningful_word = any(len(w) >= 4 for w in words)
+                            if not has_meaningful_word and len(words) < 5:
+                                logging.warning(f"[GARBLE FILTER] Dropped fragment: '{text[:60]}'")
+                                continue
+                            clean_segments.append(seg)
+                        if len(clean_segments) != len(chunk_segments):
+                            logging.info(f"[CHUNK {i}] Garble filter: {len(chunk_segments)} -> {len(clean_segments)}")
+                        chunk_segments = clean_segments
+
+                        # Only keep non-empty segments
+                        chunk_segments = [s for s in chunk_segments if s.get("text", "").strip()]
+
+                        segments.extend(chunk_segments)
+                        offset += chunk_duration_sec
+                        try:
+                            os.remove(chunk_path)
+                        except:
+                            pass
 
                 except Exception as transcription_error:
                     logging.error(f"❌ Transcription failed: {transcription_error}")
+                    import traceback
+                    logging.error(f"❌ Traceback: {traceback.format_exc()}")
                     segments = []
                     transcript_text = "Transcription failed."
             # ========== POST-TRANSCRIPTION FALLBACK ==========
@@ -2151,7 +3640,30 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                     "text": "No speech detected."
                 }]
 
-            transcript_text = " ".join(seg["text"] for seg in segments)
+            # Group segments into readable paragraphs (~80 words each, broken at sentence ends)
+            # so the transcript reads like prose, not a list of one-line fragments.
+            def _group_segments_into_paragraphs(segs, target_words=80):
+                paragraphs = []
+                current = []
+                current_words = 0
+                for seg in segs:
+                    text = seg.get("text", "").strip()
+                    if not text:
+                        continue
+                    current.append(text)
+                    current_words += len(text.split())
+                    # Break paragraph only when we've reached target length AND
+                    # the last sentence ended cleanly with a terminal punctuation mark.
+                    if current_words >= target_words and text[-1:] in ".!?":
+                        paragraphs.append(" ".join(current))
+                        current = []
+                        current_words = 0
+                if current:
+                    paragraphs.append(" ".join(current))
+                return paragraphs
+
+            transcript_paragraphs = _group_segments_into_paragraphs(segments, target_words=80)
+            transcript_text = "\n\n".join(transcript_paragraphs)
 
             # ========== TRAINER PERFORMANCE EVALUATION ==========
             trainer_evaluation = {}
@@ -2188,14 +3700,14 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                     "overall_feedback": "Evaluation failed"
                 }
 
-            # ========== SUBTITLES GENERATION ==========
+            # ========== SUBTITLES GENERATION (Groq → MarianMT → GoogleTranslator fallback) ==========
             subtitle_urls = {}
 
             meeting_type = get_meeting_type(meeting_id)
             logging.info(f"Meeting type for subtitles: {meeting_type}")
 
             if segments and len(segments) > 0:
-                logging.info("🎬 Generating subtitles with translation...")
+                logging.info("🎬 Generating subtitles with 3-tier translation fallback...")
                 
                 for lang in ["en", "hi", "te"]:
                     try:
@@ -2203,88 +3715,138 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                         translation_method = "none"
                         
                         if lang == "en":
+                            # English SRT — verify segments are actually English, force-clean if not
                             translated_segments = segments.copy()
-                            translation_method = "original"
-                            logging.info("✅ en segments ready (original)")
+                            
+                            # Check if segments are actually in English (no non-ASCII chars)
+                            sample_text = " ".join(s.get("text", "") for s in translated_segments[:5])
+                            non_ascii = sum(1 for c in sample_text if ord(c) > 127)
+                            
+                            if len(sample_text) > 0 and (non_ascii / len(sample_text)) > 0.1:
+                                # Segments still have non-English content — force translate to English
+                                logging.warning(f"⚠️ English SRT has non-ASCII content ({non_ascii} chars), forcing translation to English")
+                                translated_segments = translate_segments_batch(translated_segments, "mixed")
+                                translation_method = "groq_forced_english"
+                            else:
+                                translation_method = "original"
+                            
+                            logging.info("✅ English SRT: clean English verified")
                             
                         else:
-                            local_success = False
-                            
+                            # ===== TIER 1: Try Groq Llama (primary, fastest & most accurate) =====
+                            groq_success = False
                             try:
-                                local_translator = LocalIndianLanguageTranslator()
-                                translated_segments = local_translator.translate_segments(
-                                    segments, 
-                                    lang, 
-                                    batch_size=32
-                                )
-                                local_success = True
-                                translation_method = "local_model"
-                                logging.info(f"✅ {lang} translation completed (local model)")
+                                logging.info(f"🔄 [{lang}] Trying Tier 1: Groq Llama...")
+                                translated_segments = translate_segments_to_target_lang(segments, lang)
                                 
-                                try:
-                                    local_translator.cleanup()
-                                except:
-                                    pass
-                                    
-                            except Exception as local_error:
-                                logging.warning(f"⚠️ Local translation failed for {lang}: {local_error}")
-                                logging.info(f"🔄 Falling back to GoogleTranslator for {lang}...")
+                                # Verify translation actually worked (check if output has target script)
+                                if translated_segments and len(translated_segments) > 0:
+                                    sample_text = " ".join(s.get("text", "") for s in translated_segments[:5])
+                                    non_ascii = sum(1 for c in sample_text if ord(c) > 127)
+                                    if len(sample_text) > 0 and (non_ascii / len(sample_text)) > 0.3:
+                                        groq_success = True
+                                        translation_method = "groq_llama"
+                                        logging.info(f"✅ [{lang}] Tier 1 (Groq Llama) SUCCESS")
+                                    else:
+                                        logging.warning(f"⚠️ [{lang}] Tier 1 returned English text, trying Tier 2")
+                                        
+                            except Exception as groq_error:
+                                logging.warning(f"⚠️ [{lang}] Tier 1 (Groq Llama) failed: {groq_error}")
                             
-                            if not local_success:
+                            # ===== TIER 2: Try MarianMT (local model fallback) =====
+                            if not groq_success:
+                                marian_success = False
                                 try:
-                                    import requests
-                                    from requests.adapters import HTTPAdapter
-                                    from urllib3.util.retry import Retry
+                                    logging.info(f"🔄 [{lang}] Trying Tier 2: MarianMT local model...")
+                                    local_translator = LocalIndianLanguageTranslator()
+                                    translated_segments = local_translator.translate_segments(
+                                        segments,
+                                        lang,
+                                        batch_size=32
+                                    )
                                     
-                                    session = requests.Session()
-                                    session.verify = False
-                                    
-                                    translated_segments = []
-                                    for seg in segments:
-                                        text = seg["text"].strip()
-                                        
-                                        if text and len(text) > 0:
-                                            try:
-                                                translator = GoogleTranslator(source="en", target=lang)
-                                                
-                                                import deep_translator.constants as dt_constants
-                                                original_verify = getattr(requests, 'get', None)
-                                                
-                                                def patched_get(*args, **kwargs):
-                                                    kwargs['verify'] = False
-                                                    kwargs['timeout'] = 10
-                                                    return original_verify(*args, **kwargs)
-                                                
-                                                requests.get = patched_get
-                                                
-                                                translated_text = translator.translate(text)
-                                                
-                                                requests.get = original_verify
-                                                
-                                                if not translated_text:
-                                                    translated_text = text
-                                                    logging.warning(f"Empty translation for {lang}, using original")
-                                                    
-                                            except Exception as translate_error:
-                                                logging.warning(f"GoogleTranslator segment error: {translate_error}")
-                                                translated_text = text
+                                    # Verify translation worked
+                                    if translated_segments and len(translated_segments) > 0:
+                                        sample_text = " ".join(s.get("text", "") for s in translated_segments[:5])
+                                        non_ascii = sum(1 for c in sample_text if ord(c) > 127)
+                                        if len(sample_text) > 0 and (non_ascii / len(sample_text)) > 0.3:
+                                            marian_success = True
+                                            translation_method = "marian_mt"
+                                            logging.info(f"✅ [{lang}] Tier 2 (MarianMT) SUCCESS")
                                         else:
-                                            translated_text = text
+                                            logging.warning(f"⚠️ [{lang}] Tier 2 returned English text, trying Tier 3")
+                                    
+                                    try:
+                                        local_translator.cleanup()
+                                    except:
+                                        pass
                                         
-                                        translated_segments.append({
-                                            "start": seg["start"],
-                                            "end": seg["end"],
-                                            "text": translated_text
-                                        })
+                                except Exception as marian_error:
+                                    logging.warning(f"⚠️ [{lang}] Tier 2 (MarianMT) failed: {marian_error}")
+                                
+                                # ===== TIER 3: Try GoogleTranslator (final fallback) =====
+                                if not marian_success:
+                                    google_success = False
+                                    try:
+                                        logging.info(f"🔄 [{lang}] Trying Tier 3: GoogleTranslator...")
+                                        import requests as req_lib
+                                        
+                                        translated_segments = []
+                                        for seg in segments:
+                                            text = seg["text"].strip()
+                                            
+                                            if text and len(text) > 0:
+                                                try:
+                                                    translator = GoogleTranslator(source="en", target=lang)
+                                                    
+                                                    original_get = req_lib.get
+                                                    
+                                                    def patched_get(*args, **kwargs):
+                                                        kwargs['verify'] = False
+                                                        kwargs['timeout'] = 10
+                                                        return original_get(*args, **kwargs)
+                                                    
+                                                    req_lib.get = patched_get
+                                                    
+                                                    try:
+                                                        translated_text = translator.translate(text)
+                                                    finally:
+                                                        req_lib.get = original_get
+                                                    
+                                                    if not translated_text:
+                                                        translated_text = text
+                                                        
+                                                except Exception as translate_error:
+                                                    logging.warning(f"[{lang}] GoogleTranslator segment error: {translate_error}")
+                                                    translated_text = text
+                                            else:
+                                                translated_text = text
+                                            
+                                            translated_segments.append({
+                                                "start": seg["start"],
+                                                "end": seg["end"],
+                                                "text": translated_text
+                                            })
+                                        
+                                        # Verify translation worked
+                                        if translated_segments and len(translated_segments) > 0:
+                                            sample_text = " ".join(s.get("text", "") for s in translated_segments[:5])
+                                            non_ascii = sum(1 for c in sample_text if ord(c) > 127)
+                                            if len(sample_text) > 0 and (non_ascii / len(sample_text)) > 0.3:
+                                                google_success = True
+                                                translation_method = "google_translator"
+                                                logging.info(f"✅ [{lang}] Tier 3 (GoogleTranslator) SUCCESS")
+                                            else:
+                                                logging.warning(f"⚠️ [{lang}] Tier 3 returned English text")
+                                                
+                                    except Exception as google_error:
+                                        logging.error(f"❌ [{lang}] Tier 3 (GoogleTranslator) failed: {google_error}")
                                     
-                                    translation_method = "google_translator"
-                                    logging.info(f"✅ {lang} translation completed (GoogleTranslator fallback)")
-                                    
-                                except Exception as google_error:
-                                    logging.error(f"❌ GoogleTranslator also failed for {lang}: {google_error}")
-                                    translated_segments = segments.copy()
-                                    translation_method = "fallback_english"
-                                    logging.warning(f"⚠️ Using English for {lang} (all translators failed)")
+                                    # ===== TIER 4: Final fallback — English (better than nothing) =====
+                                    if not google_success:
+                                        translated_segments = segments.copy()
+                                        translation_method = "fallback_english"
+                                        logging.error(f"⚠️ [{lang}] ALL tiers failed, using English (all translators failed)")
                         
                         # Create SRT file and upload
                         if translated_segments:
@@ -2292,7 +3854,7 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                             create_srt_from_segments(translated_segments, srt_path)
                             
                             if os.path.exists(srt_path) and os.path.getsize(srt_path) > 0:
-                                logging.info(f"✅ {lang} SRT created ({os.path.getsize(srt_path)} bytes) via {translation_method}")
+                                logging.info(f"✅ [{lang}] SRT created ({os.path.getsize(srt_path)} bytes) via {translation_method}")
                                 
                                 subtitles_folder = build_s3_document_path(meeting_id, user_id, meeting_type, "subtitles", session_id=session_id)
                                 if session_id:
@@ -2303,11 +3865,11 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                                 
                                 if subtitle_url:
                                     subtitle_urls[lang] = subtitle_url
-                                    logging.info(f"✅ {lang} subtitles uploaded to S3")
+                                    logging.info(f"✅ [{lang}] subtitles uploaded to S3 (method: {translation_method})")
                                 else:
-                                    logging.error(f"❌ Failed to upload {lang} subtitles to S3")
+                                    logging.error(f"❌ [{lang}] Failed to upload subtitles to S3")
                             else:
-                                logging.warning(f"⚠️ {lang} SRT file is empty or not created")
+                                logging.warning(f"⚠️ [{lang}] SRT file is empty or not created")
                                 
                     except Exception as lang_error:
                         logging.error(f"❌ Complete failure for {lang} subtitles: {lang_error}")
@@ -2334,81 +3896,76 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             import re
             from docx import Document
             from docx.shared import Inches
-
             summary_doc_path = os.path.join(workdir, "summary.docx")
-            summary_doc = Document()
 
-            summary_doc.add_heading("Meeting Summary", level=1)
-
-            for line in summary.split("\n"):
-                summary_doc.add_paragraph(line)
-
-            # ---- Mind Map extraction ----
+            # ---- Mind Map extraction & rendering ----
             image_url = None
+            mindmap_png_path = None
             try:
                 dot_code = None
-                
+
                 # Pattern 1: ```dot/graphviz``` block
                 dot_match = re.search(r"```(?:dot|graphviz)?\s*(.*?)```", summary, re.DOTALL | re.IGNORECASE)
                 if dot_match:
                     raw_dot = dot_match.group(1).strip()
-                    if raw_dot.lower().startswith(("digraph", "graph")) or "digraph" in raw_dot.lower() or "graph " in raw_dot.lower():
+                    if raw_dot.lower().startswith(("digraph", "graph")) or "digraph" in raw_dot.lower():
                         dot_code = raw_dot
-                        logging.info("✅ Found DOT code in ``` block (Pattern 1)")
-                
+                        logging.info("Found DOT code in ``` block (Pattern 1)")
+
                 # Pattern 2: Raw digraph/graph without backticks
                 if not dot_code:
                     dot_match = re.search(r"((?:di)?graph\s+[\"']?\w+[\"']?\s*\{[^}]+\})", summary, re.DOTALL | re.IGNORECASE)
                     if dot_match:
                         dot_code = dot_match.group(1)
-                        logging.info("✅ Found raw DOT code without backticks (Pattern 2)")
-                
-                # Pattern 3: More flexible
+                        logging.info("Found raw DOT code (Pattern 2)")
+
+                # Pattern 3: Flexible multiline
                 if not dot_code:
                     dot_match = re.search(r"(digraph\s+\w+\s*\{[\s\S]*?\n\})", summary, re.IGNORECASE)
                     if dot_match:
                         dot_code = dot_match.group(1)
-                        logging.info("✅ Found DOT code with flexible pattern (Pattern 3)")
-                
-                # Pattern 4: Find any content with digraph
+                        logging.info("Found DOT code (Pattern 3)")
+
+                # Pattern 4: Single line fallback
                 if not dot_code:
                     all_text = summary.replace('\n', ' ')
                     dot_match = re.search(r'(digraph\s+\w+\s*\{[^}]+\})', all_text, re.IGNORECASE)
                     if dot_match:
                         dot_code = dot_match.group(1)
-                        logging.info("✅ Found DOT code with Pattern 4")
-                
+                        logging.info("Found DOT code (Pattern 4)")
+
                 if dot_code:
                     dot_code = sanitize_dot_code(dot_code)
+                    dot_code = enhance_dot_styling(dot_code)
 
-                    mindmap_png = os.path.join(workdir, "mindmap.png")
-
-                    generate_graph(dot_code, mindmap_png[:-4])
+                    mindmap_png_path = os.path.join(workdir, "mindmap.png")
+                    generate_graph(dot_code, mindmap_png_path[:-4])
 
                     if session_id:
                         mindmap_s3_key = f"{meeting_id}/{session_id}/mindmap.png"
                     else:
                         mindmap_s3_key = f"{meeting_id}/{user_id}/mindmap.png"
-                    image_url = upload_to_aws_s3(
-                        mindmap_png,
-                        mindmap_s3_key
-                    )
+                    image_url = upload_to_aws_s3(mindmap_png_path, mindmap_s3_key)
 
-                    summary_doc.add_page_break()
-                    summary_doc.add_heading("Mind Map", level=2)
-                    summary_doc.add_picture(mindmap_png, width=Inches(6))
-                    
-                    logging.info(f"✅ Mind map generated and uploaded successfully")
+                    logging.info(f"Concept map generated and uploaded successfully")
                 else:
-                    logging.warning("⚠ No valid DOT code found in summary - mind map will not be generated")
-                    
+                    logging.warning("No valid DOT code found in summary - concept map will not be generated")
+
             except Exception as mindmap_error:
-                logging.warning(f"⚠ Mind map generation failed: {mindmap_error}")
+                logging.warning(f"Concept map generation failed: {mindmap_error}")
                 import traceback
-                logging.error(f"Mind map traceback: {traceback.format_exc()}")
+                logging.error(f"Concept map traceback: {traceback.format_exc()}")
                 image_url = None
-                
-            summary_doc.save(summary_doc_path)
+                mindmap_png_path = None
+
+            # ---- Build Summary DOCX using save_docx ----
+            save_docx(
+                content=summary,
+                path=summary_doc_path,
+                image_path=mindmap_png_path if mindmap_png_path and os.path.exists(mindmap_png_path) else None,
+                title="Meeting Summary"
+            )
+            logging.info(f"Summary DOCX created at {summary_doc_path}")
 
             transcript_url = None
             summary_url = None
@@ -2514,6 +4071,12 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                         logging.info(f"✅ Extracted session_id from S3 key: {session_id}")
             logging.info(f"📋 Final session_id for MongoDB save: {session_id}")
 
+            # For very long summaries, truncate MongoDB copy (full version stays in S3)
+            summary_for_mongo = summary
+            if len(summary) > 500000:  # 500KB safety threshold
+                summary_for_mongo = summary[:500000] + "\n\n[... truncated - see full summary in S3 ...]"
+                logging.warning(f"⚠️ Summary too large ({len(summary)} chars), truncating for MongoDB storage")
+            
             video_document = {
                 "meeting_id": meeting_id,
                 "session_id": session_id,  # ✅ NEW: Track recording session
@@ -2531,7 +4094,7 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                 "video_url": video_url,
                 "transcript_url": transcript_url,
                 "summary_url": summary_url,
-                "summary_text": summary,
+                "summary_text": summary_for_mongo,
                 "image_url": image_url,
                 "subtitles": subtitle_urls,
                 "timestamp": datetime.now(),
@@ -2553,7 +4116,7 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                 "encoder_used": "GPU (NVENC)" if nvenc_available else "CPU (libx264)",
                 "gpu_accelerated": nvenc_available,
                 "document_format": "docx",
-                "transcription_engine": "groq_whisper_large_v3_turbo",
+                "transcription_engine": "openai_gpt_4o_transcribe_with_llm_translation",
                 "trainer_evaluation": trainer_evaluation
             }
             
@@ -2652,7 +4215,7 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                 "encoder_used": "GPU (NVENC)" if nvenc_available else "CPU (libx264)",
                 "gpu_accelerated": nvenc_available,
                 "document_format": "docx",
-                "transcription_engine": "groq",
+                "transcription_engine": "openai_gpt_4o_transcribe",
                 "trainer_evaluation": trainer_evaluation,
                 "processing_notes": {
                     "audio_extracted": os.path.exists(audio),
@@ -3675,10 +5238,48 @@ def upload_recording(request):
                 for chunk in uploaded_file.chunks():
                     destination.write(chunk)
             
-            # Process the recording
-            result = process_video_sync(temp_file_path, meeting_id, user_id)
-            result["file"] = uploaded_file.name
-            result["meeting_id"] = meeting_id
+            # Calculate file size for routing decision
+            file_size = os.path.getsize(temp_file_path)
+            
+            # For long videos, run processing in background thread
+            video_size_mb = file_size / (1024 * 1024)
+            
+            if video_size_mb > 500:  # Likely > 1 hour video
+                import threading
+                import shutil
+                
+                # Copy file to persistent location (TemporaryDirectory will be deleted)
+                persistent_dir = "/tmp/long_videos"
+                os.makedirs(persistent_dir, exist_ok=True)
+                persistent_path = os.path.join(persistent_dir, f"{meeting_id}_{user_id}_{int(time.time())}.mp4")
+                shutil.copy(temp_file_path, persistent_path)
+                
+                def background_process():
+                    try:
+                        bg_result = process_video_sync(persistent_path, meeting_id, user_id)
+                        logging.info(f"✅ Background processing complete: {bg_result.get('status')}")
+                    except Exception as bg_err:
+                        logging.error(f"❌ Background processing failed: {bg_err}")
+                    finally:
+                        try:
+                            os.remove(persistent_path)
+                        except:
+                            pass
+                
+                thread = threading.Thread(target=background_process, daemon=True)
+                thread.start()
+                
+                result = {
+                    "status": "processing_in_background",
+                    "message": "Long video accepted. Processing in background. Check status in a few minutes.",
+                    "meeting_id": meeting_id,
+                    "user_id": user_id,
+                    "estimated_minutes": int(video_size_mb / 50)
+                }
+            else:
+                logging.info(f"🔄 Starting video processing...")
+                result = process_video_sync(temp_file_path, meeting_id, user_id)
+                logging.info(f"✅ Video processing completed: {result}")
             
             return JsonResponse(result)
                 
@@ -3783,10 +5384,45 @@ def upload_recording_blob(request):
             except Exception:
                 pass
             
-            # Process the recording
-            logging.info(f"🔄 Starting video processing...")
-            result = process_video_sync(temp_file_path, meeting_id, user_id)
-            logging.info(f"✅ Video processing completed: {result}")
+            # Decide: background thread for long videos, synchronous for short ones
+            video_size_mb = file_size / (1024 * 1024)
+            
+            if video_size_mb > 500:  # Likely > 1 hour video
+                import threading
+                import shutil
+                
+                # Copy file to persistent location (TemporaryDirectory will be deleted)
+                persistent_dir = "/tmp/long_videos"
+                os.makedirs(persistent_dir, exist_ok=True)
+                persistent_path = os.path.join(persistent_dir, f"{meeting_id}_{user_id}_{int(time.time())}.mp4")
+                shutil.copy(temp_file_path, persistent_path)
+                
+                def background_process():
+                    try:
+                        bg_result = process_video_sync(persistent_path, meeting_id, user_id)
+                        logging.info(f"✅ Background processing complete: {bg_result.get('status')}")
+                    except Exception as bg_err:
+                        logging.error(f"❌ Background processing failed: {bg_err}")
+                    finally:
+                        try:
+                            os.remove(persistent_path)
+                        except:
+                            pass
+                
+                thread = threading.Thread(target=background_process, daemon=True)
+                thread.start()
+                
+                result = {
+                    "status": "processing_in_background",
+                    "message": "Long video accepted. Processing in background. Check status in a few minutes.",
+                    "meeting_id": meeting_id,
+                    "user_id": user_id,
+                    "estimated_minutes": int(video_size_mb / 50)
+                }
+            else:
+                logging.info(f"🔄 Starting video processing...")
+                result = process_video_sync(temp_file_path, meeting_id, user_id)
+                logging.info(f"✅ Video processing completed: {result.get('status')}")
             
             # Update final recording metadata
             if recording_id and result.get("status") == "success":
@@ -4651,6 +6287,23 @@ def get_summary_content(request, id):
         if not is_user_allowed(meeting_id, email, user_id):
             return JsonResponse({"error": "Access denied"}, status=403)
 
+        # Check if user is the host (trainer) — only host sees evaluation
+        is_host = False
+        if user_id:
+            # Check 1: Is user the video uploader (recorder/host)?
+            if str(video.get("user_id", "")) == str(user_id):
+                is_host = True
+            else:
+                # Check 2: Is user the meeting host in database?
+                try:
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT Host_ID FROM tbl_Meetings WHERE ID = %s", [meeting_id])
+                        row = cursor.fetchone()
+                        if row and str(row[0]) == str(user_id):
+                            is_host = True
+                except Exception:
+                    pass
+
         summary_url = video.get("summary_url")
         summary_text = video.get("summary_text", "")
         trainer_evaluation = video.get("trainer_evaluation", {})
@@ -4740,7 +6393,7 @@ def get_summary_content(request, id):
                 "image_url": image_url,
                 "has_mindmap": bool(image_url),
                 
-                # Trainer evaluation scores
+                # Trainer evaluation scores — ONLY visible to host (trainer)
                 "trainer_evaluation": {
                     "technical_content": trainer_evaluation.get("technical_content", 0),
                     "explanation_clarity": trainer_evaluation.get("explanation_clarity", 0),
@@ -4748,7 +6401,7 @@ def get_summary_content(request, id):
                     "communication": trainer_evaluation.get("communication", 0),
                     "overall_feedback": trainer_evaluation.get("overall_feedback", ""),
                     "has_evaluation": bool(trainer_evaluation and not trainer_evaluation.get("error"))
-                },
+                } if is_host else None,
                 
                 # Additional metadata
                 "user_name": video.get("user_name", ""),
