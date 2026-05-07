@@ -481,26 +481,122 @@ logger = logging.getLogger("video_processor")
 logging.basicConfig(level=logging.INFO)
 
 # === UTILITY FUNCTIONS ===
-def upload_to_aws_s3(local_file_path: str, s3_key: str) -> str:
-    """Upload file to AWS S3 and return the URL."""
+def upload_to_aws_s3(local_file_path: str, s3_key: str, timeout_sec: int = 1800) -> str:
+    """
+    Upload file to AWS S3 and return the URL.
+
+    Wraps boto3.upload_file() in a worker thread with a hard 30-minute
+    wall-clock timeout to prevent silent hangs (known boto3 fork-safety
+    issue in Celery prefork workers when uploading files >400 MB).
+    """
+    import concurrent.futures
+
+    def _do_upload():
+        try:
+            s3_client.upload_file(local_file_path, AWS_S3_BUCKET, s3_key)
+            logger.info(f"File uploaded to s3://{AWS_S3_BUCKET}/{s3_key}")
+            return f"https://{AWS_S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
+        except NoCredentialsError:
+            logger.error("AWS credentials not available.")
+            return None
+        except Exception as e:
+            logger.error(f"S3 upload failed: {e}")
+            return None
+
     try:
-        s3_client.upload_file(local_file_path, AWS_S3_BUCKET, s3_key)
-        logger.info(f"File uploaded to s3://{AWS_S3_BUCKET}/{s3_key}")
-        return f"https://{AWS_S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
-    except NoCredentialsError:
-        logger.error("AWS credentials not available.")
-        return None
-    except Exception as e:
-        logger.error(f"S3 upload failed: {e}")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_do_upload)
+            return future.result(timeout=timeout_sec)
+    except concurrent.futures.TimeoutError:
+        logger.error(f"❌ S3 upload HUNG after {timeout_sec}s for key: {s3_key}")
         return None
 
-def download_from_s3(s3_key: str, local_file_path: str) -> bool:
-    """Download file from S3."""
+def download_from_s3(s3_key: str, local_file_path: str, timeout_sec: int = 1800) -> bool:
+    """
+    Download file from S3 using a single streaming connection.
+
+    Why streaming get_object() instead of download_file():
+    - download_file() uses a TransferManager with a 10-thread pool for
+      multipart parallel download. In Celery prefork workers, those threads
+      inherit a corrupted connection pool from the parent process. For files
+      above ~400 MB the probability of every thread picking a broken connection
+      approaches 1, causing a permanent silent hang.
+    - get_object() uses ONE connection, ONE thread, no transfer manager.
+      Works reliably for files of any size, including 1 GB+.
+
+    Safety nets:
+    - 30-minute wall-clock timeout (any hang fails loudly instead of forever)
+    - Size verification (catches truncated downloads)
+    - Partial file cleanup on failure
+    - Progress logging at 25/50/75/100%
+    """
+    import concurrent.futures
+
+    def _do_download():
+        try:
+            response = s3_client.get_object(Bucket=AWS_S3_BUCKET, Key=s3_key)
+            content_length = response.get('ContentLength', 0)
+            body = response['Body']
+
+            chunk_size = 8 * 1024 * 1024  # 8 MB
+            total_bytes = 0
+            next_log_pct = 25  # Log at 25%, 50%, 75%, 100%
+
+            with open(local_file_path, 'wb') as f:
+                while True:
+                    chunk = body.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    total_bytes += len(chunk)
+
+                    if content_length > 0:
+                        pct = int((total_bytes / content_length) * 100)
+                        if pct >= next_log_pct:
+                            logger.info(
+                                f"📥 Download progress: {pct}% "
+                                f"({total_bytes / 1e6:.1f} / {content_length / 1e6:.1f} MB)"
+                            )
+                            next_log_pct = pct + 25
+
+            try:
+                body.close()
+            except Exception:
+                pass
+
+            # Verify the download is complete
+            actual_size = os.path.getsize(local_file_path)
+            if content_length > 0 and actual_size != content_length:
+                logger.error(
+                    f"❌ Size mismatch: expected {content_length} bytes, "
+                    f"got {actual_size} bytes"
+                )
+                return False
+
+            logger.info(f"✅ Downloaded {actual_size / 1e6:.1f} MB to {local_file_path}")
+            return True
+
+        except Exception as e:
+            logger.error(f"S3 streaming download failed: {e}")
+            return False
+
+    # Wall-clock timeout protection (catches any hang at the connection level)
     try:
-        s3_client.download_file(AWS_S3_BUCKET, s3_key, local_file_path)
-        return True
-    except Exception as e:
-        logger.error(f"S3 download failed: {e}")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_do_download)
+            return future.result(timeout=timeout_sec)
+    except concurrent.futures.TimeoutError:
+        logger.error(
+            f"❌ S3 download HUNG after {timeout_sec}s for key: {s3_key} "
+            f"— failing task to allow retry."
+        )
+        # Clean up any partial file
+        try:
+            if os.path.exists(local_file_path):
+                os.remove(local_file_path)
+                logger.info(f"🧹 Cleaned up partial download: {local_file_path}")
+        except Exception:
+            pass
         return False
 
 def delete_from_s3(s3_key: str) -> bool:
@@ -723,6 +819,12 @@ def build_s3_document_path(
                         base_folder = S3_FOLDERS.get("subtitles", "subtitles")
                         return f"{base_folder}/{folder_prefix}"  # lang appended later
 
+                    elif doc_type == "trainer_evaluation":
+                        return (
+                            f"trainer_evaluations/{folder_prefix}/"
+                            f"{meeting_id}_{user_id}_evaluation.docx"
+                        )
+
                 else:
                     logger.warning(
                         f"Schedule metadata not found or not scheduled for {meeting_id}"
@@ -763,6 +865,14 @@ def build_s3_document_path(
             if session_id:
                 return f"{S3_FOLDERS.get('subtitles', 'subtitles')}/{meeting_id}/{session_id}"
             return f"{S3_FOLDERS.get('subtitles', 'subtitles')}"
+
+        elif doc_type == "trainer_evaluation":
+            if session_id:
+                return (
+                    f"trainer_evaluations/{meeting_id}/{session_id}/"
+                    f"{meeting_id}_{session_id}_evaluation.docx"
+                )
+            return f"trainer_evaluations/{meeting_id}_{user_id}_evaluation.docx"
 
         logger.warning(f"Unknown doc_type: {doc_type}")
         return ""
@@ -1142,13 +1252,6 @@ def generate_graph(dot_code: str, output_path: str):
     s = Source(dot_code)
     return s.render(filename=output_path, format="png", cleanup=True)
 
-# =============================================================================
-# NARRATION STRIPPER — removes "The speaker X" / "They X" / etc. prefixes
-# so summaries read like reference docs (textbook/SAP/Oracle/Google style),
-# not meeting minutes. Universal — applies to every domain (tech, business,
-# medical, cooking, legal, fitness, education, etc.).
-# Applied ONLY to summary documents (is_summary=True) — transcripts untouched.
-# =============================================================================
 _NARRATION_VERBS = (
     r"discussed|explained|demonstrated|showed|emphasized|highlighted|covered|"
     r"talked about|touched on|touched upon|mentioned|described|outlined|"
@@ -1189,6 +1292,89 @@ def strip_narration_voice(text: str) -> str:
     parts = re.split(r'(?<=[.!?])\s+', text.strip())
     cleaned = [_strip_narration_sentence(p) for p in parts if p.strip()]
     return " ".join(cleaned)
+
+def save_trainer_evaluation_docx(evaluation: dict, path: str, meeting_title: str = ""):
+    """Render trainer evaluation scores as a host-only DOCX."""
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from datetime import datetime
+    import pytz
+
+    doc = Document()
+    style = doc.styles['Normal']
+    style.font.name = 'Arial'
+    style.font.size = Pt(11)
+
+    h = doc.add_heading("Trainer Performance Evaluation", level=1)
+    h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for r in h.runs:
+        r.font.color.rgb = RGBColor(0x1A, 0x52, 0x76)
+
+    ist = pytz.timezone("Asia/Kolkata")
+    date_str = datetime.now(ist).strftime("%B %d, %Y at %I:%M %p")
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(f"Generated: {date_str}")
+    run.font.size = Pt(10)
+    run.font.italic = True
+    run.font.color.rgb = RGBColor(0x7F, 0x8C, 0x8D)
+
+    if meeting_title:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = p.add_run(f"Session: {meeting_title}")
+        r.font.size = Pt(11)
+        r.font.italic = True
+
+    doc.add_paragraph()
+
+    p = doc.add_paragraph()
+    r = p.add_run(
+        "CONFIDENTIAL — This evaluation is intended solely for the trainer/host. "
+        "Do not distribute to participants."
+    )
+    r.bold = True
+    r.font.size = Pt(10)
+    r.font.color.rgb = RGBColor(0xC0, 0x39, 0x2B)
+
+    doc.add_heading("Performance Scores", level=2)
+    table = doc.add_table(rows=1, cols=2)
+    table.style = "Light Grid Accent 1"
+    hdr = table.rows[0].cells
+    hdr[0].text = "Dimension"
+    hdr[1].text = "Score"
+
+    rows = [
+        ("Technical Content",   f"{evaluation.get('technical_content', 0)}%"),
+        ("Explanation Clarity", f"{evaluation.get('explanation_clarity', 0)}%"),
+        ("Friendliness",        f"{evaluation.get('friendliness', 0)}%"),
+        ("Communication",       f"{evaluation.get('communication', 0)}%"),
+    ]
+    for label, val in rows:
+        c = table.add_row().cells
+        c[0].text = label
+        c[1].text = val
+
+    doc.add_paragraph()
+
+    feedback = (evaluation.get("overall_feedback") or "").strip()
+    if feedback:
+        doc.add_heading("Overall Feedback", level=2)
+        doc.add_paragraph(feedback)
+
+    doc.add_paragraph()
+    p = doc.add_paragraph()
+    r = p.add_run(
+        "Scoring methodology: scores are derived from transcript-based analysis. "
+        "Use as one input among many; do not treat as a sole performance measure."
+    )
+    r.font.size = Pt(9)
+    r.font.italic = True
+    r.font.color.rgb = RGBColor(0x7F, 0x8C, 0x8D)
+
+    doc.save(path)
+
 
 def save_docx(content: str, path: str, image_path: str = None, title: str = ""):
     """
@@ -1247,10 +1433,6 @@ def save_docx(content: str, path: str, image_path: str = None, title: str = ""):
                 doc.add_paragraph()
             continue
 
-        # === Triple-backtick fence handling ===
-        # ```dot / ```graphviz       → DOT block (SKIP — mind map renders as image at end)
-        # ```python / ```javascript /
-        # ```sql / etc. or plain ``` → CODE block (KEEP — render with monospace font)
         if stripped.startswith("```"):
             lang_hint = stripped[3:].strip().lower()
             if not inside_dot_block and not inside_code_fence:
@@ -1455,11 +1637,6 @@ def save_docx(content: str, path: str, image_path: str = None, title: str = ""):
                 continue
 
         # === GLOBAL FILLER-TEXT FILTER ===
-        # Drops "No X was discussed" / "No specific X" placeholders that appear ANYWHERE
-        # in the summary, regardless of section. These are LLM-written explanations of
-        # absence (for Action Items, Code, Examples) that should have been omitted entirely.
-        # Without this, standalone filler paragraphs leak through when they appear without
-        # their parent heading (which save_docx already skipped).
         lower_global = stripped.lower()
         global_filler_starters = (
             "no ", "no specific ", "since no ", "there is no ",
@@ -1764,19 +1941,6 @@ def summarize_segment(transcript: str, context: str = ""):
     return _generate_chunked_summary(transcript, context)
 
 
-# ============================================================
-# UPDATED CHANGE 2 & CHANGE 3 ONLY
-# 
-# Changes 1, 4, 5 remain EXACTLY as in FINAL_CODE_CHANGES_FIXED.py
-# Only _generate_single_summary and CHUNKED_FINAL_PROMPT_TEMPLATE 
-# + _generate_chunked_summary are updated here.
-# ============================================================
-
-
-# ============================================================
-# CHANGE 2: REPLACE _generate_single_summary ENTIRELY
-# ============================================================
-
 def _generate_single_summary(transcript: str, context: str = "") -> str:
     """
     Detailed summarization for short transcripts (< 15K words / ~1 hour meetings).
@@ -2033,11 +2197,6 @@ FINAL RULES:
     except Exception as e:
         logger.error(f"[GROQ SUMMARY ERROR] {e}")
         return "Summary generation failed."
-
-
-# ============================================================
-# CHANGE 3: ADD this template + REPLACE _generate_chunked_summary
-# ============================================================
 
 CHUNKED_FINAL_PROMPT_TEMPLATE = """
 You are a senior documentation and technical writing expert. Your task is to convert the following extracted transcript content into a comprehensive, highly accurate, and professionally structured meeting summary document.
@@ -2472,7 +2631,6 @@ def translate_segments_to_target_lang(segments: list, target_lang: str) -> list:
     logger.info(f"[SUBTITLE {target_lang}] Completed: {len(translated_all)}/{len(segments)} segments translated to {target_lang_name}")
     return translated_all
 
-
 def clean_garbage_scripts(text: str) -> str:
     """
     Remove ONLY true garbage/control characters.
@@ -2504,50 +2662,82 @@ def clean_garbage_scripts(text: str) -> str:
 
 def remove_repetitions(text: str) -> str:
     """
-    Remove repeated phrases/sentences that Whisper hallucinates.
-    Examples: 'numpy.aray numpy.aray numpy.aray' or 
-    'we will not have an error we will not have an error we will not have an error'
+    Remove repeated phrases/sentences that Whisper hallucinates on silence
+    or low-information audio (e.g., screen-share with no narration).
+
+    Strategy:
+    - 5+ identical consecutive sentences = hallucination → DROP ALL copies.
+      Keeping even one copy contaminates the transcript with orphan stubs
+      that concatenate into nonsense paragraphs across chunks.
+    - 2–4 identical consecutive sentences = normal speech emphasis → keep 1 copy.
     """
     if not text or len(text) < 50:
         return text
-    
-    # PASS 1: Remove consecutive duplicate sentences
+
+    # PASS 1: Sentence-level repetition handling
     sentences = re.split(r'(?<=[.!?])\s+', text)
+    if not sentences:
+        return text
+
     deduped_sentences = []
-    prev_sentence = ""
-    repeat_count = 0
-    
-    for sentence in sentences:
-        # Normalize for comparison (lowercase, strip extra spaces)
-        normalized = re.sub(r'\s+', ' ', sentence.strip().lower())
-        prev_normalized = re.sub(r'\s+', ' ', prev_sentence.strip().lower())
-        
-        if normalized == prev_normalized:
-            repeat_count += 1
-            if repeat_count <= 1:
-                # Keep max 1 repeat (original + 1 copy)
-                continue
+    i = 0
+    while i < len(sentences):
+        current = sentences[i]
+        current_norm = re.sub(r'\s+', ' ', current.strip().lower())
+
+        # Count consecutive identical sentences starting at i
+        run_length = 1
+        j = i + 1
+        while j < len(sentences):
+            next_norm = re.sub(r'\s+', ' ', sentences[j].strip().lower())
+            if next_norm == current_norm and current_norm:
+                run_length += 1
+                j += 1
             else:
-                logger.warning(f"[REPEAT FILTER] Removed duplicate sentence: '{sentence[:60]}...'")
-                continue
+                break
+
+        if run_length >= 5:
+            # Hallucination signature — drop ALL copies entirely
+            logger.warning(
+                f"[REPEAT FILTER] Hallucination — dropping all {run_length} "
+                f"copies of: '{current[:60]}...'"
+            )
+        elif run_length >= 2:
+            # Normal speech emphasis — keep one copy
+            deduped_sentences.append(current)
+            for _ in range(run_length - 1):
+                logger.warning(
+                    f"[REPEAT FILTER] Removed duplicate sentence: '{current[:60]}...'"
+                )
         else:
-            repeat_count = 0
-            deduped_sentences.append(sentence)
-            prev_sentence = sentence
-    
+            deduped_sentences.append(current)
+
+        i = j
+
     text = " ".join(deduped_sentences)
-    
-    # PASS 2: Remove repeated short phrases (3-8 words repeated 3+ times consecutively)
-    # Pattern: captures a phrase of 3-8 words repeated 3 or more times
+
+    # PASS 2: Intra-sentence phrase repetition (unchanged behavior for 2-4 repeats,
+    # but 5+ repeats of a phrase are now also dropped entirely)
     for word_count in [8, 7, 6, 5, 4, 3]:
         word_pattern = r'\b(' + r'\S+\s+' * (word_count - 1) + r'\S+)' + r'(?:\s+\1){2,}'
-        matches = re.finditer(word_pattern, text, re.IGNORECASE)
+        matches = list(re.finditer(word_pattern, text, re.IGNORECASE))
         for match in matches:
             repeated_phrase = match.group(1)
             full_match = match.group(0)
-            logger.warning(f"[REPEAT FILTER] Removed repeated phrase: '{repeated_phrase[:50]}...' (appeared {len(full_match.split(repeated_phrase))} times)")
-            text = text.replace(full_match, repeated_phrase)  # Keep just one copy
-    
+            repeat_count = len(full_match.split(repeated_phrase))
+            if repeat_count >= 5:
+                logger.warning(
+                    f"[REPEAT FILTER] Phrase hallucination — dropping all "
+                    f"{repeat_count} copies of: '{repeated_phrase[:50]}...'"
+                )
+                text = text.replace(full_match, "")
+            else:
+                logger.warning(
+                    f"[REPEAT FILTER] Removed repeated phrase: '{repeated_phrase[:50]}...' "
+                    f"(appeared {repeat_count} times)"
+                )
+                text = text.replace(full_match, repeated_phrase)
+
     return text.strip()
 
 def translate_segments_batch(segments: list, source_lang: str) -> list:
@@ -2589,7 +2779,6 @@ def translate_segments_batch(segments: list, source_lang: str) -> list:
                 return True
         return False
     
-
     def _call_llm(batch_segments, retry_count=0):
         """Single LLM call for a batch. Returns translated_map {idx: text}."""
         numbered = "\n".join(f"[{idx}] {s['text']}" for idx, s in enumerate(batch_segments))
@@ -3230,6 +3419,69 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
 
             logging.info(f"✅ Video uploaded: {video_url}")
 
+            # ========== THUMBNAIL GENERATION ==========
+            thumbnail_url = None
+            try:
+                thumbnail_path = os.path.join(workdir, "thumbnail.jpg")
+                seek_time = min(3.0, max(0.5, video_duration * 0.1))
+
+                # Use -ss AFTER -i for accurate (frame-precise) seek instead of fast seek.
+                # Fast seek (-ss before -i) often returns no frame on freshly-encoded video.
+                thumb_cmd = [
+                    "ffmpeg", "-y",
+                    "-i", compressed,
+                    "-ss", str(seek_time),
+                    "-vframes", "1",
+                    "-vf", "scale=640:-2",
+                    "-q:v", "3",
+                    thumbnail_path,
+                ]
+                logging.info(f"🖼 Generating thumbnail from {compressed} at {seek_time}s")
+                proc = subprocess.run(thumb_cmd, capture_output=True, text=True, timeout=60)
+
+                if proc.returncode != 0:
+                    logging.error(
+                        f"❌ ffmpeg thumbnail (primary) failed code={proc.returncode}: "
+                        f"{(proc.stderr or '')[:500]}"
+                    )
+                    # Fallback: just grab the very first frame, no seek
+                    logging.info("🔁 Retrying thumbnail with no seek (frame 0)...")
+                    fallback_cmd = [
+                        "ffmpeg", "-y",
+                        "-i", compressed,
+                        "-vframes", "1",
+                        "-vf", "scale=640:-2",
+                        "-q:v", "3",
+                        thumbnail_path,
+                    ]
+                    proc2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=60)
+                    if proc2.returncode != 0:
+                        logging.error(
+                            f"❌ ffmpeg thumbnail (fallback) ALSO failed code={proc2.returncode}: "
+                            f"{(proc2.stderr or '')[:500]}"
+                        )
+
+                if os.path.exists(thumbnail_path) and os.path.getsize(thumbnail_path) > 0:
+                    thumb_size = os.path.getsize(thumbnail_path)
+                    if session_id:
+                        thumb_s3_key = f"thumbnails/{meeting_id}/{session_id}/thumbnail.jpg"
+                    else:
+                        thumb_s3_key = f"thumbnails/{meeting_id}_{user_id}_thumbnail.jpg"
+
+                    logging.info(f"☁ Uploading thumbnail ({thumb_size} bytes) to s3://{AWS_S3_BUCKET}/{thumb_s3_key}")
+                    thumbnail_url = upload_to_aws_s3(thumbnail_path, thumb_s3_key)
+                    if thumbnail_url:
+                        logging.info(f"✅ Thumbnail uploaded: {thumbnail_url}")
+                    else:
+                        logging.error(f"❌ Thumbnail S3 upload returned None for key: {thumb_s3_key}")
+                else:
+                    logging.warning(f"⚠ Thumbnail file not created or empty at: {thumbnail_path}")
+            except Exception as thumb_error:
+                import traceback
+                logging.error(f"❌ Thumbnail generation exception: {thumb_error}")
+                logging.error(f"❌ Traceback: {traceback.format_exc()}")
+                thumbnail_url = None
+
             # ========== AUDIO EXTRACTION FOR TRANSCRIPTION (RAW & ACCURATE) ==========
             audio = os.path.join(workdir, "audio.wav")
 
@@ -3369,9 +3621,7 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                                         file=f,
                                         response_format="json",
                                         temperature=0.0,
-                                        # NOTE: language intentionally omitted so the decoder auto-detects
-                                        # the spoken language. The prompt below handles translation to English.
-
+                                        
                                     prompt=(
                                         "You are a professional transcription and translation system.\n\n"
                                         
@@ -3477,12 +3727,28 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                         # STEP 2: Remove repeated phrases/sentences (Whisper hallucination)
                         before_repeat_filter = len(chunk_text)
                         chunk_text = remove_repetitions(chunk_text)
-                        if len(chunk_text) < before_repeat_filter:
-                            logging.warning(f"[CHUNK {i}] Removed repeated content ({before_repeat_filter - len(chunk_text)} chars)")
+                        removed_chars = before_repeat_filter - len(chunk_text)
+
+                        if before_repeat_filter > 200 and (removed_chars / before_repeat_filter) > 0.70:
+                            logging.warning(
+                                f"[CHUNK {i}] HALLUCINATION DETECTED — "
+                                f"{removed_chars}/{before_repeat_filter} chars "
+                                f"({removed_chars / before_repeat_filter * 100:.0f}%) were repetition. "
+                                f"Dropping entire chunk to prevent orphan stubs."
+                            )
+                            offset += chunk_duration_sec
+                            try:
+                                os.remove(chunk_path)
+                            except:
+                                pass
+                            continue
+
+                        if removed_chars > 0:
+                            logging.warning(f"[CHUNK {i}] Removed repeated content ({removed_chars} chars)")
 
                         logging.info(f"[CHUNK {i}] Cleaned transcript: {len(chunk_text)} chars in {chunk_duration_sec:.1f}s audio")
 
-                        # STEP 3: Skip ONLY if truly empty (don't drop whole chunk for hallucination)
+                        # STEP 3: Skip ONLY if truly empty (defense in depth)
                         if not chunk_text or len(chunk_text) < 10:
                             logging.info(f"[CHUNK {i}] Skipped (truly empty)")
                             offset += chunk_duration_sec
@@ -3551,7 +3817,7 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                             logging.info(f"[CHUNK {i}] Refined {len(chunk_segments)} → {len(refined_segments)} segments for better translation")
                         chunk_segments = refined_segments
 
-                        # # STEP 5: Only run LLM cleaner if non-English content detected
+                        
                         if chunk_segments:
                             logging.info(f"[CHUNK {i}] Running LLM translator pass (covers all languages)...")
                             chunk_segments = translate_segments_batch(chunk_segments, "mixed")
@@ -3573,6 +3839,11 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                                     chunk_segments[idx] = retry_translated[j]
 
                         # STEP 7: Final cleanup — preserve content even when translation failed
+                        # Old behavior stripped ALL non-ASCII, which destroyed segments where
+                        # translation didn't work. New behavior:
+                        #   - mostly English already  -> leave alone
+                        #   - mixed                   -> strip non-ASCII (keep English part)
+                        #   - mostly non-English      -> KEEP ORIGINAL (better than gibberish)
                         for seg in chunk_segments:
                             text = seg.get("text", "")
                             if not text:
@@ -3699,6 +3970,36 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                     "communication": 0,
                     "overall_feedback": "Evaluation failed"
                 }
+
+            # ========== TRAINER EVALUATION DOCX (HOST-ONLY) ==========
+            trainer_eval_url = None
+            try:
+                if (
+                    trainer_evaluation
+                    and not trainer_evaluation.get("error")
+                    and any(trainer_evaluation.get(k, 0) > 0 for k in
+                            ["technical_content", "explanation_clarity",
+                             "friendliness", "communication"])
+                ):
+                    eval_path = os.path.join(workdir, "trainer_evaluation.docx")
+                    save_trainer_evaluation_docx(
+                        trainer_evaluation,
+                        eval_path,
+                        meeting_title=f"Meeting {meeting_id}"
+                    )
+                    if os.path.exists(eval_path) and os.path.getsize(eval_path) > 0:
+                        eval_s3_key = build_s3_document_path(
+                            meeting_id, user_id, meeting_type, "trainer_evaluation",
+                            session_id=session_id
+                        )
+                        trainer_eval_url = upload_to_aws_s3(eval_path, eval_s3_key)
+                        logging.info(f"✅ Trainer evaluation DOCX uploaded: {trainer_eval_url}")
+                    else:
+                        logging.warning("⚠ Trainer evaluation DOCX file empty or missing")
+                else:
+                    logging.info("ℹ️ Skipping trainer evaluation DOCX (no valid scores)")
+            except Exception as eval_doc_err:
+                logging.warning(f"⚠ Trainer evaluation DOCX generation failed: {eval_doc_err}")
 
             # ========== SUBTITLES GENERATION (Groq → MarianMT → GoogleTranslator fallback) ==========
             subtitle_urls = {}
@@ -4092,6 +4393,7 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                 "original_filename": original_filename,
                 "custom_recording_name": custom_recording_name,
                 "video_url": video_url,
+                "thumbnail_url": thumbnail_url,   
                 "transcript_url": transcript_url,
                 "summary_url": summary_url,
                 "summary_text": summary_for_mongo,
@@ -4117,7 +4419,8 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                 "gpu_accelerated": nvenc_available,
                 "document_format": "docx",
                 "transcription_engine": "openai_gpt_4o_transcribe_with_llm_translation",
-                "trainer_evaluation": trainer_evaluation
+                "trainer_evaluation": trainer_evaluation,
+                "trainer_evaluation_url": trainer_eval_url
             }
             
             logging.info(f"💾 Saving video data to MongoDB...")
@@ -4202,6 +4505,7 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             result_dict = {
                 "status": "success",
                 "video_url": video_url,
+                "thumbnail_url": thumbnail_url,   # 👈 ADD THIS LINE
                 "transcript_url": transcript_url,
                 "summary_url": summary_url,
                 "summary_image_url": image_url,
@@ -4544,8 +4848,8 @@ def delete_video(request, id):
         # Delete associated S3 files
         s3_keys_to_delete = []
         
-        # Video, transcript, summary, image URLs
-        for url_field in ['video_url', 'transcript_url', 'summary_url', 'image_url']:
+        # Video, transcript, summary, image, thumbnail URLs
+        for url_field in ['video_url', 'transcript_url', 'summary_url', 'image_url', 'thumbnail_url']:
             url = video.get(url_field)
             if url:
                 try:
@@ -6127,7 +6431,7 @@ def permanent_delete_video(request, id):
 
         # Delete S3 files
         s3_keys_to_delete = []
-        for url_field in ['video_url', 'transcript_url', 'summary_url', 'image_url']:
+        for url_field in ['video_url', 'transcript_url', 'summary_url', 'image_url', 'thumbnail_url']:
             url = video.get(url_field)
             if url and AWS_S3_BUCKET in url:
                 try:
@@ -6267,6 +6571,71 @@ def store_custom_recording_name(request):
         }, status=500)
 
 @require_http_methods(["GET"])
+def get_trainer_evaluation_doc(request, id):
+    """Download trainer evaluation DOCX. HOST ONLY."""
+    try:
+        try:
+            video_id = ObjectId(id)
+        except Exception:
+            return JsonResponse({"Error": "Invalid video ID format"}, status=400)
+
+        video = collection.find_one({"_id": video_id})
+        if not video:
+            return JsonResponse({"Error": "Video not found"}, status=404)
+
+        user_id = request.GET.get('user_id', '')
+        if not user_id:
+            return JsonResponse({"Error": "Missing user_id"}, status=400)
+
+        meeting_id = video.get("meeting_id", "")
+
+        # Strict host-only check
+        is_host = False
+        if str(video.get("user_id", "")) == str(user_id):
+            is_host = True
+        else:
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT Host_ID FROM tbl_Meetings WHERE ID = %s", [meeting_id])
+                    row = cursor.fetchone()
+                    if row and str(row[0]) == str(user_id):
+                        is_host = True
+            except Exception as db_err:
+                logger.error(f"Host check DB error: {db_err}")
+
+        if not is_host:
+            return JsonResponse(
+                {"Error": "Access denied: trainer evaluation is host-only"},
+                status=403
+            )
+
+        eval_url = video.get("trainer_evaluation_url")
+        if not eval_url:
+            return JsonResponse({"Error": "Trainer evaluation not available"}, status=404)
+
+        s3_key = extract_s3_key_from_url(eval_url, AWS_S3_BUCKET)
+        if not s3_key:
+            return JsonResponse({"Error": "Invalid evaluation URL"}, status=400)
+
+        content = stream_from_s3(s3_key)
+        if content is None:
+            return JsonResponse({"Error": "Failed to fetch evaluation"}, status=500)
+
+        response = HttpResponse(
+            content,
+            content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
+        response['Content-Disposition'] = f'attachment; filename="trainer_evaluation_{id}.docx"'
+        response['Content-Length'] = str(len(content))
+        response['Cache-Control'] = 'private, no-cache'
+        return response
+
+    except Exception as e:
+        logger.error(f"Trainer evaluation download error: {e}")
+        return JsonResponse({"Error": str(e)}, status=500)
+
+
+@require_http_methods(["GET"])
 def get_summary_content(request, id):
     """Return summary content with trainer evaluation as JSON for frontend to render."""
     try:
@@ -6400,7 +6769,8 @@ def get_summary_content(request, id):
                     "friendliness": trainer_evaluation.get("friendliness", 0),
                     "communication": trainer_evaluation.get("communication", 0),
                     "overall_feedback": trainer_evaluation.get("overall_feedback", ""),
-                    "has_evaluation": bool(trainer_evaluation and not trainer_evaluation.get("error"))
+                    "has_evaluation": bool(trainer_evaluation and not trainer_evaluation.get("error")),
+                    "download_url": video.get("trainer_evaluation_url")
                 } if is_host else None,
                 
                 # Additional metadata
