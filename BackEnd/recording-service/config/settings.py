@@ -46,6 +46,14 @@ CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://192.168.48.201:6379/
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://192.168.48.201:6379/0')
 CELERY_TIMEZONE = os.getenv('CELERY_TIMEZONE', 'Asia/Kolkata')
 
+# Beat schedule for auto-recovery of failed recordings
+CELERY_BEAT_SCHEDULE = {
+    'retry-pending-recordings-hourly': {
+        'task': 'retry_pending_recordings',
+        'schedule': 3600.0,  # 1 hour in seconds
+    },
+}
+
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 

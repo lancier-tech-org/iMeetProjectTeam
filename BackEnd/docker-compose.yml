@@ -280,7 +280,8 @@ services:
       context: ./recording-service
       dockerfile: Dockerfile
     container_name: imeetpro-recording-celery
-    command: celery -A config worker -l info --concurrency=2 -Q video_processing
+    # command: celery -A config worker -l info --concurrency=2 -Q video_processing
+    command: celery -A config worker --beat --scheduler celery.beat:PersistentScheduler -l info --concurrency=2 -Q video_processing
     env_file:
       - ./recording-service/.env
     extra_hosts:

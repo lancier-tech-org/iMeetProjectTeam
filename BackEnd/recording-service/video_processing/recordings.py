@@ -1138,6 +1138,7 @@ def get_meeting_participants_emails(meeting_id: str) -> list:
         logger.error(f"Failed to get meeting participants emails for meeting {meeting_id}: {e}")
         return []
 
+
 def get_user_details(user_id: str) -> dict:
     """Get user details (name, email) from database."""
     try:
@@ -1636,7 +1637,6 @@ def save_docx(content: str, path: str, image_path: str = None, title: str = ""):
             if ("no code" in lower or "no example" in lower or "no demonstration" in lower or "no specific example" in lower) and ("not" in lower or "no " in lower):
                 continue
 
-        # === GLOBAL FILLER-TEXT FILTER ===
         lower_global = stripped.lower()
         global_filler_starters = (
             "no ", "no specific ", "since no ", "there is no ",
@@ -2197,6 +2197,11 @@ FINAL RULES:
     except Exception as e:
         logger.error(f"[GROQ SUMMARY ERROR] {e}")
         return "Summary generation failed."
+
+
+# ============================================================
+# CHANGE 3: ADD this template + REPLACE _generate_chunked_summary
+# ============================================================
 
 CHUNKED_FINAL_PROMPT_TEMPLATE = """
 You are a senior documentation and technical writing expert. Your task is to convert the following extracted transcript content into a comprehensive, highly accurate, and professionally structured meeting summary document.
@@ -2779,6 +2784,7 @@ def translate_segments_batch(segments: list, source_lang: str) -> list:
                 return True
         return False
     
+
     def _call_llm(batch_segments, retry_count=0):
         """Single LLM call for a batch. Returns translated_map {idx: text}."""
         numbered = "\n".join(f"[{idx}] {s['text']}" for idx, s in enumerate(batch_segments))
@@ -3510,12 +3516,33 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                     timeout=audio_timeout
                 )
                 logging.info(f"✅ Raw audio extracted for transcription: {audio}")
+                # ========== CACHE AUDIO TO S3 (FOR API-FAILURE RECOVERY) ==========
+                audio_s3_key = None
+                try:
+                    if session_id:
+                        audio_s3_key = f"intermediate/{meeting_id}/{session_id}/audio.wav"
+                    else:
+                        audio_s3_key = f"intermediate/{meeting_id}/{user_id}/audio.wav"
+
+                    audio_size_mb = os.path.getsize(audio) / (1024 * 1024)
+                    logging.info(f"☁ Caching audio to S3 for retry recovery ({audio_size_mb:.1f} MB): {audio_s3_key}")
+
+                    audio_cache_url = upload_to_aws_s3(audio, audio_s3_key)
+                    if audio_cache_url:
+                        logging.info(f"✅ Audio cached for retry: {audio_s3_key}")
+                    else:
+                        logging.warning(f"⚠️ Audio cache upload returned None — retry recovery may not work")
+                        audio_s3_key = None
+                except Exception as cache_err:
+                    logging.warning(f"⚠️ Audio caching failed (non-fatal): {cache_err}")
+                    audio_s3_key = None
             except Exception as e:
                 raise Exception(f"Audio extraction for transcription failed: {e}")
 
             # ========== TRANSCRIPTION (OpenAI gpt-4o-transcribe) ==========
             transcript_text = ""
             segments = []
+            api_failure_types = []  # Track what kind of API failures occurred
             
             if client is None:
                 logging.error("❌ OPENAI CLIENT IS NONE - Cannot transcribe!")
@@ -3621,7 +3648,6 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                                         file=f,
                                         response_format="json",
                                         temperature=0.0,
-                                        
                                     prompt=(
                                         "You are a professional transcription and translation system.\n\n"
                                         
@@ -3702,7 +3728,9 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                                 break  # success, exit retry loop
                             except Exception as api_error:
                                 last_error = api_error
-                                logging.warning(f"[CHUNK {i}] API attempt {attempt+1}/3 failed: {api_error}")
+                                failure_type = _detect_api_failure_type(api_error)
+                                api_failure_types.append(failure_type)
+                                logging.warning(f"[CHUNK {i}] API attempt {attempt+1}/3 failed ({failure_type}): {api_error}")
                                 if attempt < 2:
                                     time.sleep(2 ** attempt)  # 1s, then 2s backoff
 
@@ -3817,7 +3845,6 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                             logging.info(f"[CHUNK {i}] Refined {len(chunk_segments)} → {len(refined_segments)} segments for better translation")
                         chunk_segments = refined_segments
 
-                        
                         if chunk_segments:
                             logging.info(f"[CHUNK {i}] Running LLM translator pass (covers all languages)...")
                             chunk_segments = translate_segments_batch(chunk_segments, "mixed")
@@ -3838,12 +3865,6 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                                 if j < len(retry_translated):
                                     chunk_segments[idx] = retry_translated[j]
 
-                        # STEP 7: Final cleanup — preserve content even when translation failed
-                        # Old behavior stripped ALL non-ASCII, which destroyed segments where
-                        # translation didn't work. New behavior:
-                        #   - mostly English already  -> leave alone
-                        #   - mixed                   -> strip non-ASCII (keep English part)
-                        #   - mostly non-English      -> KEEP ORIGINAL (better than gibberish)
                         for seg in chunk_segments:
                             text = seg.get("text", "")
                             if not text:
@@ -3903,7 +3924,28 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                     logging.error(f"❌ Traceback: {traceback.format_exc()}")
                     segments = []
                     transcript_text = "Transcription failed."
-            # ========== POST-TRANSCRIPTION FALLBACK ==========
+
+            needs_retry = False
+            retry_reason = None
+
+            if not segments and api_failure_types:
+                # Determine the dominant failure type
+                from collections import Counter
+                failure_counts = Counter(api_failure_types)
+                dominant_failure = failure_counts.most_common(1)[0][0]
+
+                if _is_recoverable_failure(dominant_failure):
+                    needs_retry = True
+                    retry_reason = dominant_failure
+                    logging.error(
+                        f"⚠️ Transcription FAILED for entire recording — "
+                        f"dominant failure: {dominant_failure} "
+                        f"(failure breakdown: {dict(failure_counts)})"
+                    )
+                    logging.error(
+                        f"⚠️ Marking recording for auto-retry. Audio cached at: {audio_s3_key}"
+                    )
+
             if not segments:
                 segments = [{
                     "start": 0.0,
@@ -3938,8 +3980,17 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
 
             # ========== TRAINER PERFORMANCE EVALUATION ==========
             trainer_evaluation = {}
+            if needs_retry:
+                logging.info("⏭️ Skipping trainer evaluation (recording marked for retry)")
+                trainer_evaluation = {
+                    "technical_content": 0,
+                    "explanation_clarity": 0,
+                    "friendliness": 0,
+                    "communication": 0,
+                    "overall_feedback": "Pending API recovery"
+                }
             try:
-                if transcript_text and len(transcript_text.strip()) > 50:
+                if not needs_retry and transcript_text and len(transcript_text.strip()) > 50:
                     logging.info("📊 Analyzing trainer performance...")
                     trainer_evaluation = analyze_trainer_performance(transcript_text)
                     
@@ -4405,7 +4456,12 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                 "duration": video_duration,
                 "transcription_available": bool(transcript_url),
                 "summary_available": bool(summary_url),
-                "processing_status": "completed",
+                "processing_status": "needs_retry" if needs_retry else "completed",
+                "retry_reason": retry_reason if needs_retry else None,
+                "audio_s3_key": audio_s3_key if needs_retry else None,
+                "retry_count": 0 if needs_retry else None,
+                "last_retry_at": None,
+                "max_retries": 24,
                 "subtitle_format": "srt_multi_language",
                 "subtitle_languages": list(subtitle_urls.keys()),
                 "embedded_subtitles": False,
@@ -4489,17 +4545,21 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
             logging.info(f"ℹ️ Skipping custom name cleanup (already handled by recording service)")
 
             # ========== SEND NOTIFICATIONS ==========
-            logging.info(f"📧 Sending notifications...")
-            try:
-                notification_count = send_recording_completion_notifications(
-                    meeting_id=meeting_id,
-                    video_url=video_url,
-                    transcript_url=transcript_url,
-                    summary_url=summary_url
-                )
-                logging.info(f"✅ Sent {notification_count} notifications")
-            except Exception as notif_error:
-                logging.error(f"⚠ Notifications failed: {notif_error}")
+            if needs_retry:
+                logging.info(f"⏭️ Skipping notifications — recording in needs_retry state. Will notify on successful retry.")
+                notification_count = 0
+            else:
+                logging.info(f"📧 Sending notifications...")
+                try:
+                    notification_count = send_recording_completion_notifications(
+                        meeting_id=meeting_id,
+                        video_url=video_url,
+                        transcript_url=transcript_url,
+                        summary_url=summary_url
+                    )
+                    logging.info(f"✅ Sent {notification_count} notifications")
+                except Exception as notif_error:
+                    logging.error(f"⚠ Notifications failed: {notif_error}")
 
             # ========== RETURN SUCCESS ==========
             result_dict = {
@@ -4562,6 +4622,49 @@ def process_video_sync(video_path: str, meeting_id: str, user_id: str):
                     "input_extension": input_ext if 'input_ext' in locals() else "unknown"
                 }
             }
+
+# ============================================================
+# API FAILURE DETECTION (for auto-retry feature)
+# ============================================================
+def _detect_api_failure_type(exception) -> str:
+    """
+    Classify API exception so retry task knows what to do.
+
+    Returns:
+    - 'auth_failed'      → 401 / bad/expired API key (user/admin must update key)
+    - 'payment_required' → 402 / billing issue (user must pay)
+    - 'quota_exceeded'   → 429 + quota text (subscription out of credits)
+    - 'rate_limit'       → 429 without quota text (temporary, retries work)
+    - 'network_error'    → timeout/connection (transient)
+    - 'unknown_error'    → anything else
+    """
+    error_str = str(exception).lower()
+    error_type = type(exception).__name__.lower()
+
+    if '401' in error_str or 'unauthorized' in error_str or 'invalid_api_key' in error_str or 'invalid api key' in error_str:
+        return 'auth_failed'
+
+    if '402' in error_str or 'payment_required' in error_str or 'payment required' in error_str:
+        return 'payment_required'
+
+    if '429' in error_str and ('quota' in error_str or 'insufficient_quota' in error_str or 'billing' in error_str or 'exceeded' in error_str):
+        return 'quota_exceeded'
+
+    if '429' in error_str or 'rate_limit' in error_str or 'rate limit' in error_str:
+        return 'rate_limit'
+
+    if any(word in error_str for word in ['timeout', 'connection', 'network', 'unreachable', 'dns', 'resolve']):
+        return 'network_error'
+
+    if any(word in error_type for word in ['timeout', 'connection']):
+        return 'network_error'
+
+    return 'unknown_error'
+
+
+def _is_recoverable_failure(failure_type: str) -> bool:
+    """All failures are technically recoverable, but these benefit most from retry."""
+    return failure_type in ('auth_failed', 'payment_required', 'quota_exceeded', 'rate_limit', 'network_error', 'unknown_error')
 
 # === 1. GET ALL VIDEOS ===
 @require_http_methods(["GET"])
