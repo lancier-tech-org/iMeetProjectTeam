@@ -2913,19 +2913,27 @@ def Get_Live_Participants_Enhanced_No_Status(request, meeting_id):
             user_id = str(db_participant['User_ID'])
             
             # Check if user is in LiveKit
+            # Check if user is in LiveKit
             if user_id in livekit_user_mapping:
                 lk_data = livekit_user_mapping[user_id]
                 
-                # User is live in LiveKit
-                db_participant['LiveKit_Connected'] = True
-                db_participant['Has_Stream'] = lk_data.get('total_tracks', 0) > 0
-                db_participant['Status'] = 'live'
-                db_participant['Is_Currently_Active'] = True  # ← ADD THIS
-                db_participant['LiveKit_Data'] = lk_data
-                db_participant['Debug_Info'] = {
-                    'parsing_method': lk_data.get('parsing_method'),
-                    'tracks_count': lk_data.get('total_tracks', 0)
-                }
+                # ✅ FIX: If DB says removed, don't override with LiveKit data
+                if not db_participant['Is_Currently_Active']:
+                    db_participant['LiveKit_Connected'] = False
+                    db_participant['Has_Stream'] = False
+                    db_participant['Status'] = 'offline'
+                    db_participant['LiveKit_Data'] = {}
+                    db_participant['Debug_Info'] = {}
+                else:
+                    db_participant['LiveKit_Connected'] = True
+                    db_participant['Has_Stream'] = lk_data.get('total_tracks', 0) > 0
+                    db_participant['Status'] = 'live'
+                    db_participant['Is_Currently_Active'] = True
+                    db_participant['LiveKit_Data'] = lk_data
+                    db_participant['Debug_Info'] = {
+                        'parsing_method': lk_data.get('parsing_method'),
+                        'tracks_count': lk_data.get('total_tracks', 0)
+                    }
                 
             else:
                 # User not in LiveKit
@@ -4118,13 +4126,6 @@ def assign_co_host(request):
                 'details': str(e)
             }, status=500)
         
-        # ✅ Ensure attendance tracking continues for co-host (same as participant)
-        try:
-            start_attendance_tracking(meeting_id, str(user_id))
-            logging.info(f"[COHOST] Attendance tracking ensured for co-host {user_id}")
-        except Exception as e:
-            logging.warning(f"[COHOST] Could not ensure attendance tracking: {e}")
-        
         # Store in Redis (if available)
         redis_success = False
         redis_conn = get_redis()
@@ -4352,13 +4353,6 @@ def remove_co_host(request):
                 'error': 'Database update failed',
                 'details': str(e)
             }, status=500)
-        
-        # ✅ Ensure attendance tracking continues after demotion to participant
-        try:
-            start_attendance_tracking(meeting_id, str(user_id))
-            logging.info(f"[REMOVE-COHOST] Attendance tracking ensured for demoted participant {user_id}")
-        except Exception as e:
-            logging.warning(f"[REMOVE-COHOST] Could not ensure attendance tracking after demotion: {e}")
         
         # Remove from Redis (if available)
         redis_success = False
